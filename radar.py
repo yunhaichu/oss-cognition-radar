@@ -653,6 +653,11 @@ def fetch_releases(full_name: str) -> list[dict]:
     return data if isinstance(data, list) else []
 
 
+def fetch_releases_sample(full_name: str, per_page: int = 5) -> list[dict]:
+    data = github_get_optional(f"/repos/{full_name}/releases", {"per_page": per_page})
+    return data if isinstance(data, list) else []
+
+
 def fetch_issues(full_name: str) -> list[dict]:
     data = github_get_optional(
         "/search/issues",
@@ -666,6 +671,21 @@ def fetch_issues(full_name: str) -> list[dict]:
 def fetch_pull_requests(full_name: str) -> list[dict]:
     query = f"repo:{full_name} is:pr is:merged -author:dependabot[bot] -label:dependencies"
     data = github_get_optional("/search/issues", {"q": query, "sort": "comments", "order": "desc", "per_page": 5})
+    if not isinstance(data, dict):
+        return []
+    return data.get("items", [])
+
+
+def fetch_issue_search(full_name: str, query_suffix: str, per_page: int = 2) -> list[dict]:
+    data = github_get_optional(
+        "/search/issues",
+        {
+            "q": f"repo:{full_name} {query_suffix}",
+            "sort": "comments",
+            "order": "desc",
+            "per_page": per_page,
+        },
+    )
     if not isinstance(data, dict):
         return []
     return data.get("items", [])
@@ -788,6 +808,208 @@ def build_evidence(repo: dict) -> list[Evidence]:
 
     assign_evidence_ids(repo, evidence)
     return evidence
+
+
+GAP_LAYER_TO_IMPLEMENTATION_TYPE = {
+    "source": "source_entrypoint",
+    "tests": "test_surface",
+    "benchmarks": "benchmark",
+    "configuration": "configuration",
+}
+TARGETED_IMPLEMENTATION_LIMITS = {
+    "source_entrypoint": 3,
+    "test_surface": 3,
+    "benchmark": 2,
+    "configuration": 2,
+}
+
+
+def evidence_key(item: Evidence) -> str:
+    return item.url or f"{item.kind}:{item.title}"
+
+
+def ordered_missing_layers(gaps: list[dict]) -> list[str]:
+    layers: list[str] = []
+    for gap in gaps:
+        for layer in gap.get("missing_layers") or []:
+            if layer not in layers:
+                layers.append(layer)
+    return layers
+
+
+def targeted_implementation_paths(
+    files: list[dict],
+    repo: dict,
+    missing_layers: list[str],
+    existing_paths: set[str],
+) -> list[tuple[str, str]]:
+    wanted_types = {
+        GAP_LAYER_TO_IMPLEMENTATION_TYPE[layer]
+        for layer in missing_layers
+        if layer in GAP_LAYER_TO_IMPLEMENTATION_TYPE
+    }
+    buckets: dict[str, list[tuple[tuple[int, int, str], str]]] = {
+        evidence_type: [] for evidence_type in wanted_types
+    }
+    for item in files:
+        path = item.get("path") or ""
+        if not path or path in existing_paths:
+            continue
+        size = item.get("size") or 0
+        if size and size > MAX_IMPLEMENTATION_FILE_SIZE:
+            continue
+        evidence_type = classify_implementation_path(path)
+        if evidence_type not in wanted_types:
+            continue
+        buckets[evidence_type].append((implementation_path_score(path, evidence_type, repo), path))
+
+    selected: list[tuple[str, str]] = []
+    for evidence_type in ("source_entrypoint", "test_surface", "benchmark", "configuration"):
+        ranked = sorted(buckets.get(evidence_type, []), key=lambda item: item[0])
+        selected.extend(
+            (path, evidence_type)
+            for _, path in ranked[: TARGETED_IMPLEMENTATION_LIMITS.get(evidence_type, 2)]
+        )
+    return selected
+
+
+def gap_search_terms(gaps: list[dict]) -> list[str]:
+    terms: list[str] = []
+    field_terms = {
+        "作者如何重新定义问题": ["roadmap", "proposal", "feedback"],
+        "关键抽象": ["api", "interface", "refactor"],
+        "架构边界": ["boundary", "unsupported", "deprecated"],
+        "复杂度藏处": ["bug", "error", "performance", "compatibility"],
+        "治理模式": ["support", "discussion", "contributing"],
+        "可复用思想": ["example", "adoption", "discussion"],
+        "不可复制条件": ["roadmap", "release", "community"],
+    }
+    for gap in gaps:
+        for term in field_terms.get(gap.get("field"), []):
+            if term not in terms:
+                terms.append(term)
+    return terms[:5] or ["bug", "discussion", "api"]
+
+
+def append_unique_evidence(additions: list[Evidence], item: Evidence, seen_keys: set[str]) -> None:
+    key = evidence_key(item)
+    if key in seen_keys:
+        return
+    seen_keys.add(key)
+    additions.append(item)
+
+
+def acquire_targeted_evidence(repo: dict, evidence: list[Evidence], gaps: list[dict]) -> list[Evidence]:
+    missing_layers = ordered_missing_layers(gaps)
+    if not missing_layers:
+        return []
+
+    full_name = repo["full_name"]
+    additions: list[Evidence] = []
+    seen_keys = {evidence_key(item) for item in evidence}
+    existing_paths = {
+        item.title
+        for item in evidence
+        if item.evidence_type in {"source_entrypoint", "test_surface", "benchmark", "configuration"}
+    }
+
+    def next_id() -> str:
+        return f"E{len(evidence) + len(additions) + 1}"
+
+    if set(missing_layers) & set(GAP_LAYER_TO_IMPLEMENTATION_TYPE):
+        for path, evidence_type in targeted_implementation_paths(
+            fetch_tree_files(repo),
+            repo,
+            missing_layers,
+            existing_paths,
+        ):
+            text, url = fetch_file_text(repo, path)
+            if not text:
+                continue
+            item = make_evidence(
+                next_id(),
+                2,
+                implementation_kind(evidence_type),
+                path,
+                url,
+                excerpt(text, 700),
+                evidence_type,
+            )
+            append_unique_evidence(additions, item, seen_keys)
+            existing_paths.add(path)
+
+    if "release" in missing_layers:
+        for release in fetch_releases_sample(full_name, per_page=10):
+            title = release.get("name") or release.get("tag_name") or "Release"
+            body = release.get("body") or ""
+            quote = excerpt(body, 550) or f"Published at {release.get('published_at') or 'unknown time'}."
+            item = make_evidence(
+                next_id(),
+                2,
+                "Release",
+                title,
+                release.get("html_url") or "",
+                quote,
+                "release_delta",
+            )
+            append_unique_evidence(additions, item, seen_keys)
+            if sum(1 for added in additions if added.kind == "Release") >= 3:
+                break
+
+    if "collaboration" in missing_layers:
+        for term in gap_search_terms(gaps):
+            for issue in fetch_issue_search(full_name, f"is:issue {term}", per_page=2):
+                quote = excerpt(issue.get("body") or "", 500) or (
+                    f"{issue.get('comments', 0)} comments; state={issue.get('state')}."
+                )
+                item = make_evidence(
+                    next_id(),
+                    2,
+                    "Issue",
+                    issue.get("title") or "Issue",
+                    issue.get("html_url") or "",
+                    quote,
+                    "user_friction",
+                )
+                append_unique_evidence(additions, item, seen_keys)
+            for pr in fetch_issue_search(
+                full_name,
+                f"is:pr is:merged -author:dependabot[bot] -label:dependencies {term}",
+                per_page=2,
+            ):
+                quote = excerpt(pr.get("body") or "", 500) or f"state={pr.get('state')}; merged_at={pr.get('merged_at')}."
+                item = make_evidence(
+                    next_id(),
+                    2,
+                    "Pull Request",
+                    pr.get("title") or "Pull request",
+                    pr.get("html_url") or "",
+                    quote,
+                    "implementation_change",
+                )
+                append_unique_evidence(additions, item, seen_keys)
+            collaboration_count = sum(1 for added in additions if added.kind in {"Issue", "Pull Request"})
+            if collaboration_count >= 4:
+                break
+
+    return additions
+
+
+def build_evidence_acquisition_summary(gaps: list[dict], targeted_evidence: list[Evidence]) -> dict:
+    requested_layers = ordered_missing_layers(gaps)
+    added_counts: dict[str, int] = {}
+    for item in targeted_evidence:
+        layer = evidence_support_layer(item)
+        added_counts[layer] = added_counts.get(layer, 0) + 1
+    return {
+        "strategy": "claim_gap_targeted",
+        "requested_layers": requested_layers,
+        "requested_layer_labels": [SUPPORT_LAYER_LABELS.get(layer, layer) for layer in requested_layers],
+        "added_total": len(targeted_evidence),
+        "added_counts": added_counts,
+        "added_evidence_ids": [item.evidence_id for item in targeted_evidence],
+        "status": "expanded" if targeted_evidence else "no_additional_evidence",
+    }
 
 
 def assign_evidence_ids(repo: dict, evidence: list[Evidence]) -> None:
@@ -1497,7 +1719,13 @@ def claim_to_dict(claim: Claim, evidence_map: dict[str, Evidence] | None = None)
     return data
 
 
-def build_deep_payload(repo: dict, evidence: list[Evidence], claims: list[Claim], run_at: dt.datetime) -> dict:
+def build_deep_payload(
+    repo: dict,
+    evidence: list[Evidence],
+    claims: list[Claim],
+    run_at: dt.datetime,
+    evidence_acquisition: dict | None = None,
+) -> dict:
     summary = repo_summary(repo, run_at)
     evidence_map = {item.evidence_id: item for item in evidence}
     return {
@@ -1509,6 +1737,7 @@ def build_deep_payload(repo: dict, evidence: list[Evidence], claims: list[Claim]
         "repository": summary,
         "claims": [claim_to_dict(item, evidence_map) for item in claims],
         "claim_gap_report": build_claim_gap_report(claims),
+        "evidence_acquisition": evidence_acquisition or {},
         "evidence": [evidence_to_dict(item) for item in evidence],
     }
 
@@ -3925,6 +4154,31 @@ def render_track_score(summary: dict) -> list[str]:
     ]
 
 
+def render_evidence_acquisition_summary(summary: dict | None) -> list[str]:
+    lines = ["## Evidence Acquisition", ""]
+    if not summary:
+        return lines + ["未记录额外证据采集。", ""]
+    requested = "、".join(summary.get("requested_layer_labels") or []) or "无"
+    counts = summary.get("added_counts") or {}
+    count_text = "、".join(
+        f"{SUPPORT_LAYER_LABELS.get(layer, layer)}={count}"
+        for layer, count in counts.items()
+    ) or "无"
+    ids = ", ".join(f"`{item}`" for item in summary.get("added_evidence_ids") or []) or "无"
+    lines.extend(
+        [
+            f"- 策略：{summary.get('strategy') or '未知'}",
+            f"- 状态：{summary.get('status') or '未知'}",
+            f"- Gap 请求层：{requested}",
+            f"- 新增证据数：{summary.get('added_total', 0)}",
+            f"- 新增证据分布：{count_text}",
+            f"- 新增证据 ID：{ids}",
+            "",
+        ]
+    )
+    return lines
+
+
 def render_claim_gap_report(gaps: list[dict]) -> list[str]:
     lines = ["## Claim Gap Report", ""]
     if not gaps:
@@ -4013,7 +4267,13 @@ def render_evidence_table(evidence: list[Evidence]) -> list[str]:
     return lines
 
 
-def render_deep_report(repo: dict, summary: dict, evidence: list[Evidence], claims: list[Claim]) -> str:
+def render_deep_report(
+    repo: dict,
+    summary: dict,
+    evidence: list[Evidence],
+    claims: list[Claim],
+    evidence_acquisition: dict | None = None,
+) -> str:
     now = dt.datetime.now(dt.UTC)
     topics = ", ".join(repo.get("topics") or []) or "无"
     lines = [
@@ -4066,6 +4326,7 @@ def render_deep_report(repo: dict, summary: dict, evidence: list[Evidence], clai
             ]
         )
 
+    lines.extend(render_evidence_acquisition_summary(evidence_acquisition))
     lines.extend(render_claim_gap_report(build_claim_gap_report(claims)))
     lines.extend(
         [
@@ -4156,15 +4417,22 @@ def main() -> None:
     if args.repo:
         repo = fetch_repository(args.repo)
         evidence = build_evidence(repo)
+        initial_claims = build_claims(repo, evidence)
+        initial_gaps = build_claim_gap_report(initial_claims)
+        targeted_evidence = acquire_targeted_evidence(repo, evidence, initial_gaps)
+        if targeted_evidence:
+            evidence.extend(targeted_evidence)
+            assign_evidence_ids(repo, evidence)
         claims = build_claims(repo, evidence)
-        payload = build_deep_payload(repo, evidence, claims, run_at)
+        evidence_acquisition = build_evidence_acquisition_summary(initial_gaps, targeted_evidence)
+        payload = build_deep_payload(repo, evidence, claims, run_at, evidence_acquisition)
         attach_star_growth([payload["repository"]], None if args.no_db else args.db, run_at)
         attach_track_scores(
             [payload["repository"]],
             evidence_counts={payload["repository"]["full_name"]: len(evidence)},
             claim_counts={payload["repository"]["full_name"]: len(claims)},
         )
-        write_report(args.output, render_deep_report(repo, payload["repository"], evidence, claims))
+        write_report(args.output, render_deep_report(repo, payload["repository"], evidence, claims, evidence_acquisition))
         if args.json_output:
             write_json(args.json_output, payload)
         if not args.no_db:

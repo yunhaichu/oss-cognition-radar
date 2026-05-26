@@ -66,7 +66,7 @@ python3 radar.py --archive-list --db data/radar.sqlite --limit 20
 python3 radar.py --archive-search durable --db data/radar.sqlite --limit 10
 ```
 
-`--archive-search` 会按需维护 SQLite FTS5 搜索索引，并输出 relevance backend、score、命中的文档数量和 source types。若运行环境不支持 FTS5，或 FTS5 对中文片段没有命中，会自动回退到原来的 `LIKE` 搜索。
+`--archive-search` 会按需维护 SQLite FTS5 搜索索引，并输出 relevance backend、score、命中的文档数量和 source types。索引覆盖 repository、claims、claim gaps 和 evidence；若运行环境不支持 FTS5，或 FTS5 对中文片段没有命中，会自动回退到原来的 `LIKE` 搜索。
 
 ```bash
 python3 radar.py --archive-show langchain-ai/langgraph --db data/radar.sqlite
@@ -143,6 +143,7 @@ export GITHUB_TOKEN=ghp_xxx
 - claim 模板、推断依据、边界/反向证据
 - claim support coverage：区分叙事、发布/协作、源码、测试/benchmark、配置支撑
 - claim gap report：优先列出高价值但支撑薄弱的判断，并给出下一步证据采集建议
+- targeted evidence acquisition：按 gap 缺口自动补采源码、测试、benchmark、配置、release、issue/PR 证据
 - evidence type、polarity、signal tags
 - repository health
 - track score
@@ -166,6 +167,7 @@ JSON 输出会包含：
 - `rationale`
 - `support_coverage`
 - `claim_gap_report`
+- `evidence_acquisition`
 - `evidence_type`
 - `polarity`
 - `signal_tags`
@@ -184,7 +186,7 @@ SQLite 当前会保存：
 归档模式会基于这些表提供四类本地查询：
 
 - `--archive-list`：按最新快照列出已归档项目，支持 track 和最低 track score 过滤
-- `--archive-search TEXT`：用 SQLite FTS5 搜索 repository 元数据、claims 和 evidence 文本，并返回 relevance 信息
+- `--archive-search TEXT`：用 SQLite FTS5 搜索 repository 元数据、claims、claim gaps 和 evidence 文本，并返回 relevance 信息
 - `--archive-show owner/name`：优先展示最新 deep dossier，没有 deep 快照时回退到最新 discovery 快照
 - `--archive-dashboard [PATH]`：生成一个可直接打开的静态 HTML dashboard，包含搜索、track 过滤、最低分过滤、项目详情、claims 和 evidence 摘要
 
@@ -213,6 +215,8 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 `claim_gap_report` 会基于 claim 的价值权重和支撑薄弱程度排序，优先提示哪些判断需要补源码、测试、benchmark、配置、release 或 issue/PR 证据。它是从 claim 当前证据派生出来的复核清单，不会伪装成新的事实来源。
 
+深度模式现在会执行两阶段采样：先用初始 evidence 生成 claims 和 gap report，再根据缺口层补抓相关源码、测试、benchmark、配置、release、issue/PR，最后用扩展后的 evidence 重建 claims。`evidence_acquisition` 会记录请求的缺口层、新增证据数和新增 evidence ID。
+
 实现层证据会从 Git tree 中限量抽取：
 
 - 核心源码入口：`src`、`lib`、`packages`、`pkg`、`crates` 等目录中的主要源码文件
@@ -236,4 +240,4 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 ## 下一步
 
-- 把 claim gap report 接入更细的 evidence acquisition loop：按缺口类型自动扩大源码、测试、benchmark、配置、issue/PR 或 release 采样范围
+- 让 targeted evidence acquisition 更精准：按具体 claim 字段和关键词重排源码/测试文件候选，并把新增证据直接绑定到对应 claim 的待补层

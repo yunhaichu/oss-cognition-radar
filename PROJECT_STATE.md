@@ -22,6 +22,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Implementation-layer evidence: deep mode now samples source entrypoints, tests, benchmarks, and configuration files from the Git tree, then emits an `实现层复核线索` claim so high-level judgments can be checked against code artifacts.
 - Claim support coverage: each claim now records whether its direct evidence is narrative-only, collaboration/release backed, configuration backed, source backed, validation backed, or source-plus-validation backed; the field is exported to JSON, SQLite, archive search, Markdown, and the dashboard.
 - Claim gap report: deep payloads, Markdown reports, archive show, and the dashboard now rank high-value claims with weak support coverage and recommend the next evidence layer to collect.
+- Targeted evidence acquisition: deep mode now runs a second evidence pass based on the initial claim gap report, expanding source, test, benchmark, configuration, release, issue, and PR samples before rebuilding final claims.
 - Repository health: captures 180d merged PR / closed issue counts, open PRs, release sample cadence, and top contributor samples.
 - Track scoring: classifies projects as agent, developer tools, local-first, protocol, or general, then applies track-specific weights across momentum, collaboration, release, governance, evidence, and ecosystem signals.
 - Archive queries: `--archive-list`, `--archive-search TEXT`, and `--archive-show owner/name` query persisted SQLite snapshots locally, with track and minimum track score filters plus optional Markdown/JSON export.
@@ -37,7 +38,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Evidence type/polarity classification is rule-based and can still misclassify domain-specific wording.
 - Implementation-layer file selection is heuristic and may miss the true core module in unusual repository layouts.
 - Support coverage only reflects evidence currently linked to each claim; it does not yet auto-search for missing source/test proof.
-- Claim gap report is derived from current claim/evidence links and heuristic field weights; it does not yet trigger targeted follow-up collection.
+- Targeted acquisition is still heuristic and layer-level; it does not yet rank source/test files by the exact claim text that caused the gap.
 - Star growth depends on repeated snapshots; fresh databases correctly show insufficient history.
 - Repository health release/contributor fields are first-pass API samples, not complete longitudinal analytics.
 - Track classification is heuristic and should be refined with manually reviewed samples.
@@ -49,4 +50,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Connect the claim gap report to a targeted evidence acquisition loop that expands source, test, benchmark, configuration, issue/PR, or release sampling based on each gap type.
+Improve targeted evidence acquisition by ranking candidate files and collaboration artifacts against the exact claim field, missing layer, and claim keywords, then binding added evidence more directly to the claim it was collected for.
