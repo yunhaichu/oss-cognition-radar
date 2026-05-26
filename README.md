@@ -196,7 +196,7 @@ SQLite 当前会保存：
 - `--archive-search TEXT`：用 SQLite FTS5 搜索 repository 元数据、claims、claim gaps、evidence acquisition bindings 和 evidence 文本，并返回 relevance 信息
 - `--archive-show owner/name`：优先展示最新 deep dossier，没有 deep 快照时回退到最新 discovery 快照
 - `--archive-patterns`：聚合最新 deep dossiers 中的 evidence acquisition bindings，按 claim 字段和缺口证据层输出跨项目重复模式、例子仓库和 evidence
-- `--archive-dashboard [PATH]`：生成一个可直接打开的静态 HTML dashboard，包含搜索、track 过滤、最低分过滤、项目详情、claims、claim gaps、evidence acquisition bindings 和 evidence 摘要
+- `--archive-dashboard [PATH]`：生成一个可直接打开的静态 HTML dashboard，包含搜索、track 过滤、最低分过滤、跨项目 patterns、项目详情、claims、claim gaps、evidence acquisition bindings 和 evidence 摘要
 
 `star_growth` 只有在数据库里存在对应窗口附近的历史快照时才会显示真实增量；否则会标记为 `insufficient history`。当前匹配窗口为：1d 使用 1–2 天前快照，7d 使用 7–10 天前快照，30d 使用 30–45 天前快照。这避免把几分钟前的重复运行或过旧快照误当作 1 天增长。
 
@@ -225,6 +225,13 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 深度模式现在会执行两阶段采样：先用初始 evidence 生成 claims 和 gap report，再根据具体 claim 字段、缺口层和 claim 关键词重排候选源码、测试、benchmark、配置、release、issue/PR，最后用扩展后的 evidence 重建 claims。`evidence_acquisition` 会记录请求的缺口层、新增证据数、新增 evidence ID、目标 claim 字段和 evidence-to-claim bindings；这些绑定会写入 SQLite，并在 `--archive-show` 与 dashboard 中显示每条新增证据补强了哪个 claim gap。
 
+每条 acquisition binding 现在还会带第一版 `binding_confidence`：
+
+- `score`：0–100 的启发式可靠度分数
+- `label`：`low`、`medium` 或 `high`
+- `calibration`：当前为 `heuristic_v1`，用于后续人工校准时区分来源
+- `signals`：分数来自哪些可解释信号，例如是否命中目标缺口层、证据层是否匹配、关键词命中和是否有稳定 artifact URL
+
 实现层证据会从 Git tree 中限量抽取：
 
 - 核心源码入口：`src`、`lib`、`packages`、`pkg`、`crates` 等目录中的主要源码文件
@@ -248,4 +255,4 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 ## 下一步
 
-- 把 `--archive-patterns` 的跨项目模式接入 dashboard，并开始加入手工校准过的 binding confidence
+- 加入人工校准入口，让 archive 中的 binding confidence 可以被人工复核并反向改进 heuristic_v1
