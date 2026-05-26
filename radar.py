@@ -881,6 +881,212 @@ def init_db(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "repository_snapshots", "track_score_json", "TEXT")
 
 
+def ensure_archive_search_schema(conn: sqlite3.Connection) -> tuple[bool, str | None]:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS archive_search_meta (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            rebuilt_at TEXT NOT NULL,
+            source_run_count INTEGER NOT NULL,
+            source_snapshot_count INTEGER NOT NULL,
+            source_claim_count INTEGER NOT NULL,
+            source_evidence_count INTEGER NOT NULL,
+            indexed_documents INTEGER NOT NULL
+        )
+        """
+    )
+    try:
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS archive_search_fts USING fts5(
+                repo_full_name UNINDEXED,
+                run_id UNINDEXED,
+                source_type UNINDEXED,
+                source_id UNINDEXED,
+                title,
+                body,
+                track,
+                track_score UNINDEXED,
+                tokenize='unicode61'
+            )
+            """
+        )
+    except sqlite3.OperationalError as exc:
+        return False, str(exc)
+    return True, None
+
+
+def archive_source_counts(conn: sqlite3.Connection) -> dict:
+    return {
+        "source_run_count": conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0],
+        "source_snapshot_count": conn.execute("SELECT COUNT(*) FROM repository_snapshots").fetchone()[0],
+        "source_claim_count": conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0],
+        "source_evidence_count": conn.execute("SELECT COUNT(*) FROM evidence_items").fetchone()[0],
+    }
+
+
+def archive_search_index_current(conn: sqlite3.Connection, counts: dict) -> bool:
+    row = conn.execute(
+        """
+        SELECT source_run_count, source_snapshot_count, source_claim_count, source_evidence_count
+        FROM archive_search_meta
+        WHERE id = 1
+        """
+    ).fetchone()
+    if not row:
+        return False
+    return (
+        row[0] == counts["source_run_count"]
+        and row[1] == counts["source_snapshot_count"]
+        and row[2] == counts["source_claim_count"]
+        and row[3] == counts["source_evidence_count"]
+    )
+
+
+def rebuild_archive_search_index(conn: sqlite3.Connection) -> dict:
+    available, reason = ensure_archive_search_schema(conn)
+    if not available:
+        return {"available": False, "backend": "like", "reason": reason, "rebuilt": False}
+
+    counts = archive_source_counts(conn)
+    if archive_search_index_current(conn, counts):
+        row = conn.execute(
+            "SELECT rebuilt_at, indexed_documents FROM archive_search_meta WHERE id = 1"
+        ).fetchone()
+        return {
+            "available": True,
+            "backend": "fts5",
+            "reason": None,
+            "rebuilt": False,
+            "rebuilt_at": row[0] if row else None,
+            "indexed_documents": row[1] if row else 0,
+            **counts,
+        }
+
+    conn.execute("DELETE FROM archive_search_fts")
+    indexed_documents = 0
+
+    repo_rows = conn.execute(
+        """
+        SELECT s.run_id, s.full_name, s.description, s.language, s.topics_json,
+               s.fake_star_risk, s.project_track, s.track_score, r.mode
+        FROM repository_snapshots s
+        JOIN runs r ON r.id = s.run_id
+        WHERE s.run_id = (
+            SELECT s2.run_id
+            FROM repository_snapshots s2
+            JOIN runs r2 ON r2.id = s2.run_id
+            WHERE s2.full_name = s.full_name
+            ORDER BY r2.created_at DESC, s2.run_id DESC
+            LIMIT 1
+        )
+        """
+    ).fetchall()
+    for row in repo_rows:
+        run_id, full_name, description, language, topics_json, risk, track, track_score, mode = row
+        body = " ".join(
+            str(item or "")
+            for item in [
+                description,
+                language,
+                " ".join(safe_json_loads(topics_json, [])),
+                risk,
+                track,
+                mode,
+            ]
+        )
+        conn.execute(
+            """
+            INSERT INTO archive_search_fts (
+                repo_full_name, run_id, source_type, source_id, title, body, track, track_score
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (full_name, run_id, "repository", full_name, full_name, body, track, track_score),
+        )
+        indexed_documents += 1
+
+    claim_rows = conn.execute(
+        """
+        SELECT c.run_id, c.repo_full_name, COALESCE(c.claim_id, c.field), c.field,
+               c.text, c.confidence, s.project_track, s.track_score
+        FROM claims c
+        LEFT JOIN repository_snapshots s
+          ON s.run_id = c.run_id AND s.full_name = c.repo_full_name
+        """
+    ).fetchall()
+    for row in claim_rows:
+        run_id, full_name, source_id, field, text, confidence, track, track_score = row
+        conn.execute(
+            """
+            INSERT INTO archive_search_fts (
+                repo_full_name, run_id, source_type, source_id, title, body, track, track_score
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (full_name, run_id, "claim", source_id, field, f"{text} {confidence}", track, track_score),
+        )
+        indexed_documents += 1
+
+    evidence_rows = conn.execute(
+        """
+        SELECT e.run_id, e.repo_full_name, COALESCE(e.stable_id, e.evidence_id), e.kind,
+               e.title, e.quote, s.project_track, s.track_score
+        FROM evidence_items e
+        LEFT JOIN repository_snapshots s
+          ON s.run_id = e.run_id AND s.full_name = e.repo_full_name
+        """
+    ).fetchall()
+    for row in evidence_rows:
+        run_id, full_name, source_id, kind, title, quote, track, track_score = row
+        conn.execute(
+            """
+            INSERT INTO archive_search_fts (
+                repo_full_name, run_id, source_type, source_id, title, body, track, track_score
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (full_name, run_id, "evidence", source_id, f"{kind} - {title}", quote, track, track_score),
+        )
+        indexed_documents += 1
+
+    rebuilt_at = utc_now().isoformat()
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO archive_search_meta (
+            id, rebuilt_at, source_run_count, source_snapshot_count,
+            source_claim_count, source_evidence_count, indexed_documents
+        ) VALUES (1, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            rebuilt_at,
+            counts["source_run_count"],
+            counts["source_snapshot_count"],
+            counts["source_claim_count"],
+            counts["source_evidence_count"],
+            indexed_documents,
+        ),
+    )
+    return {
+        "available": True,
+        "backend": "fts5",
+        "reason": None,
+        "rebuilt": True,
+        "rebuilt_at": rebuilt_at,
+        "indexed_documents": indexed_documents,
+        **counts,
+    }
+
+
+def fts_query_from_user(query: str) -> str:
+    terms = re.findall(r"[\w\u0080-\uffff][\w\u0080-\uffff./:@+-]*", query, flags=re.UNICODE)
+    if not terms:
+        terms = [query.strip()]
+    quoted = []
+    for term in terms:
+        cleaned = term.strip().replace('"', '""')
+        if cleaned:
+            quoted.append(f'"{cleaned}"')
+    return " OR ".join(quoted) if quoted else '""'
+
+
 def empty_star_growth() -> dict:
     return {
         label: {
@@ -1052,6 +1258,7 @@ def persist_deep_snapshot(db_path: str, payload: dict) -> int:
                     item["confidence"],
                 ),
             )
+        rebuild_archive_search_index(conn)
         conn.commit()
         return run_id
 
@@ -1074,6 +1281,7 @@ def persist_discovery_snapshot(db_path: str, payload: dict) -> int:
         for summary in payload["repositories"]:
             insert_repo_snapshot(conn, run_id, summary)
             insert_health_snapshot(conn, run_id, summary)
+        rebuild_archive_search_index(conn)
         conn.commit()
         return run_id
 
@@ -1178,7 +1386,99 @@ def query_latest_archive_snapshots(
     return summaries
 
 
-def query_archive_search(
+def query_archive_search_fts(
+    conn: sqlite3.Connection,
+    query: str,
+    limit: int,
+    track: str | None = None,
+    min_track_score: float = 0.0,
+) -> list[dict]:
+    fts_query = fts_query_from_user(query)
+    hit_rows = conn.execute(
+        """
+        SELECT repo_full_name, source_type, rank
+        FROM archive_search_fts
+        WHERE archive_search_fts MATCH ?
+        ORDER BY rank ASC
+        LIMIT 1000
+        """,
+        (fts_query,),
+    ).fetchall()
+    ranked: dict[str, dict] = {}
+    for row in hit_rows:
+        full_name = row["repo_full_name"]
+        item = ranked.setdefault(
+            full_name,
+            {
+                "repo_full_name": full_name,
+                "rank": row["rank"],
+                "matched_documents": 0,
+                "source_types": set(),
+            },
+        )
+        item["rank"] = min(item["rank"], row["rank"])
+        item["matched_documents"] += 1
+        item["source_types"].add(row["source_type"])
+
+    if not ranked:
+        return []
+
+    placeholders = ",".join("?" for _ in ranked)
+    rows = conn.execute(
+        f"""
+        SELECT s.*, r.id AS run_id, r.created_at AS run_created_at, r.mode AS run_mode,
+               s.full_name AS ranked_full_name
+        FROM repository_snapshots s
+        JOIN runs r ON r.id = s.run_id
+        WHERE s.full_name IN ({placeholders})
+        AND s.run_id = (
+            SELECT s2.run_id
+            FROM repository_snapshots s2
+            JOIN runs r2 ON r2.id = s2.run_id
+            WHERE s2.full_name = s.full_name
+            ORDER BY r2.created_at DESC, s2.run_id DESC
+            LIMIT 1
+        )
+        AND (? IS NULL OR s.project_track = ?)
+        AND (? <= 0 OR COALESCE(s.track_score, 0) >= ?)
+        """,
+        (*ranked.keys(), track, track, min_track_score, min_track_score),
+    ).fetchall()
+
+    sorted_rows = sorted(
+        rows,
+        key=lambda row: (
+            ranked[row["ranked_full_name"]]["rank"],
+            -(row["track_score"] or 0),
+            -(row["stars"] or 0),
+        ),
+    )[: max(limit, 1)]
+
+    entries = []
+    for row in sorted_rows:
+        summary = row_to_archive_summary(row)
+        summary["health"] = load_archive_health(conn, summary["run_id"], summary["full_name"])
+        info = ranked[summary["full_name"]]
+        source_types = sorted(info["source_types"])
+        entries.append(
+            {
+                "repository": summary,
+                "relevance": {
+                    "backend": "fts5",
+                    "score": round(max(0.0, -float(info["rank"] or 0.0)), 6),
+                    "rank": info["rank"],
+                    "matched_documents": info["matched_documents"],
+                    "source_types": source_types,
+                    "query": fts_query,
+                },
+                "matched_claims": query_archive_claim_matches(conn, summary["full_name"], query, backend="fts5"),
+                "matched_evidence": query_archive_evidence_matches(conn, summary["full_name"], query, backend="fts5"),
+            }
+        )
+    return entries
+
+
+def query_archive_search_like(
     conn: sqlite3.Connection,
     query: str,
     limit: int,
@@ -1243,11 +1543,38 @@ def query_archive_search(
         entries.append(
             {
                 "repository": summary,
+                "relevance": {
+                    "backend": "like",
+                    "score": None,
+                    "rank": None,
+                    "matched_documents": None,
+                    "source_types": [],
+                    "query": query,
+                },
                 "matched_claims": query_archive_claim_matches(conn, summary["full_name"], query),
                 "matched_evidence": query_archive_evidence_matches(conn, summary["full_name"], query),
             }
         )
     return entries
+
+
+def query_archive_search(
+    conn: sqlite3.Connection,
+    query: str,
+    limit: int,
+    track: str | None = None,
+    min_track_score: float = 0.0,
+    index_status: dict | None = None,
+) -> list[dict]:
+    status = index_status or rebuild_archive_search_index(conn)
+    if status.get("available"):
+        try:
+            results = query_archive_search_fts(conn, query, limit, track, min_track_score)
+            if results:
+                return results
+        except sqlite3.Error:
+            return query_archive_search_like(conn, query, limit, track, min_track_score)
+    return query_archive_search_like(conn, query, limit, track, min_track_score)
 
 
 def query_archive_show(conn: sqlite3.Connection, full_name: str) -> dict | None:
@@ -1333,7 +1660,44 @@ def query_archive_evidence(conn: sqlite3.Connection, run_id: int, full_name: str
     ]
 
 
-def query_archive_claim_matches(conn: sqlite3.Connection, full_name: str, query: str, limit: int = 3) -> list[dict]:
+def query_archive_claim_matches(
+    conn: sqlite3.Connection,
+    full_name: str,
+    query: str,
+    limit: int = 3,
+    backend: str = "like",
+) -> list[dict]:
+    if backend == "fts5":
+        fts_query = fts_query_from_user(query)
+        rows = conn.execute(
+            """
+            SELECT c.run_id, c.claim_id, c.field, c.text, c.confidence,
+                   archive_search_fts.rank AS relevance_rank
+            FROM archive_search_fts
+            JOIN claims c
+              ON c.run_id = archive_search_fts.run_id
+             AND c.repo_full_name = archive_search_fts.repo_full_name
+             AND COALESCE(c.claim_id, c.field) = archive_search_fts.source_id
+            WHERE archive_search_fts MATCH ?
+              AND archive_search_fts.repo_full_name = ?
+              AND archive_search_fts.source_type = 'claim'
+            ORDER BY rank ASC, c.run_id DESC
+            LIMIT ?
+            """,
+            (fts_query, full_name, limit),
+        ).fetchall()
+        return [
+            {
+                "run_id": row["run_id"],
+                "claim_id": row["claim_id"],
+                "field": row["field"],
+                "text": row["text"],
+                "confidence": row["confidence"],
+                "relevance": {"backend": "fts5", "score": round(max(0.0, -float(row["relevance_rank"] or 0.0)), 6)},
+            }
+            for row in rows
+        ]
+
     like = f"%{query.lower()}%"
     rows = conn.execute(
         """
@@ -1353,12 +1717,52 @@ def query_archive_claim_matches(conn: sqlite3.Connection, full_name: str, query:
             "field": row["field"],
             "text": row["text"],
             "confidence": row["confidence"],
+            "relevance": {"backend": "like", "score": None},
         }
         for row in rows
     ]
 
 
-def query_archive_evidence_matches(conn: sqlite3.Connection, full_name: str, query: str, limit: int = 3) -> list[dict]:
+def query_archive_evidence_matches(
+    conn: sqlite3.Connection,
+    full_name: str,
+    query: str,
+    limit: int = 3,
+    backend: str = "like",
+) -> list[dict]:
+    if backend == "fts5":
+        fts_query = fts_query_from_user(query)
+        rows = conn.execute(
+            """
+            SELECT e.run_id, e.evidence_id, e.stable_id, e.kind, e.title, e.url, e.quote,
+                   archive_search_fts.rank AS relevance_rank
+            FROM archive_search_fts
+            JOIN evidence_items e
+              ON e.run_id = archive_search_fts.run_id
+             AND e.repo_full_name = archive_search_fts.repo_full_name
+             AND COALESCE(e.stable_id, e.evidence_id) = archive_search_fts.source_id
+            WHERE archive_search_fts MATCH ?
+              AND archive_search_fts.repo_full_name = ?
+              AND archive_search_fts.source_type = 'evidence'
+            ORDER BY rank ASC, e.run_id DESC
+            LIMIT ?
+            """,
+            (fts_query, full_name, limit),
+        ).fetchall()
+        return [
+            {
+                "run_id": row["run_id"],
+                "evidence_id": row["evidence_id"],
+                "stable_id": row["stable_id"],
+                "kind": row["kind"],
+                "title": row["title"],
+                "url": row["url"],
+                "quote": row["quote"],
+                "relevance": {"backend": "fts5", "score": round(max(0.0, -float(row["relevance_rank"] or 0.0)), 6)},
+            }
+            for row in rows
+        ]
+
     like = f"%{query.lower()}%"
     rows = conn.execute(
         """
@@ -1380,6 +1784,7 @@ def query_archive_evidence_matches(conn: sqlite3.Connection, full_name: str, que
             "title": row["title"],
             "url": row["url"],
             "quote": row["quote"],
+            "relevance": {"backend": "like", "score": None},
         }
         for row in rows
     ]
@@ -1421,6 +1826,7 @@ def archive_list_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> 
 
 def archive_search_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
     query = args.archive_search.strip()
+    index_status = rebuild_archive_search_index(conn)
     return {
         "schema_version": 1,
         "mode": "archive_search",
@@ -1428,12 +1834,14 @@ def archive_search_payload(conn: sqlite3.Connection, args: argparse.Namespace) -
         "db": args.db,
         "query": query,
         "filters": archive_filters_payload(args),
+        "search_index": index_status,
         "matches": query_archive_search(
             conn,
             query,
             args.limit,
             track=args.archive_track,
             min_track_score=args.min_track_score,
+            index_status=index_status,
         ),
     }
 
@@ -1455,6 +1863,7 @@ def archive_show_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> 
 
 
 def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
+    index_status = rebuild_archive_search_index(conn)
     repositories = query_latest_archive_snapshots(
         conn,
         args.limit,
@@ -1488,6 +1897,7 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
         "generated_at": utc_now().isoformat(),
         "db": args.db,
         "filters": archive_filters_payload(args),
+        "search_index": index_status,
         "statistics": {
             "repositories": len(repositories),
             "deep_dossiers": sum(1 for item in dossiers.values() if item["claims"] or item["evidence"]),
@@ -1963,14 +2373,38 @@ def render_archive_dashboard(payload: dict) -> str:
       return parts.filter(Boolean).join(" ").toLowerCase();
     }
 
+    function relevanceOf(repo, query) {
+      const terms = query.trim().toLowerCase().split(/\\s+/).filter(Boolean);
+      if (!terms.length) return 0;
+      const dossier = dossierOf(repo);
+      const sources = [
+        { weight: 8, text: repo.full_name },
+        { weight: 5, text: repo.description },
+        { weight: 3, text: (repo.topics || []).join(" ") },
+        { weight: 3, text: (dossier.claims || []).map((item) => `${item.field} ${item.text}`).join(" ") },
+        { weight: 2, text: (dossier.evidence || []).map((item) => `${item.kind} ${item.title} ${item.quote}`).join(" ") },
+      ];
+      return sources.reduce((score, source) => {
+        const text = String(source.text || "").toLowerCase();
+        return score + terms.reduce((inner, term) => inner + (text.includes(term) ? source.weight : 0), 0);
+      }, 0);
+    }
+
     function filteredRepos() {
       const query = state.query.trim().toLowerCase();
-      return repos.filter((repo) => {
+      const items = repos.filter((repo) => {
         if (state.track !== "all" && trackOf(repo) !== state.track) return false;
         if (scoreOf(repo) < state.minScore) return false;
         if (query && !corpusOf(repo).includes(query)) return false;
         return true;
       });
+      if (query) {
+        return items
+          .map((repo) => ({ repo, relevance: relevanceOf(repo, query) }))
+          .sort((a, b) => b.relevance - a.relevance || scoreOf(b.repo) - scoreOf(a.repo))
+          .map((item) => ({ ...item.repo, client_relevance: item.relevance }));
+      }
+      return items;
     }
 
     function renderTrackOptions() {
@@ -2043,6 +2477,7 @@ def render_archive_dashboard(payload: dict) -> str:
             <div class="chips">
               <span class="chip track">${escapeHtml(trackOf(repo))}</span>
               <span class="chip">${escapeHtml(repo.language || "Unknown")}</span>
+              ${repo.client_relevance ? `<span class="chip">Relevance ${escapeHtml(repo.client_relevance)}</span>` : ""}
               <span class="chip ${riskClass(repo)}">${escapeHtml((repo.fake_star_risk || "unknown").split("：")[0])}</span>
             </div>
             <div class="score-line">
@@ -2237,13 +2672,26 @@ def render_archive_search(payload: dict) -> str:
         f"- 数据库：{payload['db']}",
         f"- 查询：{payload['query']}",
         f"- 结果数：{len(payload['matches'])}",
+        f"- Search backend：{(payload.get('search_index') or {}).get('backend', 'unknown')}",
+        f"- Indexed documents：{(payload.get('search_index') or {}).get('indexed_documents', 'unknown')}",
         f"- Track 过滤：{payload['filters'].get('track') or '无'}",
         f"- 最低 track score：{payload['filters'].get('min_track_score') or 0}",
         "",
     ]
     for index, entry in enumerate(payload["matches"], 1):
         summary = entry["repository"]
+        relevance = entry.get("relevance") or {}
+        source_types = ", ".join(relevance.get("source_types") or []) or "unknown"
         lines.extend([f"## {index}. {summary['full_name']}", ""])
+        lines.extend(
+            [
+                f"- Relevance backend：{relevance.get('backend', 'unknown')}",
+                f"- Relevance score：{relevance.get('score') if relevance.get('score') is not None else 'unranked'}",
+                f"- Matched documents：{relevance.get('matched_documents') or 'unknown'}",
+                f"- Matched source types：{source_types}",
+                "",
+            ]
+        )
         lines.extend(render_archive_repo_brief(summary, payload["db"]))
         lines.append("")
         if entry["matched_claims"]:

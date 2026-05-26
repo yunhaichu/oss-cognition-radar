@@ -21,6 +21,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Repository health: captures 180d merged PR / closed issue counts, open PRs, release sample cadence, and top contributor samples.
 - Track scoring: classifies projects as agent, developer tools, local-first, protocol, or general, then applies track-specific weights across momentum, collaboration, release, governance, evidence, and ecosystem signals.
 - Archive queries: `--archive-list`, `--archive-search TEXT`, and `--archive-show owner/name` query persisted SQLite snapshots locally, with track and minimum track score filters plus optional Markdown/JSON export.
+- FTS archive search: `--archive-search TEXT` now maintains a derived SQLite FTS5 index over repository metadata, claims, and evidence; it returns relevance backend, score, matched document count, and matched source types, with a LIKE fallback if FTS5 is unavailable or misses Chinese substrings.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -32,8 +33,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Star growth depends on repeated snapshots; fresh databases correctly show insufficient history.
 - Repository health release/contributor fields are first-pass API samples, not complete longitudinal analytics.
 - Track classification is heuristic and should be refined with manually reviewed samples.
-- Archive search uses SQLite `LIKE` over stored metadata/claims/evidence; it is not full-text indexed yet.
-- Dashboard search is currently client-side substring matching over exported JSON, not ranked retrieval.
+- Dashboard search is currently client-side weighted matching over exported JSON; CLI archive search uses SQLite FTS5 ranking.
 
 ## Release Policy
 
@@ -41,4 +41,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add SQLite FTS indexes and ranked archive search so CLI search and dashboard filtering can share a more explainable relevance model.
+Improve claim/evidence extraction quality with finer evidence types, stronger claim templates, and negative/boundary evidence so dossiers carry less heuristic noise.

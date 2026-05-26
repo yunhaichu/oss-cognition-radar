@@ -66,6 +66,8 @@ python3 radar.py --archive-list --db data/radar.sqlite --limit 20
 python3 radar.py --archive-search durable --db data/radar.sqlite --limit 10
 ```
 
+`--archive-search` 会按需维护 SQLite FTS5 搜索索引，并输出 relevance backend、score、命中的文档数量和 source types。若运行环境不支持 FTS5，或 FTS5 对中文片段没有命中，会自动回退到原来的 `LIKE` 搜索。
+
 ```bash
 python3 radar.py --archive-show langchain-ai/langgraph --db data/radar.sqlite
 ```
@@ -162,11 +164,13 @@ SQLite 当前会保存：
 - `repository_health_snapshots`
 - `evidence_items`
 - `claims`
+- `archive_search_fts`
+- `archive_search_meta`
 
-归档模式会基于这些表提供三类本地查询：
+归档模式会基于这些表提供四类本地查询：
 
 - `--archive-list`：按最新快照列出已归档项目，支持 track 和最低 track score 过滤
-- `--archive-search TEXT`：搜索 repository 元数据、claims 和 evidence 文本
+- `--archive-search TEXT`：用 SQLite FTS5 搜索 repository 元数据、claims 和 evidence 文本，并返回 relevance 信息
 - `--archive-show owner/name`：优先展示最新 deep dossier，没有 deep 快照时回退到最新 discovery 快照
 - `--archive-dashboard [PATH]`：生成一个可直接打开的静态 HTML dashboard，包含搜索、track 过滤、最低分过滤、项目详情、claims 和 evidence 摘要
 
@@ -192,4 +196,4 @@ SQLite 当前会保存：
 
 ## 下一步
 
-- 为 archive search 增加 SQLite FTS 索引，并把 dashboard 的结果排序从简单包含匹配升级为可解释的 relevance score
+- 提升 claim/evidence 抽取质量：引入更细的证据类型、claim 模板和负面/边界证据，减少 dossier 里的启发式噪声
