@@ -31,7 +31,7 @@ MAX_TEXT_CHARS = 5000
 MAX_IMPLEMENTATION_FILE_SIZE = 120_000
 GROWTH_WINDOWS = {"1d": 1, "7d": 7, "30d": 30}
 GROWTH_MAX_AGE_DAYS = {"1d": 2, "7d": 10, "30d": 45}
-ARCHIVE_SEARCH_INDEX_VERSION = 3
+ARCHIVE_SEARCH_INDEX_VERSION = 5
 SOURCE_EXTENSIONS = {
     ".py",
     ".ts",
@@ -960,6 +960,137 @@ def support_coverage_text(coverage: dict | None) -> str:
     return f"{label}（{layer_text}）"
 
 
+CLAIM_GAP_FIELD_WEIGHTS = {
+    "关键抽象": 100,
+    "复杂度藏处": 95,
+    "作者如何重新定义问题": 90,
+    "架构边界": 85,
+    "治理模式": 75,
+    "可复用思想": 70,
+    "不可复制条件": 60,
+    "实现层复核线索": 50,
+    "领域": 35,
+}
+CLAIM_GAP_LEVEL_WEIGHTS = {
+    "no_direct_evidence": 100,
+    "narrative_only": 90,
+    "engineering_trace": 70,
+    "configuration_backed": 60,
+    "validation_backed": 45,
+    "source_backed": 35,
+    "source_and_validation": 0,
+}
+CLAIM_GAP_TARGET_LAYERS = {
+    "作者如何重新定义问题": ["source", "tests", "release"],
+    "关键抽象": ["source", "tests", "benchmarks"],
+    "架构边界": ["source", "tests", "configuration"],
+    "复杂度藏处": ["source", "tests", "benchmarks"],
+    "治理模式": ["configuration", "collaboration"],
+    "可复用思想": ["source", "tests", "collaboration"],
+    "不可复制条件": ["collaboration", "release"],
+    "实现层复核线索": ["source", "tests", "benchmarks", "configuration"],
+    "领域": ["source"],
+}
+CLAIM_GAP_RECOMMENDATIONS = {
+    "source": "补核心源码入口、公共 API 或架构模块证据",
+    "tests": "补单元/集成/端到端测试证据，确认抽象是否被验证",
+    "benchmarks": "补 benchmark 或性能测试证据，确认复杂度与性能判断",
+    "configuration": "补配置、CI、package metadata 或部署文件证据",
+    "collaboration": "补 issue/PR 讨论证据，确认用户摩擦和维护者取舍",
+    "release": "补 release/changelog 证据，确认判断是否进入真实演进轨迹",
+    "narrative": "补 README/docs 之外的工程证据，避免只引用项目自述",
+}
+CLAIM_GAP_REASONS = {
+    "no_direct_evidence": "该判断缺少直接 evidence 引用，当前不可复核。",
+    "narrative_only": "该判断主要由叙事材料支撑，容易把项目自述误当作实现事实。",
+    "engineering_trace": "该判断已有协作或发布痕迹，但还缺少可读源码/测试层复核。",
+    "configuration_backed": "该判断已有配置面证据，但还缺少源码或测试证明实际行为。",
+    "validation_backed": "该判断已有测试或 benchmark 证据，但还缺少对应源码入口来解释机制。",
+    "source_backed": "该判断已有源码证据，但还缺少测试或 benchmark 来确认行为边界。",
+    "source_and_validation": "该判断已覆盖源码和验证层，暂不属于高优先级 gap。",
+}
+
+
+def claim_value(claim: Claim | dict, key: str, default=None):
+    if isinstance(claim, dict):
+        return claim.get(key, default)
+    return getattr(claim, key, default)
+
+
+def normalize_support_coverage(coverage: dict | None) -> dict:
+    coverage = coverage or {}
+    level = coverage.get("level") or "no_direct_evidence"
+    score = coverage.get("score", 0)
+    if not isinstance(score, (int, float)):
+        score = 0
+    layers = coverage.get("layers") or []
+    layer_labels = coverage.get("layer_labels") or [
+        SUPPORT_LAYER_LABELS.get(layer, layer) for layer in layers
+    ]
+    return {
+        **coverage,
+        "level": level,
+        "label": coverage.get("label") or SUPPORT_LEVEL_LABELS.get(level, level),
+        "score": int(score),
+        "layers": layers,
+        "layer_labels": layer_labels,
+    }
+
+
+def target_layers_for_claim(field: str) -> list[str]:
+    return CLAIM_GAP_TARGET_LAYERS.get(field, ["source", "tests"])
+
+
+def claim_gap_recommendation(missing_layers: list[str]) -> str:
+    if not missing_layers:
+        return "当前 direct evidence 已覆盖核心实现与验证层，保留人工复核即可。"
+    return "；".join(CLAIM_GAP_RECOMMENDATIONS.get(layer, layer) for layer in missing_layers[:3])
+
+
+def build_claim_gap_report(claims: list[Claim] | list[dict], limit: int = 8) -> list[dict]:
+    gaps = []
+    for claim in claims:
+        field = str(claim_value(claim, "field", ""))
+        coverage = normalize_support_coverage(claim_value(claim, "support_coverage", {}))
+        level = coverage["level"]
+        if level == "source_and_validation" and coverage["score"] >= 80:
+            continue
+
+        current_layers = set(coverage["layers"])
+        target_layers = target_layers_for_claim(field)
+        missing_layers = [layer for layer in target_layers if layer not in current_layers]
+        if not missing_layers and level != "source_and_validation":
+            missing_layers = [layer for layer in ("source", "tests") if layer not in current_layers]
+
+        confidence = str(claim_value(claim, "confidence", "low") or "low")
+        confidence_bonus = {"high": 10, "medium": 5}.get(confidence, 0)
+        field_weight = CLAIM_GAP_FIELD_WEIGHTS.get(field, 55)
+        weakness = CLAIM_GAP_LEVEL_WEIGHTS.get(level, 50)
+        priority_score = min(100, round(field_weight * 0.55 + weakness * 0.35 + confidence_bonus))
+        gaps.append(
+            {
+                "claim_id": claim_value(claim, "claim_id", ""),
+                "field": field,
+                "confidence": confidence,
+                "support_level": level,
+                "support_label": coverage["label"],
+                "support_score": coverage["score"],
+                "current_layers": coverage["layers"],
+                "current_layer_labels": coverage["layer_labels"],
+                "target_layers": target_layers,
+                "target_layer_labels": [SUPPORT_LAYER_LABELS.get(layer, layer) for layer in target_layers],
+                "missing_layers": missing_layers,
+                "missing_layer_labels": [SUPPORT_LAYER_LABELS.get(layer, layer) for layer in missing_layers],
+                "priority_score": priority_score,
+                "gap_reason": CLAIM_GAP_REASONS.get(level, "该判断需要补充更强的工程证据。"),
+                "recommendation": claim_gap_recommendation(missing_layers),
+                "evidence_ids": claim_value(claim, "evidence_ids", []) or [],
+            }
+        )
+    gaps.sort(key=lambda item: (-item["priority_score"], item["support_score"], item["field"]))
+    return gaps[:limit]
+
+
 def make_claim(
     field: str,
     text: str,
@@ -1377,6 +1508,7 @@ def build_deep_payload(repo: dict, evidence: list[Evidence], claims: list[Claim]
         "method_boundary": "Only public GitHub engineering artifacts are used to infer observable, reviewable, transferable cognition/design/governance patterns.",
         "repository": summary,
         "claims": [claim_to_dict(item, evidence_map) for item in claims],
+        "claim_gap_report": build_claim_gap_report(claims),
         "evidence": [evidence_to_dict(item) for item in evidence],
     }
 
@@ -1633,14 +1765,28 @@ def rebuild_archive_search_index(conn: sqlite3.Connection) -> dict:
         """
         SELECT c.run_id, c.repo_full_name, COALESCE(c.claim_id, c.field), c.field,
                c.text, c.confidence, c.template, c.rationale, c.support_coverage_json,
-               s.project_track, s.track_score
+               c.evidence_ids_json, s.project_track, s.track_score
         FROM claims c
         LEFT JOIN repository_snapshots s
           ON s.run_id = c.run_id AND s.full_name = c.repo_full_name
         """
     ).fetchall()
+    claims_by_snapshot: dict[tuple[int, str, str | None, float | None], list[dict]] = {}
     for row in claim_rows:
-        run_id, full_name, source_id, field, text, confidence, template, rationale, coverage_json, track, track_score = row
+        (
+            run_id,
+            full_name,
+            source_id,
+            field,
+            text,
+            confidence,
+            template,
+            rationale,
+            coverage_json,
+            evidence_ids_json,
+            track,
+            track_score,
+        ) = row
         coverage = safe_json_loads(coverage_json, {})
         coverage_terms = " ".join(
             str(item or "")
@@ -1670,6 +1816,51 @@ def rebuild_archive_search_index(conn: sqlite3.Connection) -> dict:
             ),
         )
         indexed_documents += 1
+        claims_by_snapshot.setdefault((run_id, full_name, track, track_score), []).append(
+            {
+                "claim_id": source_id,
+                "field": field,
+                "text": text,
+                "confidence": confidence,
+                "support_coverage": coverage,
+                "evidence_ids": safe_json_loads(evidence_ids_json, []),
+            }
+        )
+
+    for (run_id, full_name, track, track_score), claim_group in claims_by_snapshot.items():
+        for item in build_claim_gap_report(claim_group):
+            body = " ".join(
+                str(value or "")
+                for value in [
+                    "claim_gap",
+                    item.get("support_level"),
+                    item.get("support_label"),
+                    item.get("gap_reason"),
+                    item.get("recommendation"),
+                    " ".join(item.get("missing_layers") or []),
+                    " ".join(item.get("missing_layer_labels") or []),
+                    " ".join(item.get("current_layers") or []),
+                    " ".join(item.get("current_layer_labels") or []),
+                ]
+            )
+            conn.execute(
+                """
+                INSERT INTO archive_search_fts (
+                    repo_full_name, run_id, source_type, source_id, title, body, track, track_score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    full_name,
+                    run_id,
+                    "claim_gap",
+                    item.get("claim_id") or item.get("field"),
+                    f"Gap - {item.get('field')}",
+                    body,
+                    track,
+                    track_score,
+                ),
+            )
+            indexed_documents += 1
 
     evidence_rows = conn.execute(
         """
@@ -2141,6 +2332,7 @@ def query_archive_search_fts(
                     "query": fts_query,
                 },
                 "matched_claims": query_archive_claim_matches(conn, summary["full_name"], query, backend="fts5"),
+                "matched_gaps": query_archive_gap_matches(conn, summary["full_name"], query, backend="fts5"),
                 "matched_evidence": query_archive_evidence_matches(conn, summary["full_name"], query, backend="fts5"),
             }
         )
@@ -2221,6 +2413,7 @@ def query_archive_search_like(
                     "query": query,
                 },
                 "matched_claims": query_archive_claim_matches(conn, summary["full_name"], query),
+                "matched_gaps": query_archive_gap_matches(conn, summary["full_name"], query),
                 "matched_evidence": query_archive_evidence_matches(conn, summary["full_name"], query),
             }
         )
@@ -2263,9 +2456,11 @@ def query_archive_show(conn: sqlite3.Connection, full_name: str) -> dict | None:
         return None
     summary = row_to_archive_summary(row)
     summary["health"] = load_archive_health(conn, summary["run_id"], summary["full_name"])
+    claims = query_archive_claims(conn, summary["run_id"], summary["full_name"])
     return {
         "repository": summary,
-        "claims": query_archive_claims(conn, summary["run_id"], summary["full_name"]),
+        "claims": claims,
+        "claim_gap_report": build_claim_gap_report(claims),
         "evidence": query_archive_evidence(conn, summary["run_id"], summary["full_name"]),
     }
 
@@ -2407,6 +2602,67 @@ def query_archive_claim_matches(
         }
         for row in rows
     ]
+
+
+def query_archive_gap_matches(
+    conn: sqlite3.Connection,
+    full_name: str,
+    query: str,
+    limit: int = 3,
+    backend: str = "like",
+) -> list[dict]:
+    if backend == "fts5":
+        fts_query = fts_query_from_user(query)
+        rows = conn.execute(
+            """
+            SELECT run_id, source_id, title, body, archive_search_fts.rank AS relevance_rank
+            FROM archive_search_fts
+            WHERE archive_search_fts MATCH ?
+              AND repo_full_name = ?
+              AND source_type = 'claim_gap'
+            ORDER BY rank ASC, run_id DESC
+            LIMIT ?
+            """,
+            (fts_query, full_name, limit),
+        ).fetchall()
+        return [
+            {
+                "run_id": row["run_id"],
+                "source_id": row["source_id"],
+                "field": (row["title"] or "").removeprefix("Gap - "),
+                "text": row["body"],
+                "relevance": {"backend": "fts5", "score": round(max(0.0, -float(row["relevance_rank"] or 0.0)), 6)},
+            }
+            for row in rows
+        ]
+
+    dossier = query_archive_show(conn, full_name) or {}
+    query_lower = query.lower()
+    matches = []
+    for item in dossier.get("claim_gap_report") or []:
+        body = " ".join(
+            str(value or "")
+            for value in [
+                item.get("field"),
+                item.get("support_level"),
+                item.get("support_label"),
+                item.get("gap_reason"),
+                item.get("recommendation"),
+                " ".join(item.get("missing_layers") or []),
+                " ".join(item.get("missing_layer_labels") or []),
+            ]
+        )
+        if query_lower in body.lower():
+            matches.append(
+                {
+                    "run_id": (dossier.get("repository") or {}).get("run_id"),
+                    "source_id": item.get("claim_id") or item.get("field"),
+                    "field": item.get("field"),
+                    "text": body,
+                    "relevance": {"backend": "like", "score": None},
+                }
+            )
+    return matches[:limit]
 
 
 def query_archive_evidence_matches(
@@ -2569,6 +2825,7 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
         dossier = query_archive_show(conn, summary["full_name"]) or {}
         dossiers[summary["full_name"]] = {
             "claims": dossier.get("claims") or [],
+            "claim_gap_report": dossier.get("claim_gap_report") or [],
             "evidence": dossier.get("evidence") or [],
             "dossier_run_id": ((dossier.get("repository") or {}).get("run_id")),
             "dossier_run_created_at": ((dossier.get("repository") or {}).get("run_created_at")),
@@ -2596,6 +2853,7 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
             "repositories": len(repositories),
             "deep_dossiers": sum(1 for item in dossiers.values() if item["claims"] or item["evidence"]),
             "claims": sum(len(item["claims"]) for item in dossiers.values()),
+            "claim_gaps": sum(len(item["claim_gap_report"]) for item in dossiers.values()),
             "evidence": sum(len(item["evidence"]) for item in dossiers.values()),
             "average_track_score": round(sum(scores) / len(scores), 1) if scores else None,
             "tracks": tracks,
@@ -2730,7 +2988,7 @@ def render_archive_dashboard(payload: dict) -> str:
 
     .stats {
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(6, minmax(0, 1fr));
       gap: 10px;
       padding: 14px 24px 0;
     }
@@ -2916,7 +3174,7 @@ def render_archive_dashboard(payload: dict) -> str:
       font-size: 16px;
     }
 
-    .claims, .evidence {
+    .claims, .gaps, .evidence {
       display: grid;
       gap: 10px;
       margin-top: 16px;
@@ -3052,7 +3310,7 @@ def render_archive_dashboard(payload: dict) -> str:
     }
 
     function dossierOf(repo) {
-      return dossiers[repo.full_name] || { claims: [], evidence: [] };
+      return dossiers[repo.full_name] || { claims: [], claim_gap_report: [], evidence: [] };
     }
 
     function corpusOf(repo) {
@@ -3072,6 +3330,16 @@ def render_archive_dashboard(payload: dict) -> str:
           item.support_coverage?.summary,
           (item.support_coverage?.layers || []).join(" "),
           (item.support_coverage?.layer_labels || []).join(" "),
+        ]),
+        ...(dossier.claim_gap_report || []).flatMap((item) => [
+          "claim_gap",
+          item.field,
+          item.support_level,
+          item.support_label,
+          item.gap_reason,
+          item.recommendation,
+          (item.missing_layers || []).join(" "),
+          (item.missing_layer_labels || []).join(" "),
         ]),
         ...(dossier.evidence || []).flatMap((item) => [
           item.kind,
@@ -3099,6 +3367,12 @@ def render_archive_dashboard(payload: dict) -> str:
             const support = item.support_coverage || {};
             return `${item.field} ${item.text} ${item.template || ""} ${item.rationale || ""} ${support.level || ""} ${support.label || ""} ${support.summary || ""} ${(support.layers || []).join(" ")} ${(support.layer_labels || []).join(" ")}`;
           }).join(" "),
+        },
+        {
+          weight: 4,
+          text: (dossier.claim_gap_report || []).map((item) =>
+            `claim_gap ${item.field} ${item.support_level || ""} ${item.support_label || ""} ${item.gap_reason || ""} ${item.recommendation || ""} ${(item.missing_layers || []).join(" ")} ${(item.missing_layer_labels || []).join(" ")}`
+          ).join(" "),
         },
         { weight: 2, text: (dossier.evidence || []).map((item) => `${item.kind} ${item.title} ${item.quote} ${item.evidence_type || ""} ${item.polarity || ""} ${(item.signal_tags || []).join(" ")}`).join(" ") },
       ];
@@ -3139,6 +3413,7 @@ def render_archive_dashboard(payload: dict) -> str:
         return (dossier.claims || []).length || (dossier.evidence || []).length;
       }).length;
       const claimCount = items.reduce((sum, repo) => sum + (dossierOf(repo).claims || []).length, 0);
+      const gapCount = items.reduce((sum, repo) => sum + (dossierOf(repo).claim_gap_report || []).length, 0);
       const evidenceCount = items.reduce((sum, repo) => sum + (dossierOf(repo).evidence || []).length, 0);
       const average = items.length
         ? items.reduce((sum, repo) => sum + scoreOf(repo), 0) / items.length
@@ -3155,6 +3430,7 @@ def render_archive_dashboard(payload: dict) -> str:
         ["Repositories", items.length],
         ["Deep dossiers", deepCount],
         ["Claims", claimCount],
+        ["Claim gaps", gapCount],
         ["Evidence", evidenceCount],
         ["Avg score", average ? average.toFixed(1) : "0.0"],
       ];
@@ -3250,6 +3526,18 @@ def render_archive_dashboard(payload: dict) -> str:
           </article>
         `;
       }).join("");
+      const gaps = (dossier.claim_gap_report || []).map((gap) => `
+        <article class="item">
+          <h3>${escapeHtml(gap.field)} <span class="subtle">${escapeHtml((gap.priority_score ?? 0) + "/100")}</span></h3>
+          <p>${escapeHtml(gap.recommendation || "")}</p>
+          <div class="chips">
+            <span class="chip risk-mid">${escapeHtml(gap.support_label || "Weak support")}</span>
+            <span class="chip">Support ${escapeHtml(gap.support_score ?? 0)}</span>
+            ${(gap.missing_layer_labels || []).slice(0, 4).map((layer) => `<span class="chip">${escapeHtml(layer)}</span>`).join("")}
+          </div>
+          <div class="subtle">${escapeHtml(gap.gap_reason || "")}</div>
+        </article>
+      `).join("");
       const evidence = (dossier.evidence || []).slice(0, 12).map((item) => `
         <article class="item">
           <h3>${escapeHtml(item.kind)} - ${escapeHtml(item.title)}</h3>
@@ -3286,6 +3574,10 @@ def render_archive_dashboard(payload: dict) -> str:
         <section class="claims">
           <div class="section-title">Claims</div>
           ${claims || '<div class="empty">No deep claims archived.</div>'}
+        </section>
+        <section class="gaps">
+          <div class="section-title">Claim Gaps</div>
+          ${gaps || '<div class="empty">No high-priority claim gaps.</div>'}
         </section>
         <section class="evidence">
           <div class="section-title">Evidence</div>
@@ -3438,6 +3730,16 @@ def render_archive_search(payload: dict) -> str:
                     ]
                 )
             lines.append("")
+        if entry.get("matched_gaps"):
+            lines.extend(["### Matched claim gaps", ""])
+            for gap in entry["matched_gaps"]:
+                lines.extend(
+                    [
+                        f"- `{gap.get('source_id') or 'no-gap-id'}` {gap.get('field') or 'Gap'}: "
+                        f"{one_line(gap.get('text'))}",
+                    ]
+                )
+            lines.append("")
         if entry["matched_evidence"]:
             lines.extend(["### Matched evidence", ""])
             for item in entry["matched_evidence"]:
@@ -3498,6 +3800,7 @@ def render_archive_show(payload: dict) -> str:
             ]
         )
 
+    lines.extend(render_claim_gap_report(payload.get("claim_gap_report") or []))
     lines.extend(["## Evidence", ""])
     if not payload.get("evidence"):
         lines.extend(["该归档快照没有证据链。", ""])
@@ -3622,6 +3925,29 @@ def render_track_score(summary: dict) -> list[str]:
     ]
 
 
+def render_claim_gap_report(gaps: list[dict]) -> list[str]:
+    lines = ["## Claim Gap Report", ""]
+    if not gaps:
+        return lines + ["当前未发现高优先级 claim 支撑缺口。", ""]
+    for index, item in enumerate(gaps, 1):
+        missing = "、".join(item.get("missing_layer_labels") or []) or "无"
+        current = "、".join(item.get("current_layer_labels") or []) or "无"
+        lines.extend(
+            [
+                f"### {index}. {item.get('field') or '未知 claim'}",
+                "",
+                f"- Claim ID：`{item.get('claim_id') or '无'}`",
+                f"- 优先级：{item.get('priority_score', 0)}/100",
+                f"- 当前支撑：{item.get('support_label') or '未知'}（{current}，{item.get('support_score', 0)}/100）",
+                f"- 缺口层：{missing}",
+                f"- 原因：{item.get('gap_reason') or '该判断需要补充更强的工程证据。'}",
+                f"- 下一步证据：{item.get('recommendation') or '无'}",
+                "",
+            ]
+        )
+    return lines
+
+
 def build_claims(repo: dict, evidence: list[Evidence]) -> list[Claim]:
     text = corpus(evidence, repo)
     claims = [
@@ -3740,6 +4066,7 @@ def render_deep_report(repo: dict, summary: dict, evidence: list[Evidence], clai
             ]
         )
 
+    lines.extend(render_claim_gap_report(build_claim_gap_report(claims)))
     lines.extend(
         [
             "## 风险与复核",

@@ -142,6 +142,7 @@ export GITHUB_TOKEN=ghp_xxx
 - claim / evidence stable IDs
 - claim 模板、推断依据、边界/反向证据
 - claim support coverage：区分叙事、发布/协作、源码、测试/benchmark、配置支撑
+- claim gap report：优先列出高价值但支撑薄弱的判断，并给出下一步证据采集建议
 - evidence type、polarity、signal tags
 - repository health
 - track score
@@ -164,6 +165,7 @@ JSON 输出会包含：
 - `template`
 - `rationale`
 - `support_coverage`
+- `claim_gap_report`
 - `evidence_type`
 - `polarity`
 - `signal_tags`
@@ -209,6 +211,8 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 - `source_and_validation`：同时有源码和测试/benchmark 支撑
 - `configuration_backed`：主要由配置、CI、package metadata 等支撑
 
+`claim_gap_report` 会基于 claim 的价值权重和支撑薄弱程度排序，优先提示哪些判断需要补源码、测试、benchmark、配置、release 或 issue/PR 证据。它是从 claim 当前证据派生出来的复核清单，不会伪装成新的事实来源。
+
 实现层证据会从 Git tree 中限量抽取：
 
 - 核心源码入口：`src`、`lib`、`packages`、`pkg`、`crates` 等目录中的主要源码文件
@@ -232,4 +236,4 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 ## 下一步
 
-- 基于 support coverage 生成 claim gap report：优先列出高价值但只有叙事支撑的判断，并提示下一轮应补源码、测试、benchmark 还是配置证据
+- 把 claim gap report 接入更细的 evidence acquisition loop：按缺口类型自动扩大源码、测试、benchmark、配置、issue/PR 或 release 采样范围
