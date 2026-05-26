@@ -817,10 +817,35 @@ GAP_LAYER_TO_IMPLEMENTATION_TYPE = {
     "configuration": "configuration",
 }
 TARGETED_IMPLEMENTATION_LIMITS = {
-    "source_entrypoint": 3,
-    "test_surface": 3,
-    "benchmark": 2,
-    "configuration": 2,
+    "source_entrypoint": 5,
+    "test_surface": 5,
+    "benchmark": 3,
+    "configuration": 3,
+}
+TARGETED_PER_GAP_LAYER_LIMITS = {
+    "source_entrypoint": 2,
+    "test_surface": 2,
+    "benchmark": 1,
+    "configuration": 1,
+}
+CLAIM_FIELD_KEYWORDS = {
+    "作者如何重新定义问题": ["durable", "checkpoint", "workflow", "roadmap", "proposal", "feedback", "problem"],
+    "关键抽象": ["api", "interface", "graph", "node", "workflow", "checkpoint", "runtime", "client", "server", "sdk"],
+    "架构边界": ["boundary", "unsupported", "deprecated", "internal", "experimental", "limit", "policy"],
+    "复杂度藏处": ["bug", "error", "performance", "compatibility", "concurrency", "checkpoint", "state", "memory", "latency"],
+    "治理模式": ["contributing", "security", "issue", "template", "support", "discussion", "maintainer", "review"],
+    "可复用思想": ["example", "adoption", "pattern", "discussion", "integration", "extension"],
+    "不可复制条件": ["roadmap", "release", "community", "adoption", "ecosystem", "migration"],
+    "实现层复核线索": ["source", "test", "benchmark", "config", "api", "runtime"],
+    "领域": ["api", "sdk", "agent", "cli", "protocol", "server"],
+}
+LAYER_KEYWORDS = {
+    "source": ["src", "lib", "core", "api", "runtime", "engine", "server", "client"],
+    "tests": ["test", "spec", "suite", "conformance", "integration", "e2e"],
+    "benchmarks": ["benchmark", "bench", "performance", "latency", "memory"],
+    "configuration": ["config", "workflow", "ci", "package", "pyproject", "cargo", "module"],
+    "collaboration": ["issue", "pr", "discussion", "support", "bug", "feedback"],
+    "release": ["release", "changelog", "migration", "version", "breaking"],
 }
 
 
@@ -837,75 +862,154 @@ def ordered_missing_layers(gaps: list[dict]) -> list[str]:
     return layers
 
 
+def sorted_gaps_for_acquisition(gaps: list[dict]) -> list[dict]:
+    return sorted(
+        gaps,
+        key=lambda item: (
+            -(item.get("priority_score") or 0),
+            item.get("support_score") or 0,
+            item.get("field") or "",
+        ),
+    )
+
+
+def unique_terms(terms: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for term in terms:
+        cleaned = str(term or "").strip().lower()
+        if len(cleaned) < 2 or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        output.append(cleaned)
+    return output
+
+
+def claim_gap_keywords(gap: dict) -> list[str]:
+    field = gap.get("field") or ""
+    terms = CLAIM_FIELD_KEYWORDS.get(field, []).copy()
+    for layer in (gap.get("missing_layers") or []) + (gap.get("target_layers") or []):
+        terms.extend(LAYER_KEYWORDS.get(layer, []))
+    terms.extend(re.findall(r"[A-Za-z][A-Za-z0-9_+-]{2,}", " ".join([field, gap.get("recommendation") or ""])))
+    return unique_terms(terms)[:12]
+
+
+def keyword_hit_count(text: str, keywords: list[str]) -> int:
+    lowered = text.lower().replace("-", "_")
+    return sum(1 for keyword in keywords if keyword.replace("-", "_") in lowered)
+
+
+def targeted_path_score(path: str, evidence_type: str, repo: dict, gap: dict) -> tuple[int, int, int, str]:
+    base_score, depth_penalty, lowered = implementation_path_score(path, evidence_type, repo)
+    keywords = claim_gap_keywords(gap)
+    keyword_bonus = keyword_hit_count(path, keywords) * 18
+    layer = evidence_support_layer(
+        Evidence("", 0, implementation_kind(evidence_type), path, "", "", evidence_type=evidence_type)
+    )
+    layer_bonus = 10 if layer in (gap.get("missing_layers") or []) else 0
+    priority_bonus = min(int(gap.get("priority_score") or 0), 100) // 10
+    return (base_score - keyword_bonus - layer_bonus - priority_bonus, -keyword_bonus, depth_penalty, lowered)
+
+
 def targeted_implementation_paths(
     files: list[dict],
     repo: dict,
-    missing_layers: list[str],
+    gaps: list[dict],
     existing_paths: set[str],
-) -> list[tuple[str, str]]:
-    wanted_types = {
-        GAP_LAYER_TO_IMPLEMENTATION_TYPE[layer]
-        for layer in missing_layers
-        if layer in GAP_LAYER_TO_IMPLEMENTATION_TYPE
+) -> list[tuple[str, str, dict]]:
+    candidates_by_type: dict[str, list[tuple[dict, str, str]]] = {
+        "source_entrypoint": [],
+        "test_surface": [],
+        "benchmark": [],
+        "configuration": [],
     }
-    buckets: dict[str, list[tuple[tuple[int, int, str], str]]] = {
-        evidence_type: [] for evidence_type in wanted_types
-    }
-    for item in files:
-        path = item.get("path") or ""
-        if not path or path in existing_paths:
+    for gap in sorted_gaps_for_acquisition(gaps):
+        wanted_types = {
+            GAP_LAYER_TO_IMPLEMENTATION_TYPE[layer]
+            for layer in gap.get("missing_layers") or []
+            if layer in GAP_LAYER_TO_IMPLEMENTATION_TYPE
+        }
+        if not wanted_types:
             continue
-        size = item.get("size") or 0
-        if size and size > MAX_IMPLEMENTATION_FILE_SIZE:
-            continue
-        evidence_type = classify_implementation_path(path)
-        if evidence_type not in wanted_types:
-            continue
-        buckets[evidence_type].append((implementation_path_score(path, evidence_type, repo), path))
+        for item in files:
+            path = item.get("path") or ""
+            if not path or path in existing_paths:
+                continue
+            size = item.get("size") or 0
+            if size and size > MAX_IMPLEMENTATION_FILE_SIZE:
+                continue
+            evidence_type = classify_implementation_path(path)
+            if evidence_type not in wanted_types:
+                continue
+            candidates_by_type[evidence_type].append((gap, path, evidence_type))
 
-    selected: list[tuple[str, str]] = []
-    for evidence_type in ("source_entrypoint", "test_surface", "benchmark", "configuration"):
-        ranked = sorted(buckets.get(evidence_type, []), key=lambda item: item[0])
-        selected.extend(
-            (path, evidence_type)
-            for _, path in ranked[: TARGETED_IMPLEMENTATION_LIMITS.get(evidence_type, 2)]
-        )
+    selected: list[tuple[str, str, dict]] = []
+    selected_paths: set[str] = set()
+    counts_by_type: dict[str, int] = {}
+    for gap in sorted_gaps_for_acquisition(gaps):
+        for layer in gap.get("missing_layers") or []:
+            evidence_type = GAP_LAYER_TO_IMPLEMENTATION_TYPE.get(layer)
+            if not evidence_type:
+                continue
+            if counts_by_type.get(evidence_type, 0) >= TARGETED_IMPLEMENTATION_LIMITS[evidence_type]:
+                continue
+            candidates = [
+                (targeted_path_score(path, item_type, repo, gap), path, item_gap)
+                for item_gap, path, item_type in candidates_by_type.get(evidence_type, [])
+                if item_gap is gap and path not in selected_paths
+            ]
+            ranked = sorted(candidates, key=lambda item: item[0])
+            layer_limit = TARGETED_PER_GAP_LAYER_LIMITS.get(evidence_type, 1)
+            for _, path, item_gap in ranked[:layer_limit]:
+                if counts_by_type.get(evidence_type, 0) >= TARGETED_IMPLEMENTATION_LIMITS[evidence_type]:
+                    break
+                selected.append((path, evidence_type, item_gap))
+                selected_paths.add(path)
+                counts_by_type[evidence_type] = counts_by_type.get(evidence_type, 0) + 1
     return selected
 
 
-def gap_search_terms(gaps: list[dict]) -> list[str]:
-    terms: list[str] = []
-    field_terms = {
-        "作者如何重新定义问题": ["roadmap", "proposal", "feedback"],
-        "关键抽象": ["api", "interface", "refactor"],
-        "架构边界": ["boundary", "unsupported", "deprecated"],
-        "复杂度藏处": ["bug", "error", "performance", "compatibility"],
-        "治理模式": ["support", "discussion", "contributing"],
-        "可复用思想": ["example", "adoption", "discussion"],
-        "不可复制条件": ["roadmap", "release", "community"],
-    }
-    for gap in gaps:
-        for term in field_terms.get(gap.get("field"), []):
-            if term not in terms:
-                terms.append(term)
-    return terms[:5] or ["bug", "discussion", "api"]
+def artifact_keyword_score(title: str, body: str, gap: dict) -> int:
+    text = f"{title} {body}"
+    return keyword_hit_count(text, claim_gap_keywords(gap)) * 10 + min(len(body or ""), 2000) // 200
 
 
-def append_unique_evidence(additions: list[Evidence], item: Evidence, seen_keys: set[str]) -> None:
+def gap_query_terms(gap: dict, layer: str, limit: int = 3) -> list[str]:
+    terms = claim_gap_keywords(gap)
+    layer_terms = [term for term in terms if term in LAYER_KEYWORDS.get(layer, [])]
+    ordered = unique_terms(layer_terms + terms)
+    return ordered[:limit] or LAYER_KEYWORDS.get(layer, ["api"])[:limit]
+
+
+def append_unique_evidence(additions: list[Evidence], item: Evidence, seen_keys: set[str]) -> bool:
     key = evidence_key(item)
     if key in seen_keys:
-        return
+        return False
     seen_keys.add(key)
     additions.append(item)
+    return True
 
 
-def acquire_targeted_evidence(repo: dict, evidence: list[Evidence], gaps: list[dict]) -> list[Evidence]:
+def make_acquisition_binding(item: Evidence, gap: dict, layer: str, keywords: list[str]) -> dict:
+    return {
+        "evidence_id": item.evidence_id,
+        "claim_id": gap.get("claim_id") or "",
+        "field": gap.get("field") or "",
+        "missing_layer": layer,
+        "missing_layer_label": SUPPORT_LAYER_LABELS.get(layer, layer),
+        "keywords": keywords[:8],
+        "reason": gap.get("gap_reason") or "",
+    }
+
+
+def acquire_targeted_evidence(repo: dict, evidence: list[Evidence], gaps: list[dict]) -> tuple[list[Evidence], list[dict]]:
     missing_layers = ordered_missing_layers(gaps)
     if not missing_layers:
-        return []
+        return [], []
 
     full_name = repo["full_name"]
     additions: list[Evidence] = []
+    bindings: list[dict] = []
     seen_keys = {evidence_key(item) for item in evidence}
     existing_paths = {
         item.title
@@ -917,10 +1021,10 @@ def acquire_targeted_evidence(repo: dict, evidence: list[Evidence], gaps: list[d
         return f"E{len(evidence) + len(additions) + 1}"
 
     if set(missing_layers) & set(GAP_LAYER_TO_IMPLEMENTATION_TYPE):
-        for path, evidence_type in targeted_implementation_paths(
+        for path, evidence_type, gap in targeted_implementation_paths(
             fetch_tree_files(repo),
             repo,
-            missing_layers,
+            gaps,
             existing_paths,
         ):
             text, url = fetch_file_text(repo, path)
@@ -935,72 +1039,111 @@ def acquire_targeted_evidence(repo: dict, evidence: list[Evidence], gaps: list[d
                 excerpt(text, 700),
                 evidence_type,
             )
-            append_unique_evidence(additions, item, seen_keys)
+            if append_unique_evidence(additions, item, seen_keys):
+                layer = evidence_support_layer(item)
+                bindings.append(make_acquisition_binding(item, gap, layer, claim_gap_keywords(gap)))
             existing_paths.add(path)
 
     if "release" in missing_layers:
-        for release in fetch_releases_sample(full_name, per_page=10):
-            title = release.get("name") or release.get("tag_name") or "Release"
-            body = release.get("body") or ""
-            quote = excerpt(body, 550) or f"Published at {release.get('published_at') or 'unknown time'}."
-            item = make_evidence(
-                next_id(),
-                2,
-                "Release",
-                title,
-                release.get("html_url") or "",
-                quote,
-                "release_delta",
+        release_candidates = fetch_releases_sample(full_name, per_page=10)
+        release_gaps = [gap for gap in sorted_gaps_for_acquisition(gaps) if "release" in (gap.get("missing_layers") or [])]
+        for gap in release_gaps:
+            ranked_releases = sorted(
+                release_candidates,
+                key=lambda release: -artifact_keyword_score(
+                    release.get("name") or release.get("tag_name") or "Release",
+                    release.get("body") or "",
+                    gap,
+                ),
             )
-            append_unique_evidence(additions, item, seen_keys)
-            if sum(1 for added in additions if added.kind == "Release") >= 3:
+            for release in ranked_releases[:2]:
+                title = release.get("name") or release.get("tag_name") or "Release"
+                body = release.get("body") or ""
+                quote = excerpt(body, 550) or f"Published at {release.get('published_at') or 'unknown time'}."
+                item = make_evidence(
+                    next_id(),
+                    2,
+                    "Release",
+                    title,
+                    release.get("html_url") or "",
+                    quote,
+                    "release_delta",
+                )
+                if append_unique_evidence(additions, item, seen_keys):
+                    bindings.append(make_acquisition_binding(item, gap, "release", claim_gap_keywords(gap)))
+                if sum(1 for added in additions if added.kind == "Release") >= 4:
+                    break
+            if sum(1 for added in additions if added.kind == "Release") >= 4:
                 break
 
     if "collaboration" in missing_layers:
-        for term in gap_search_terms(gaps):
-            for issue in fetch_issue_search(full_name, f"is:issue {term}", per_page=2):
-                quote = excerpt(issue.get("body") or "", 500) or (
-                    f"{issue.get('comments', 0)} comments; state={issue.get('state')}."
+        collaboration_gaps = [
+            gap for gap in sorted_gaps_for_acquisition(gaps) if "collaboration" in (gap.get("missing_layers") or [])
+        ]
+        for gap in collaboration_gaps:
+            for term in gap_query_terms(gap, "collaboration", limit=3):
+                issue_candidates = fetch_issue_search(full_name, f"is:issue {term}", per_page=3)
+                ranked_issues = sorted(
+                    issue_candidates,
+                    key=lambda issue: -artifact_keyword_score(issue.get("title") or "", issue.get("body") or "", gap),
                 )
-                item = make_evidence(
-                    next_id(),
-                    2,
-                    "Issue",
-                    issue.get("title") or "Issue",
-                    issue.get("html_url") or "",
-                    quote,
-                    "user_friction",
+                for issue in ranked_issues[:2]:
+                    quote = excerpt(issue.get("body") or "", 500) or (
+                        f"{issue.get('comments', 0)} comments; state={issue.get('state')}."
+                    )
+                    item = make_evidence(
+                        next_id(),
+                        2,
+                        "Issue",
+                        issue.get("title") or "Issue",
+                        issue.get("html_url") or "",
+                        quote,
+                        "user_friction",
+                    )
+                    if append_unique_evidence(additions, item, seen_keys):
+                        bindings.append(make_acquisition_binding(item, gap, "collaboration", claim_gap_keywords(gap)))
+                pr_candidates = fetch_issue_search(
+                    full_name,
+                    f"is:pr is:merged -author:dependabot[bot] -label:dependencies {term}",
+                    per_page=3,
                 )
-                append_unique_evidence(additions, item, seen_keys)
-            for pr in fetch_issue_search(
-                full_name,
-                f"is:pr is:merged -author:dependabot[bot] -label:dependencies {term}",
-                per_page=2,
-            ):
-                quote = excerpt(pr.get("body") or "", 500) or f"state={pr.get('state')}; merged_at={pr.get('merged_at')}."
-                item = make_evidence(
-                    next_id(),
-                    2,
-                    "Pull Request",
-                    pr.get("title") or "Pull request",
-                    pr.get("html_url") or "",
-                    quote,
-                    "implementation_change",
+                ranked_prs = sorted(
+                    pr_candidates,
+                    key=lambda pr: -artifact_keyword_score(pr.get("title") or "", pr.get("body") or "", gap),
                 )
-                append_unique_evidence(additions, item, seen_keys)
-            collaboration_count = sum(1 for added in additions if added.kind in {"Issue", "Pull Request"})
-            if collaboration_count >= 4:
+                for pr in ranked_prs[:2]:
+                    quote = excerpt(pr.get("body") or "", 500) or f"state={pr.get('state')}; merged_at={pr.get('merged_at')}."
+                    item = make_evidence(
+                        next_id(),
+                        2,
+                        "Pull Request",
+                        pr.get("title") or "Pull request",
+                        pr.get("html_url") or "",
+                        quote,
+                        "implementation_change",
+                    )
+                    if append_unique_evidence(additions, item, seen_keys):
+                        bindings.append(make_acquisition_binding(item, gap, "collaboration", claim_gap_keywords(gap)))
+                collaboration_count = sum(1 for added in additions if added.kind in {"Issue", "Pull Request"})
+                if collaboration_count >= 6:
+                    break
+            if sum(1 for added in additions if added.kind in {"Issue", "Pull Request"}) >= 6:
                 break
 
-    return additions
+    return additions, bindings
 
 
-def build_evidence_acquisition_summary(gaps: list[dict], targeted_evidence: list[Evidence]) -> dict:
+def build_evidence_acquisition_summary(gaps: list[dict], targeted_evidence: list[Evidence], bindings: list[dict]) -> dict:
     requested_layers = ordered_missing_layers(gaps)
     added_counts: dict[str, int] = {}
     for item in targeted_evidence:
         layer = evidence_support_layer(item)
         added_counts[layer] = added_counts.get(layer, 0) + 1
+    claim_fields = []
+    for binding in bindings:
+        field = binding.get("field")
+        if field and field not in claim_fields:
+            claim_fields.append(field)
     return {
         "strategy": "claim_gap_targeted",
         "requested_layers": requested_layers,
@@ -1008,8 +1151,36 @@ def build_evidence_acquisition_summary(gaps: list[dict], targeted_evidence: list
         "added_total": len(targeted_evidence),
         "added_counts": added_counts,
         "added_evidence_ids": [item.evidence_id for item in targeted_evidence],
+        "binding_count": len(bindings),
+        "bindings": bindings,
+        "target_claim_fields": claim_fields,
         "status": "expanded" if targeted_evidence else "no_additional_evidence",
     }
+
+
+def bind_acquired_evidence_to_claims(
+    claims: list[Claim],
+    evidence: list[Evidence],
+    bindings: list[dict],
+    max_refs_per_claim: int = 8,
+) -> None:
+    if not bindings:
+        return
+    evidence_map = {item.evidence_id: item for item in evidence}
+    claims_by_id = {claim.claim_id: claim for claim in claims if claim.claim_id}
+    claims_by_field = {claim.field: claim for claim in claims}
+    for binding in bindings:
+        evidence_id = binding.get("evidence_id")
+        if evidence_id not in evidence_map:
+            continue
+        claim = claims_by_id.get(binding.get("claim_id") or "") or claims_by_field.get(binding.get("field") or "")
+        if not claim or evidence_id in claim.evidence_ids:
+            continue
+        if len(claim.evidence_ids) >= max_refs_per_claim:
+            continue
+        claim.evidence_ids.append(evidence_id)
+    for claim in claims:
+        claim.support_coverage = claim_support_coverage(claim, evidence_map)
 
 
 def assign_evidence_ids(repo: dict, evidence: list[Evidence]) -> None:
@@ -4165,12 +4336,15 @@ def render_evidence_acquisition_summary(summary: dict | None) -> list[str]:
         for layer, count in counts.items()
     ) or "无"
     ids = ", ".join(f"`{item}`" for item in summary.get("added_evidence_ids") or []) or "无"
+    fields = "、".join(summary.get("target_claim_fields") or []) or "无"
     lines.extend(
         [
             f"- 策略：{summary.get('strategy') or '未知'}",
             f"- 状态：{summary.get('status') or '未知'}",
             f"- Gap 请求层：{requested}",
             f"- 新增证据数：{summary.get('added_total', 0)}",
+            f"- 绑定 claim 数：{summary.get('binding_count', 0)}",
+            f"- 目标 claim：{fields}",
             f"- 新增证据分布：{count_text}",
             f"- 新增证据 ID：{ids}",
             "",
@@ -4419,12 +4593,13 @@ def main() -> None:
         evidence = build_evidence(repo)
         initial_claims = build_claims(repo, evidence)
         initial_gaps = build_claim_gap_report(initial_claims)
-        targeted_evidence = acquire_targeted_evidence(repo, evidence, initial_gaps)
+        targeted_evidence, acquisition_bindings = acquire_targeted_evidence(repo, evidence, initial_gaps)
         if targeted_evidence:
             evidence.extend(targeted_evidence)
             assign_evidence_ids(repo, evidence)
         claims = build_claims(repo, evidence)
-        evidence_acquisition = build_evidence_acquisition_summary(initial_gaps, targeted_evidence)
+        bind_acquired_evidence_to_claims(claims, evidence, acquisition_bindings)
+        evidence_acquisition = build_evidence_acquisition_summary(initial_gaps, targeted_evidence, acquisition_bindings)
         payload = build_deep_payload(repo, evidence, claims, run_at, evidence_acquisition)
         attach_star_growth([payload["repository"]], None if args.no_db else args.db, run_at)
         attach_track_scores(

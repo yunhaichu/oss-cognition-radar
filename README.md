@@ -215,7 +215,7 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 `claim_gap_report` 会基于 claim 的价值权重和支撑薄弱程度排序，优先提示哪些判断需要补源码、测试、benchmark、配置、release 或 issue/PR 证据。它是从 claim 当前证据派生出来的复核清单，不会伪装成新的事实来源。
 
-深度模式现在会执行两阶段采样：先用初始 evidence 生成 claims 和 gap report，再根据缺口层补抓相关源码、测试、benchmark、配置、release、issue/PR，最后用扩展后的 evidence 重建 claims。`evidence_acquisition` 会记录请求的缺口层、新增证据数和新增 evidence ID。
+深度模式现在会执行两阶段采样：先用初始 evidence 生成 claims 和 gap report，再根据具体 claim 字段、缺口层和 claim 关键词重排候选源码、测试、benchmark、配置、release、issue/PR，最后用扩展后的 evidence 重建 claims。`evidence_acquisition` 会记录请求的缺口层、新增证据数、新增 evidence ID、目标 claim 字段和 evidence-to-claim bindings。
 
 实现层证据会从 Git tree 中限量抽取：
 
@@ -240,4 +240,4 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 ## 下一步
 
-- 让 targeted evidence acquisition 更精准：按具体 claim 字段和关键词重排源码/测试文件候选，并把新增证据直接绑定到对应 claim 的待补层
+- 把 evidence-to-claim bindings 持久化进 SQLite/archive view，并在 dashboard 中显示每条新增证据补强了哪个 claim
