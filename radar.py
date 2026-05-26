@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Generate a high-signal GitHub project radar report."""
+"""Generate a high-signal GitHub project radar report.
+
+The report treats popular repositories as evidence of developer taste. It does
+not only rank heat; it tries to infer the design ideas behind each project.
+"""
 
 from __future__ import annotations
 
@@ -134,6 +138,92 @@ def repo_learning_notes(repo: dict) -> list[str]:
     return notes
 
 
+def repo_text(repo: dict) -> str:
+    parts = [
+        repo.get("name") or "",
+        repo.get("description") or "",
+        " ".join(repo.get("topics") or []),
+        repo.get("_readme_excerpt") or "",
+    ]
+    return " ".join(parts).lower()
+
+
+def has_any(text: str, words: list[str]) -> bool:
+    return any(word in text for word in words)
+
+
+def infer_design_thesis(repo: dict) -> str:
+    text = repo_text(repo)
+    if has_any(text, ["local-first", "offline", "self-host", "self host", "on-device", "zero api key"]):
+        return "把控制权还给用户：优先本地、自托管或低依赖，反对把核心能力锁进远端平台。"
+    if has_any(text, ["agent", "agents", "workflow", "autonomous"]):
+        return "把复杂工作流变成可委托的系统：核心判断是未来软件会围绕 agent 协作和可验证执行重组。"
+    if has_any(text, ["fast", "performance", "latency", "runtime", "native", "zero dependencies"]):
+        return "用性能和简单依赖构建信任：先把基础体验做到足够快、足够可控，再谈上层能力。"
+    if has_any(text, ["cli", "sdk", "api", "developer"]):
+        return "把能力包装成开发者可组合的接口：真正的产品不是页面，而是别人可以继续搭建的原语。"
+    if has_any(text, ["database", "search", "vector", "storage", "index"]):
+        return "先抓住数据模型：项目价值来自重新定义数据如何被存储、检索、迁移或理解。"
+    return "从一个足够具体的痛点切入，用代码验证某种新的默认工作方式。"
+
+
+def infer_tradeoffs(repo: dict) -> list[str]:
+    text = repo_text(repo)
+    tradeoffs = []
+    if has_any(text, ["not a generic", "intentionally narrow", "focused", "opinionated"]):
+        tradeoffs.append("选择窄而深，牺牲通用性来换取清晰边界和更高完成度。")
+    if has_any(text, ["zero dependencies", "self-contained", "single binary"]):
+        tradeoffs.append("减少外部依赖，把可部署性和可理解性放在功能堆叠之前。")
+    if has_any(text, ["experimental", "not ready for production", "security vulnerabilities should be expected"]):
+        tradeoffs.append("公开承认实验状态，用透明边界换取社区快速验证。")
+    if has_any(text, ["local-first", "self-host", "offline", "zero api key"]):
+        tradeoffs.append("优先用户主权和长期可控性，接受更高的本地安装和维护复杂度。")
+    if has_any(text, ["plugin", "extension", "skills", "workflow"]):
+        tradeoffs.append("通过插件/工作流扩展，把核心保持小，把变化交给生态。")
+    if not tradeoffs:
+        tradeoffs.append("需要继续读 examples、核心模块和 issue，确认它真正牺牲了什么来换取当前优势。")
+    return tradeoffs
+
+
+def infer_mental_model(repo: dict) -> list[str]:
+    text = repo_text(repo)
+    models = []
+    if has_any(text, ["html", "markdown", "document", "slides", "presentation"]):
+        models.append("媒介即产品：输出格式、阅读体验和传播路径本身就是设计对象。")
+    if has_any(text, ["compiler", "language", "runtime", "protocol"]):
+        models.append("重做底层协议/语言，而不是在旧接口上继续打补丁。")
+    if has_any(text, ["preview", "sandbox", "export", "one-click"]):
+        models.append("缩短反馈循环：让用户更快看到结果、更快交付、更少上下文切换。")
+    if has_any(text, ["examples", "template", "starter"]):
+        models.append("通过示例传播理念：降低学习成本比解释概念更重要。")
+    if repo["stargazers_count"] / max(days_between(repo["created_at"], dt.datetime.now(dt.UTC)), 1.0) > 100:
+        models.append("高传播速度说明它命中了一个正在形成共识、但现有工具尚未满足的缺口。")
+    if not models:
+        models.append("先看 README 的第一屏和 examples 目录：顶尖项目通常会很快暴露它对世界的默认假设。")
+    return models
+
+
+def render_philosophy(repo: dict) -> list[str]:
+    lines = [
+        "### 思想本质切片",
+        "",
+        f"- 核心命题：{infer_design_thesis(repo)}",
+        "- 关键取舍：",
+    ]
+    for item in infer_tradeoffs(repo):
+        lines.append(f"  - {item}")
+    lines.append("- 开发者心智模型：")
+    for item in infer_mental_model(repo):
+        lines.append(f"  - {item}")
+    lines.extend(
+        [
+            "- 下一步精读入口：README 第一屏、examples、核心 API 文件、最近合并的 PR、争议最多的 issue。",
+            "",
+        ]
+    )
+    return lines
+
+
 def render_report(repos: list[dict], args: argparse.Namespace) -> str:
     now = dt.datetime.now(dt.UTC)
     lines = [
@@ -176,12 +266,11 @@ def render_report(repos: list[dict], args: argparse.Namespace) -> str:
                 "",
                 textwrap.fill(readme, width=88),
                 "",
-                "### 值得学习的开发者思想",
-                "",
             ]
         )
-        for note in repo_learning_notes(repo):
-            lines.append(f"- {note}")
+        lines.extend(render_philosophy(repo))
+        lines.extend(["### 初步观察", ""])
+        lines.extend(f"- {note}" for note in repo_learning_notes(repo))
         lines.append("")
 
     return "\n".join(lines)
