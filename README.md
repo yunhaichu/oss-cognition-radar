@@ -26,13 +26,34 @@
 发现近期高信号候选项目：
 
 ```bash
-python3 radar.py --days 30 --limit 20 --min-stars 100 --topic ai --output reports/latest.md
+python3 radar.py \
+  --days 30 \
+  --limit 20 \
+  --min-stars 100 \
+  --topic ai \
+  --output reports/latest.md \
+  --json-output reports/latest.json
 ```
 
 深度分析单个项目：
 
 ```bash
-python3 radar.py --repo langchain-ai/langgraph --output reports/langgraph.md
+python3 radar.py \
+  --repo langchain-ai/langgraph \
+  --output reports/langgraph.md \
+  --json-output reports/langgraph.json
+```
+
+默认会把每次运行写入 SQLite：
+
+```text
+data/radar.sqlite
+```
+
+如果只想生成文件，不写数据库：
+
+```bash
+python3 radar.py --repo langchain-ai/langgraph --no-db
 ```
 
 如果设置了 `GITHUB_TOKEN`，API 限额会更高：
@@ -66,6 +87,20 @@ export GITHUB_TOKEN=ghp_xxx
 - fake-star 风险与复核建议
 - 可追溯证据链
 
+JSON 输出会包含：
+
+- `repository`
+- `claims`
+- `evidence`
+- `query` 或 `method_boundary`
+
+SQLite 当前会保存：
+
+- `runs`
+- `repository_snapshots`
+- `evidence_items`
+- `claims`
+
 ## 方法原则
 
 1. **证据优先**
@@ -82,8 +117,7 @@ export GITHUB_TOKEN=ghp_xxx
 
 ## 下一步
 
-- 把证据链存入 SQLite 快照
-- 增加 1d / 7d / 30d 真实 star 增长
+- 基于 SQLite 快照计算 1d / 7d / 30d 真实 star 增长
 - 抓取高评论 issue、最近合并 PR、release cadence、contributors
 - 为不同项目类型建立分轨评分：agent、developer tools、local-first、protocol
-- 将项目档案导出为 JSON，方便后续做仪表盘或知识库
+- 基于 JSON dossier 做仪表盘或知识库

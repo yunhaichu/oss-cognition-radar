@@ -17,6 +17,7 @@ import math
 import os
 import pathlib
 import re
+import sqlite3
 import textwrap
 import urllib.error
 import urllib.parse
@@ -59,6 +60,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--topic", help="Discovery mode: optional GitHub topic filter, such as ai or local-first.")
     parser.add_argument("--language", help="Discovery mode: optional language filter, such as Python or TypeScript.")
     parser.add_argument("--output", default="reports/latest.md", help="Markdown report output path.")
+    parser.add_argument("--json-output", help="Optional structured JSON output path.")
+    parser.add_argument("--db", default="data/radar.sqlite", help="SQLite snapshot database path.")
+    parser.add_argument("--no-db", action="store_true", help="Do not persist this run to SQLite.")
     return parser.parse_args()
 
 
@@ -144,6 +148,10 @@ def has_any(text: str, words: list[str]) -> bool:
 
 def evidence_refs(ids: list[str]) -> str:
     return ", ".join(f"`{item}`" for item in ids) if ids else "`无直接证据`"
+
+
+def utc_now() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
 
 
 def search_repositories(days: int, min_stars: int, topic: str | None, language: str | None, limit: int) -> list[dict]:
@@ -421,6 +429,243 @@ def fake_star_risk(repo: dict) -> str:
     return "低/中：当前元数据未显示明显异常，但 star 仍只能作为兴趣信号。"
 
 
+def repo_summary(repo: dict, now: dt.datetime) -> dict:
+    age_days = days_between(repo["created_at"], now)
+    stars = repo.get("stargazers_count", 0)
+    license_info = repo.get("license") or {}
+    return {
+        "id": repo.get("id"),
+        "full_name": repo.get("full_name"),
+        "name": repo.get("name"),
+        "owner": (repo.get("owner") or {}).get("login"),
+        "html_url": repo.get("html_url"),
+        "description": repo.get("description"),
+        "homepage": repo.get("homepage"),
+        "language": repo.get("language"),
+        "stars": stars,
+        "forks": repo.get("forks_count", 0),
+        "watchers": repo.get("watchers_count", 0),
+        "open_issues": repo.get("open_issues_count", 0),
+        "created_at": repo.get("created_at"),
+        "updated_at": repo.get("updated_at"),
+        "pushed_at": repo.get("pushed_at"),
+        "default_branch": repo.get("default_branch"),
+        "archived": repo.get("archived", False),
+        "license": license_info.get("key") or license_info.get("spdx_id"),
+        "topics": repo.get("topics") or [],
+        "score": repo.get("_score", score_repo(repo, now)),
+        "stars_per_day": stars / age_days,
+        "fake_star_risk": fake_star_risk(repo),
+    }
+
+
+def evidence_to_dict(evidence: Evidence) -> dict:
+    return dataclasses.asdict(evidence)
+
+
+def claim_to_dict(claim: Claim) -> dict:
+    return dataclasses.asdict(claim)
+
+
+def build_deep_payload(repo: dict, evidence: list[Evidence], claims: list[Claim], run_at: dt.datetime) -> dict:
+    return {
+        "schema_version": 1,
+        "mode": "deep",
+        "generated_at": run_at.isoformat(),
+        "method_boundary": "Only public GitHub engineering artifacts are used to infer observable, reviewable, transferable cognition/design/governance patterns.",
+        "repository": repo_summary(repo, run_at),
+        "claims": [claim_to_dict(item) for item in claims],
+        "evidence": [evidence_to_dict(item) for item in evidence],
+    }
+
+
+def build_discovery_payload(repos: list[dict], args: argparse.Namespace, run_at: dt.datetime) -> dict:
+    return {
+        "schema_version": 1,
+        "mode": "discovery",
+        "generated_at": run_at.isoformat(),
+        "query": {
+            "days": args.days,
+            "limit": args.limit,
+            "min_stars": args.min_stars,
+            "topic": args.topic,
+            "language": args.language,
+        },
+        "repositories": [repo_summary(repo, run_at) for repo in repos],
+    }
+
+
+def init_db(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            repo_full_name TEXT,
+            query_json TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS repository_snapshots (
+            run_id INTEGER NOT NULL,
+            full_name TEXT NOT NULL,
+            html_url TEXT NOT NULL,
+            description TEXT,
+            language TEXT,
+            stars INTEGER NOT NULL,
+            forks INTEGER NOT NULL,
+            watchers INTEGER NOT NULL,
+            open_issues INTEGER NOT NULL,
+            created_at TEXT,
+            updated_at TEXT,
+            pushed_at TEXT,
+            default_branch TEXT,
+            topics_json TEXT NOT NULL,
+            score REAL NOT NULL,
+            stars_per_day REAL NOT NULL,
+            fake_star_risk TEXT NOT NULL,
+            archived INTEGER NOT NULL,
+            license TEXT,
+            PRIMARY KEY (run_id, full_name),
+            FOREIGN KEY (run_id) REFERENCES runs(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS evidence_items (
+            run_id INTEGER NOT NULL,
+            repo_full_name TEXT NOT NULL,
+            evidence_id TEXT NOT NULL,
+            level INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            url TEXT,
+            quote TEXT NOT NULL,
+            PRIMARY KEY (run_id, repo_full_name, evidence_id),
+            FOREIGN KEY (run_id) REFERENCES runs(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS claims (
+            run_id INTEGER NOT NULL,
+            repo_full_name TEXT NOT NULL,
+            field TEXT NOT NULL,
+            text TEXT NOT NULL,
+            evidence_ids_json TEXT NOT NULL,
+            confidence TEXT NOT NULL,
+            PRIMARY KEY (run_id, repo_full_name, field),
+            FOREIGN KEY (run_id) REFERENCES runs(id)
+        );
+        """
+    )
+
+
+def insert_repo_snapshot(conn: sqlite3.Connection, run_id: int, summary: dict) -> None:
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO repository_snapshots (
+            run_id, full_name, html_url, description, language, stars, forks,
+            watchers, open_issues, created_at, updated_at, pushed_at,
+            default_branch, topics_json, score, stars_per_day, fake_star_risk,
+            archived, license
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            run_id,
+            summary["full_name"],
+            summary["html_url"],
+            summary["description"],
+            summary["language"],
+            summary["stars"],
+            summary["forks"],
+            summary["watchers"],
+            summary["open_issues"],
+            summary["created_at"],
+            summary["updated_at"],
+            summary["pushed_at"],
+            summary["default_branch"],
+            json.dumps(summary["topics"], ensure_ascii=False),
+            summary["score"],
+            summary["stars_per_day"],
+            summary["fake_star_risk"],
+            int(summary["archived"]),
+            summary["license"],
+        ),
+    )
+
+
+def persist_deep_snapshot(db_path: str, payload: dict) -> int:
+    path = pathlib.Path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        init_db(conn)
+        cursor = conn.execute(
+            "INSERT INTO runs (created_at, mode, repo_full_name, query_json) VALUES (?, ?, ?, ?)",
+            (
+                payload["generated_at"],
+                payload["mode"],
+                payload["repository"]["full_name"],
+                json.dumps({"repo": payload["repository"]["full_name"]}, ensure_ascii=False),
+            ),
+        )
+        run_id = int(cursor.lastrowid)
+        insert_repo_snapshot(conn, run_id, payload["repository"])
+        for item in payload["evidence"]:
+            conn.execute(
+                """
+                INSERT INTO evidence_items (
+                    run_id, repo_full_name, evidence_id, level, kind, title, url, quote
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    payload["repository"]["full_name"],
+                    item["evidence_id"],
+                    item["level"],
+                    item["kind"],
+                    item["title"],
+                    item["url"],
+                    item["quote"],
+                ),
+            )
+        for item in payload["claims"]:
+            conn.execute(
+                """
+                INSERT INTO claims (
+                    run_id, repo_full_name, field, text, evidence_ids_json, confidence
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    payload["repository"]["full_name"],
+                    item["field"],
+                    item["text"],
+                    json.dumps(item["evidence_ids"], ensure_ascii=False),
+                    item["confidence"],
+                ),
+            )
+        conn.commit()
+        return run_id
+
+
+def persist_discovery_snapshot(db_path: str, payload: dict) -> int:
+    path = pathlib.Path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        init_db(conn)
+        cursor = conn.execute(
+            "INSERT INTO runs (created_at, mode, repo_full_name, query_json) VALUES (?, ?, ?, ?)",
+            (
+                payload["generated_at"],
+                payload["mode"],
+                None,
+                json.dumps(payload["query"], ensure_ascii=False),
+            ),
+        )
+        run_id = int(cursor.lastrowid)
+        for summary in payload["repositories"]:
+            insert_repo_snapshot(conn, run_id, summary)
+        conn.commit()
+        return run_id
+
+
 def build_claims(repo: dict, evidence: list[Evidence]) -> list[Claim]:
     text = corpus(evidence, repo)
     return [
@@ -566,22 +811,41 @@ def write_report(path: str, content: str) -> None:
     print(f"Wrote {output}.")
 
 
+def write_json(path: str, payload: dict) -> None:
+    output = pathlib.Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"Wrote {output}.")
+
+
 def main() -> None:
     args = parse_args()
-    now = dt.datetime.now(dt.UTC)
+    run_at = utc_now()
 
     if args.repo:
         repo = fetch_repository(args.repo)
         evidence = build_evidence(repo)
         claims = build_claims(repo, evidence)
+        payload = build_deep_payload(repo, evidence, claims, run_at)
         write_report(args.output, render_deep_report(repo, evidence, claims))
+        if args.json_output:
+            write_json(args.json_output, payload)
+        if not args.no_db:
+            run_id = persist_deep_snapshot(args.db, payload)
+            print(f"Stored SQLite snapshot run_id={run_id} in {args.db}.")
         return
 
     candidates = search_repositories(args.days, args.min_stars, args.topic, args.language, args.limit)
     for repo in candidates:
-        repo["_score"] = score_repo(repo, now)
+        repo["_score"] = score_repo(repo, run_at)
     repos = sorted(candidates, key=lambda item: item["_score"], reverse=True)[: args.limit]
+    payload = build_discovery_payload(repos, args, run_at)
     write_report(args.output, render_discovery_report(repos, args))
+    if args.json_output:
+        write_json(args.json_output, payload)
+    if not args.no_db:
+        run_id = persist_discovery_snapshot(args.db, payload)
+        print(f"Stored SQLite snapshot run_id={run_id} in {args.db}.")
 
 
 if __name__ == "__main__":
