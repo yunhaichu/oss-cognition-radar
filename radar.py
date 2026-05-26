@@ -30,6 +30,48 @@ USER_AGENT = "oss-cognition-radar"
 MAX_TEXT_CHARS = 5000
 GROWTH_WINDOWS = {"1d": 1, "7d": 7, "30d": 30}
 GROWTH_MAX_AGE_DAYS = {"1d": 2, "7d": 10, "30d": 45}
+TRACK_WEIGHTS = {
+    "agent": {
+        "momentum": 0.25,
+        "collaboration": 0.20,
+        "release": 0.15,
+        "governance": 0.10,
+        "evidence": 0.20,
+        "ecosystem": 0.10,
+    },
+    "developer_tools": {
+        "momentum": 0.20,
+        "collaboration": 0.25,
+        "release": 0.20,
+        "governance": 0.10,
+        "evidence": 0.15,
+        "ecosystem": 0.10,
+    },
+    "local_first": {
+        "momentum": 0.15,
+        "collaboration": 0.20,
+        "release": 0.15,
+        "governance": 0.15,
+        "evidence": 0.20,
+        "ecosystem": 0.15,
+    },
+    "protocol": {
+        "momentum": 0.10,
+        "collaboration": 0.20,
+        "release": 0.10,
+        "governance": 0.25,
+        "evidence": 0.25,
+        "ecosystem": 0.10,
+    },
+    "general": {
+        "momentum": 0.25,
+        "collaboration": 0.20,
+        "release": 0.15,
+        "governance": 0.15,
+        "evidence": 0.15,
+        "ecosystem": 0.10,
+    },
+}
 
 
 @dataclasses.dataclass
@@ -172,6 +214,45 @@ def stable_id(prefix: str, *parts: str) -> str:
     raw = "::".join(part or "" for part in parts)
     digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
     return f"{prefix}_{digest}"
+
+
+def clamp(value: float, lower: float = 0.0, upper: float = 100.0) -> float:
+    return max(lower, min(upper, value))
+
+
+def linear_score(value: int | float | None, cap: float) -> float:
+    if value is None or cap <= 0:
+        return 0.0
+    return clamp((max(float(value), 0.0) / cap) * 100.0)
+
+
+def log_score(value: int | float | None, cap: float) -> float:
+    if value is None or cap <= 0:
+        return 0.0
+    return clamp((math.log1p(max(float(value), 0.0)) / math.log1p(cap)) * 100.0)
+
+
+def repo_profile_text(summary: dict) -> str:
+    parts = [
+        summary.get("full_name") or "",
+        summary.get("description") or "",
+        summary.get("language") or "",
+        " ".join(summary.get("topics") or []),
+    ]
+    return " ".join(parts).lower()
+
+
+def classify_project_track(summary: dict) -> str:
+    text = repo_profile_text(summary)
+    if has_any(text, ["mcp", "protocol", "standard", "spec", "server", "context infrastructure"]):
+        return "protocol"
+    if has_any(text, ["local-first", "local first", "offline", "sync", "crdt", "collaborative"]):
+        return "local_first"
+    if has_any(text, ["agent", "agents", "llm", "rag", "ai-agents", "multiagent", "model"]):
+        return "agent"
+    if has_any(text, ["cli", "sdk", "developer-tools", "developer tool", "editor", "formatter", "linter", "compiler", "ide"]):
+        return "developer_tools"
+    return "general"
 
 
 def search_repositories(days: int, min_stars: int, topic: str | None, language: str | None, limit: int) -> list[dict]:
@@ -541,6 +622,112 @@ def repo_summary(repo: dict, now: dt.datetime, include_health: bool = True) -> d
     }
 
 
+def best_growth_delta(summary: dict) -> int | None:
+    growth = summary.get("star_growth") or {}
+    for label in ("30d", "7d", "1d"):
+        item = growth.get(label) or {}
+        if item.get("available") and item.get("delta") is not None:
+            return item["delta"]
+    return None
+
+
+def latest_release_recency_score(latest_release_at: str | None, now: dt.datetime) -> float:
+    if not latest_release_at:
+        return 0.0
+    try:
+        age_days = (now - parse_iso_datetime(latest_release_at)).total_seconds() / 86400
+    except ValueError:
+        return 0.0
+    if age_days <= 30:
+        return 100.0
+    if age_days <= 90:
+        return 75.0
+    if age_days <= 180:
+        return 45.0
+    return 15.0
+
+
+def fake_star_confidence_score(summary: dict) -> float:
+    risk = summary.get("fake_star_risk") or ""
+    if risk.startswith("高"):
+        return 20.0
+    if risk.startswith("中"):
+        return 55.0
+    return 80.0
+
+
+def compute_track_score(summary: dict, evidence_count: int = 0, claim_count: int = 0) -> dict:
+    track = classify_project_track(summary)
+    health = summary.get("health") or {}
+    now = utc_now()
+    growth_delta = best_growth_delta(summary)
+    growth_signal = log_score(growth_delta, 5000) if growth_delta is not None else 0.0
+    velocity_signal = linear_score(summary.get("stars_per_day"), 150)
+    momentum = max(growth_signal, velocity_signal)
+
+    collaboration = (
+        linear_score(health.get("merged_prs_180d"), 300) * 0.45
+        + linear_score(health.get("closed_issues_180d"), 300) * 0.25
+        + linear_score(health.get("top_contributor_count_sample"), 100) * 0.20
+        + linear_score(health.get("open_prs"), 150) * 0.10
+    )
+    release = (
+        linear_score(health.get("release_count_365d_sample"), 5) * 0.65
+        + latest_release_recency_score(health.get("latest_release_at"), now) * 0.35
+    )
+    governance = (
+        (30.0 if health.get("has_license") else 0.0)
+        + (25.0 if health.get("pushed_within_30d") else 0.0)
+        + (15.0 if health.get("has_homepage") else 0.0)
+        + fake_star_confidence_score(summary) * 0.30
+    )
+    evidence = linear_score(evidence_count, 18) * 0.70 + linear_score(claim_count, 8) * 0.30
+    ecosystem = (
+        log_score(summary.get("forks"), 5000) * 0.55
+        + linear_score(health.get("top_contributor_count_sample"), 100) * 0.25
+        + linear_score(len(summary.get("topics") or []), 20) * 0.20
+    )
+
+    signals = {
+        "momentum": round(momentum, 1),
+        "collaboration": round(collaboration, 1),
+        "release": round(release, 1),
+        "governance": round(governance, 1),
+        "evidence": round(evidence, 1),
+        "ecosystem": round(ecosystem, 1),
+    }
+    weights = TRACK_WEIGHTS[track]
+    score = sum(signals[name] * weight for name, weight in weights.items())
+
+    rationale = [
+        f"classified as {track}",
+        "uses tracked star growth when available, otherwise falls back to star/day velocity",
+        "weights differ by project type so infrastructure/protocol projects are not judged like short-term demos",
+    ]
+    if evidence_count == 0:
+        rationale.append("evidence score is low in discovery mode until a deep dossier is generated")
+
+    return {
+        "track": track,
+        "score": round(score, 1),
+        "signals": signals,
+        "weights": weights,
+        "rationale": rationale,
+    }
+
+
+def attach_track_scores(summaries: list[dict], evidence_counts: dict[str, int] | None = None, claim_counts: dict[str, int] | None = None) -> None:
+    evidence_counts = evidence_counts or {}
+    claim_counts = claim_counts or {}
+    for summary in summaries:
+        full_name = summary["full_name"]
+        summary["track_score"] = compute_track_score(
+            summary,
+            evidence_count=evidence_counts.get(full_name, 0),
+            claim_count=claim_counts.get(full_name, 0),
+        )
+
+
 def evidence_to_dict(evidence: Evidence) -> dict:
     return dataclasses.asdict(evidence)
 
@@ -626,6 +813,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             fake_star_risk TEXT NOT NULL,
             archived INTEGER NOT NULL,
             license TEXT,
+            project_track TEXT,
+            track_score REAL,
+            track_score_json TEXT,
             PRIMARY KEY (run_id, full_name),
             FOREIGN KEY (run_id) REFERENCES runs(id)
         );
@@ -669,6 +859,9 @@ def init_db(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "evidence_items", "stable_id", "TEXT")
     ensure_column(conn, "claims", "claim_id", "TEXT")
     ensure_column(conn, "claims", "evidence_stable_ids_json", "TEXT")
+    ensure_column(conn, "repository_snapshots", "project_track", "TEXT")
+    ensure_column(conn, "repository_snapshots", "track_score", "REAL")
+    ensure_column(conn, "repository_snapshots", "track_score_json", "TEXT")
 
 
 def empty_star_growth() -> dict:
@@ -743,8 +936,8 @@ def insert_repo_snapshot(conn: sqlite3.Connection, run_id: int, summary: dict) -
             run_id, full_name, html_url, description, language, stars, forks,
             watchers, open_issues, created_at, updated_at, pushed_at,
             default_branch, topics_json, score, stars_per_day, fake_star_risk,
-            archived, license
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            archived, license, project_track, track_score, track_score_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             run_id,
@@ -766,6 +959,9 @@ def insert_repo_snapshot(conn: sqlite3.Connection, run_id: int, summary: dict) -
             summary["fake_star_risk"],
             int(summary["archived"]),
             summary["license"],
+            (summary.get("track_score") or {}).get("track"),
+            (summary.get("track_score") or {}).get("score"),
+            json.dumps(summary.get("track_score") or {}, ensure_ascii=False),
         ),
     )
 
@@ -905,6 +1101,19 @@ def render_repository_health(summary: dict) -> list[str]:
     return lines
 
 
+def render_track_score(summary: dict) -> list[str]:
+    score = summary.get("track_score") or {}
+    if not score:
+        return ["- Track score: unavailable"]
+    signals = score.get("signals") or {}
+    signal_text = ", ".join(f"{name}={value}" for name, value in signals.items())
+    return [
+        f"- Project track: {score.get('track', 'unknown')}",
+        f"- Track score: {score.get('score', 0):.1f}",
+        f"- Track signals: {signal_text}",
+    ]
+
+
 def build_claims(repo: dict, evidence: list[Evidence]) -> list[Claim]:
     text = corpus(evidence, repo)
     claims = [
@@ -974,6 +1183,7 @@ def render_deep_report(repo: dict, summary: dict, evidence: list[Evidence], clai
     ]
     lines.extend(render_star_growth(summary))
     lines.extend(render_repository_health(summary))
+    lines.extend(render_track_score(summary))
     lines.extend(
         [
             "",
@@ -1053,6 +1263,7 @@ def render_discovery_report(repo_summaries: list[dict], args: argparse.Namespace
         )
         lines.extend(render_star_growth(summary))
         lines.extend(render_repository_health(summary))
+        lines.extend(render_track_score(summary))
         lines.append("")
     return "\n".join(lines)
 
@@ -1081,6 +1292,11 @@ def main() -> None:
         claims = build_claims(repo, evidence)
         payload = build_deep_payload(repo, evidence, claims, run_at)
         attach_star_growth([payload["repository"]], None if args.no_db else args.db, run_at)
+        attach_track_scores(
+            [payload["repository"]],
+            evidence_counts={payload["repository"]["full_name"]: len(evidence)},
+            claim_counts={payload["repository"]["full_name"]: len(claims)},
+        )
         write_report(args.output, render_deep_report(repo, payload["repository"], evidence, claims))
         if args.json_output:
             write_json(args.json_output, payload)
@@ -1095,6 +1311,7 @@ def main() -> None:
     repos = sorted(candidates, key=lambda item: item["_score"], reverse=True)[: args.limit]
     repo_summaries = [repo_summary(repo, run_at) for repo in repos]
     attach_star_growth(repo_summaries, None if args.no_db else args.db, run_at)
+    attach_track_scores(repo_summaries)
     payload = build_discovery_payload(repo_summaries, args, run_at)
     write_report(args.output, render_discovery_report(repo_summaries, args))
     if args.json_output:
