@@ -56,6 +56,36 @@ data/radar.sqlite
 python3 radar.py --repo langchain-ai/langgraph --no-db
 ```
 
+查询已经沉淀到 SQLite 的本地档案，不再访问 GitHub API：
+
+```bash
+python3 radar.py --archive-list --db data/radar.sqlite --limit 20
+```
+
+```bash
+python3 radar.py --archive-search durable --db data/radar.sqlite --limit 10
+```
+
+```bash
+python3 radar.py --archive-show langchain-ai/langgraph --db data/radar.sqlite
+```
+
+归档查询默认输出到终端；如需保存 Markdown：
+
+```bash
+python3 radar.py \
+  --archive-search governance \
+  --db data/radar.sqlite \
+  --archive-output reports/archive-search.md \
+  --json-output reports/archive-search.json
+```
+
+归档查询也支持按分轨过滤：
+
+```bash
+python3 radar.py --archive-list --archive-track agent --min-track-score 50
+```
+
 如果设置了 `GITHUB_TOKEN`，API 限额会更高：
 
 ```bash
@@ -115,6 +145,12 @@ SQLite 当前会保存：
 - `evidence_items`
 - `claims`
 
+归档模式会基于这些表提供三类本地查询：
+
+- `--archive-list`：按最新快照列出已归档项目，支持 track 和最低 track score 过滤
+- `--archive-search TEXT`：搜索 repository 元数据、claims 和 evidence 文本
+- `--archive-show owner/name`：优先展示最新 deep dossier，没有 deep 快照时回退到最新 discovery 快照
+
 `star_growth` 只有在数据库里存在对应窗口附近的历史快照时才会显示真实增量；否则会标记为 `insufficient history`。当前匹配窗口为：1d 使用 1–2 天前快照，7d 使用 7–10 天前快照，30d 使用 30–45 天前快照。这避免把几分钟前的重复运行或过旧快照误当作 1 天增长。
 
 `repository.health` 是第一版健康度信号，包含 GitHub Search/API 可稳定获取的样本字段。`release_count_365d_sample` 和 `top_contributor_count_sample` 是 API 返回样本，不应当被当成完整全量统计。
@@ -137,4 +173,4 @@ SQLite 当前会保存：
 
 ## 下一步
 
-- 基于 JSON dossier 做仪表盘或知识库
+- 在 SQLite 归档查询基础上做浏览器 dashboard / 知识库视图

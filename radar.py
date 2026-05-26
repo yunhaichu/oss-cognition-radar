@@ -110,6 +110,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--json-output", help="Optional structured JSON output path.")
     parser.add_argument("--db", default="data/radar.sqlite", help="SQLite snapshot database path.")
     parser.add_argument("--no-db", action="store_true", help="Do not persist this run to SQLite.")
+    parser.add_argument("--archive-list", action="store_true", help="List latest repository snapshots from SQLite.")
+    parser.add_argument("--archive-search", metavar="TEXT", help="Search archived repositories, claims, and evidence.")
+    parser.add_argument("--archive-show", metavar="OWNER/REPO", help="Show the latest archived dossier for one repository.")
+    parser.add_argument(
+        "--archive-track",
+        choices=sorted(TRACK_WEIGHTS),
+        help="Archive mode: filter repositories by project track.",
+    )
+    parser.add_argument("--min-track-score", type=float, default=0.0, help="Archive mode: minimum track score.")
+    parser.add_argument("--archive-output", help="Archive mode: optional Markdown output path. Defaults to stdout.")
     return parser.parse_args()
 
 
@@ -1061,6 +1071,575 @@ def persist_discovery_snapshot(db_path: str, payload: dict) -> int:
         return run_id
 
 
+def safe_json_loads(value: str | None, fallback):
+    if not value:
+        return fallback
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return fallback
+
+
+def normalize_repo_arg(value: str) -> str:
+    normalized = value.strip().removesuffix("/")
+    github_prefix = "https://github.com/"
+    if normalized.startswith(github_prefix):
+        normalized = normalized[len(github_prefix) :]
+    return normalized.removesuffix(".git")
+
+
+def row_to_archive_summary(row: sqlite3.Row) -> dict:
+    full_name = row["full_name"]
+    track_score = safe_json_loads(row["track_score_json"], {}) or {}
+    if not track_score and (row["project_track"] or row["track_score"] is not None):
+        track_score = {
+            "track": row["project_track"] or "unknown",
+            "score": row["track_score"] or 0.0,
+            "signals": {},
+            "weights": {},
+            "rationale": ["loaded from an archived snapshot without full track score JSON"],
+        }
+
+    return {
+        "run_id": row["run_id"],
+        "run_created_at": row["run_created_at"],
+        "run_mode": row["run_mode"],
+        "dossier_id": stable_id("dossier", full_name),
+        "full_name": full_name,
+        "html_url": row["html_url"],
+        "description": row["description"],
+        "homepage": None,
+        "language": row["language"],
+        "stars": row["stars"],
+        "forks": row["forks"],
+        "watchers": row["watchers"],
+        "open_issues": row["open_issues"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "pushed_at": row["pushed_at"],
+        "default_branch": row["default_branch"],
+        "topics": safe_json_loads(row["topics_json"], []),
+        "score": row["score"],
+        "stars_per_day": row["stars_per_day"],
+        "fake_star_risk": row["fake_star_risk"],
+        "archived": bool(row["archived"]),
+        "license": row["license"],
+        "track_score": track_score,
+        "health": {},
+    }
+
+
+def connect_archive_db(db_path: str) -> sqlite3.Connection | None:
+    path = pathlib.Path(db_path)
+    if not path.exists():
+        return None
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    init_db(conn)
+    return conn
+
+
+def query_latest_archive_snapshots(
+    conn: sqlite3.Connection,
+    limit: int,
+    track: str | None = None,
+    min_track_score: float = 0.0,
+) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT s.*, r.id AS run_id, r.created_at AS run_created_at, r.mode AS run_mode
+        FROM repository_snapshots s
+        JOIN runs r ON r.id = s.run_id
+        WHERE s.run_id = (
+            SELECT s2.run_id
+            FROM repository_snapshots s2
+            JOIN runs r2 ON r2.id = s2.run_id
+            WHERE s2.full_name = s.full_name
+            ORDER BY r2.created_at DESC, s2.run_id DESC
+            LIMIT 1
+        )
+        AND (? IS NULL OR s.project_track = ?)
+        AND (? <= 0 OR COALESCE(s.track_score, 0) >= ?)
+        ORDER BY COALESCE(s.track_score, 0) DESC, s.stars DESC
+        LIMIT ?
+        """,
+        (track, track, min_track_score, min_track_score, max(limit, 1)),
+    ).fetchall()
+    summaries = [row_to_archive_summary(row) for row in rows]
+    for summary in summaries:
+        summary["health"] = load_archive_health(conn, summary["run_id"], summary["full_name"])
+    return summaries
+
+
+def query_archive_search(
+    conn: sqlite3.Connection,
+    query: str,
+    limit: int,
+    track: str | None = None,
+    min_track_score: float = 0.0,
+) -> list[dict]:
+    like = f"%{query.lower()}%"
+    rows = conn.execute(
+        """
+        SELECT s.*, r.id AS run_id, r.created_at AS run_created_at, r.mode AS run_mode
+        FROM repository_snapshots s
+        JOIN runs r ON r.id = s.run_id
+        WHERE s.run_id = (
+            SELECT s2.run_id
+            FROM repository_snapshots s2
+            JOIN runs r2 ON r2.id = s2.run_id
+            WHERE s2.full_name = s.full_name
+            ORDER BY r2.created_at DESC, s2.run_id DESC
+            LIMIT 1
+        )
+        AND (? IS NULL OR s.project_track = ?)
+        AND (? <= 0 OR COALESCE(s.track_score, 0) >= ?)
+        AND (
+            LOWER(s.full_name) LIKE ?
+            OR LOWER(COALESCE(s.description, '')) LIKE ?
+            OR LOWER(COALESCE(s.language, '')) LIKE ?
+            OR LOWER(COALESCE(s.topics_json, '')) LIKE ?
+            OR EXISTS (
+                SELECT 1
+                FROM claims c
+                WHERE c.repo_full_name = s.full_name
+                AND LOWER(COALESCE(c.field, '') || ' ' || COALESCE(c.text, '')) LIKE ?
+            )
+            OR EXISTS (
+                SELECT 1
+                FROM evidence_items e
+                WHERE e.repo_full_name = s.full_name
+                AND LOWER(COALESCE(e.kind, '') || ' ' || COALESCE(e.title, '') || ' ' || COALESCE(e.quote, '')) LIKE ?
+            )
+        )
+        ORDER BY COALESCE(s.track_score, 0) DESC, s.stars DESC
+        LIMIT ?
+        """,
+        (
+            track,
+            track,
+            min_track_score,
+            min_track_score,
+            like,
+            like,
+            like,
+            like,
+            like,
+            like,
+            max(limit, 1),
+        ),
+    ).fetchall()
+    entries = []
+    for row in rows:
+        summary = row_to_archive_summary(row)
+        summary["health"] = load_archive_health(conn, summary["run_id"], summary["full_name"])
+        entries.append(
+            {
+                "repository": summary,
+                "matched_claims": query_archive_claim_matches(conn, summary["full_name"], query),
+                "matched_evidence": query_archive_evidence_matches(conn, summary["full_name"], query),
+            }
+        )
+    return entries
+
+
+def query_archive_show(conn: sqlite3.Connection, full_name: str) -> dict | None:
+    normalized = normalize_repo_arg(full_name)
+    row = conn.execute(
+        """
+        SELECT s.*, r.id AS run_id, r.created_at AS run_created_at, r.mode AS run_mode
+        FROM repository_snapshots s
+        JOIN runs r ON r.id = s.run_id
+        WHERE LOWER(s.full_name) = LOWER(?)
+        ORDER BY CASE WHEN r.mode = 'deep' THEN 0 ELSE 1 END, r.created_at DESC, s.run_id DESC
+        LIMIT 1
+        """,
+        (normalized,),
+    ).fetchone()
+    if not row:
+        return None
+    summary = row_to_archive_summary(row)
+    summary["health"] = load_archive_health(conn, summary["run_id"], summary["full_name"])
+    return {
+        "repository": summary,
+        "claims": query_archive_claims(conn, summary["run_id"], summary["full_name"]),
+        "evidence": query_archive_evidence(conn, summary["run_id"], summary["full_name"]),
+    }
+
+
+def load_archive_health(conn: sqlite3.Connection, run_id: int, full_name: str) -> dict:
+    row = conn.execute(
+        """
+        SELECT health_json
+        FROM repository_health_snapshots
+        WHERE run_id = ? AND full_name = ?
+        """,
+        (run_id, full_name),
+    ).fetchone()
+    return safe_json_loads(row["health_json"], {}) if row else {}
+
+
+def query_archive_claims(conn: sqlite3.Connection, run_id: int, full_name: str) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT claim_id, field, text, evidence_ids_json, evidence_stable_ids_json, confidence
+        FROM claims
+        WHERE run_id = ? AND repo_full_name = ?
+        ORDER BY rowid
+        """,
+        (run_id, full_name),
+    ).fetchall()
+    return [
+        {
+            "claim_id": row["claim_id"],
+            "field": row["field"],
+            "text": row["text"],
+            "evidence_ids": safe_json_loads(row["evidence_ids_json"], []),
+            "evidence_stable_ids": safe_json_loads(row["evidence_stable_ids_json"], []),
+            "confidence": row["confidence"],
+        }
+        for row in rows
+    ]
+
+
+def query_archive_evidence(conn: sqlite3.Connection, run_id: int, full_name: str) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT evidence_id, stable_id, level, kind, title, url, quote
+        FROM evidence_items
+        WHERE run_id = ? AND repo_full_name = ?
+        ORDER BY evidence_id
+        """,
+        (run_id, full_name),
+    ).fetchall()
+    return [
+        {
+            "evidence_id": row["evidence_id"],
+            "stable_id": row["stable_id"],
+            "level": row["level"],
+            "kind": row["kind"],
+            "title": row["title"],
+            "url": row["url"],
+            "quote": row["quote"],
+        }
+        for row in rows
+    ]
+
+
+def query_archive_claim_matches(conn: sqlite3.Connection, full_name: str, query: str, limit: int = 3) -> list[dict]:
+    like = f"%{query.lower()}%"
+    rows = conn.execute(
+        """
+        SELECT run_id, claim_id, field, text, confidence
+        FROM claims
+        WHERE repo_full_name = ?
+        AND LOWER(COALESCE(field, '') || ' ' || COALESCE(text, '')) LIKE ?
+        ORDER BY run_id DESC, rowid
+        LIMIT ?
+        """,
+        (full_name, like, limit),
+    ).fetchall()
+    return [
+        {
+            "run_id": row["run_id"],
+            "claim_id": row["claim_id"],
+            "field": row["field"],
+            "text": row["text"],
+            "confidence": row["confidence"],
+        }
+        for row in rows
+    ]
+
+
+def query_archive_evidence_matches(conn: sqlite3.Connection, full_name: str, query: str, limit: int = 3) -> list[dict]:
+    like = f"%{query.lower()}%"
+    rows = conn.execute(
+        """
+        SELECT run_id, evidence_id, stable_id, kind, title, url, quote
+        FROM evidence_items
+        WHERE repo_full_name = ?
+        AND LOWER(COALESCE(kind, '') || ' ' || COALESCE(title, '') || ' ' || COALESCE(quote, '')) LIKE ?
+        ORDER BY run_id DESC, evidence_id
+        LIMIT ?
+        """,
+        (full_name, like, limit),
+    ).fetchall()
+    return [
+        {
+            "run_id": row["run_id"],
+            "evidence_id": row["evidence_id"],
+            "stable_id": row["stable_id"],
+            "kind": row["kind"],
+            "title": row["title"],
+            "url": row["url"],
+            "quote": row["quote"],
+        }
+        for row in rows
+    ]
+
+
+def archive_message_payload(mode: str, args: argparse.Namespace, message: str) -> dict:
+    return {
+        "schema_version": 1,
+        "mode": mode,
+        "generated_at": utc_now().isoformat(),
+        "db": args.db,
+        "message": message,
+    }
+
+
+def archive_filters_payload(args: argparse.Namespace) -> dict:
+    return {
+        "limit": args.limit,
+        "track": args.archive_track,
+        "min_track_score": args.min_track_score,
+    }
+
+
+def archive_list_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
+    return {
+        "schema_version": 1,
+        "mode": "archive_list",
+        "generated_at": utc_now().isoformat(),
+        "db": args.db,
+        "filters": archive_filters_payload(args),
+        "repositories": query_latest_archive_snapshots(
+            conn,
+            args.limit,
+            track=args.archive_track,
+            min_track_score=args.min_track_score,
+        ),
+    }
+
+
+def archive_search_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
+    query = args.archive_search.strip()
+    return {
+        "schema_version": 1,
+        "mode": "archive_search",
+        "generated_at": utc_now().isoformat(),
+        "db": args.db,
+        "query": query,
+        "filters": archive_filters_payload(args),
+        "matches": query_archive_search(
+            conn,
+            query,
+            args.limit,
+            track=args.archive_track,
+            min_track_score=args.min_track_score,
+        ),
+    }
+
+
+def archive_show_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
+    dossier = query_archive_show(conn, args.archive_show)
+    payload = {
+        "schema_version": 1,
+        "mode": "archive_show",
+        "generated_at": utc_now().isoformat(),
+        "db": args.db,
+        "repository_query": args.archive_show,
+    }
+    if dossier is None:
+        payload["message"] = f"No archived repository found for {args.archive_show}."
+        return payload
+    payload.update(dossier)
+    return payload
+
+
+def archive_score_text(summary: dict) -> str:
+    score = summary.get("track_score") or {}
+    track = score.get("track") or "unknown"
+    value = score.get("score")
+    if isinstance(value, (int, float)):
+        return f"{track} / {value:.1f}"
+    return f"{track} / unknown"
+
+
+def one_line(value: str | None, limit: int = 180) -> str:
+    text = re.sub(r"\s+", " ", value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 3, 0)].rstrip() + "..."
+
+
+def render_archive_repo_brief(summary: dict, db_path: str) -> list[str]:
+    topics = ", ".join(summary.get("topics") or []) or "无"
+    return [
+        summary.get("description") or "无描述。",
+        "",
+        f"- 链接：{summary.get('html_url') or '无'}",
+        f"- 最近归档：run_id={summary.get('run_id')} / {summary.get('run_created_at')} / {summary.get('run_mode')}",
+        f"- 语言：{summary.get('language') or '未知'}",
+        f"- Stars：{summary.get('stars', 0)}",
+        f"- Forks：{summary.get('forks', 0)}",
+        f"- Open issues：{summary.get('open_issues', 0)}",
+        f"- Track score：{archive_score_text(summary)}",
+        f"- Dossier ID：{summary.get('dossier_id')}",
+        f"- Fake-star 风险：{summary.get('fake_star_risk') or '未知'}",
+        f"- Topics：{topics}",
+        f"- 查看档案：`python3 radar.py --archive-show {summary.get('full_name')} --db {db_path}`",
+    ]
+
+
+def render_archive_list(payload: dict) -> str:
+    if payload.get("message"):
+        return "\n".join(["# OSS Cognition Archive", "", payload["message"], ""])
+    lines = [
+        "# OSS Cognition Archive",
+        "",
+        f"- 数据库：{payload['db']}",
+        f"- 生成时间：{payload['generated_at']}",
+        f"- 结果数：{len(payload['repositories'])}",
+        f"- Track 过滤：{payload['filters'].get('track') or '无'}",
+        f"- 最低 track score：{payload['filters'].get('min_track_score') or 0}",
+        "",
+    ]
+    for index, summary in enumerate(payload["repositories"], 1):
+        lines.extend([f"## {index}. {summary['full_name']}", ""])
+        lines.extend(render_archive_repo_brief(summary, payload["db"]))
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_archive_search(payload: dict) -> str:
+    if payload.get("message"):
+        return "\n".join(["# OSS Cognition Archive Search", "", payload["message"], ""])
+    lines = [
+        "# OSS Cognition Archive Search",
+        "",
+        f"- 数据库：{payload['db']}",
+        f"- 查询：{payload['query']}",
+        f"- 结果数：{len(payload['matches'])}",
+        f"- Track 过滤：{payload['filters'].get('track') or '无'}",
+        f"- 最低 track score：{payload['filters'].get('min_track_score') or 0}",
+        "",
+    ]
+    for index, entry in enumerate(payload["matches"], 1):
+        summary = entry["repository"]
+        lines.extend([f"## {index}. {summary['full_name']}", ""])
+        lines.extend(render_archive_repo_brief(summary, payload["db"]))
+        lines.append("")
+        if entry["matched_claims"]:
+            lines.extend(["### Matched claims", ""])
+            for claim in entry["matched_claims"]:
+                lines.extend(
+                    [
+                        f"- `{claim.get('claim_id') or 'no-claim-id'}` {claim['field']} ({claim['confidence']}): "
+                        f"{one_line(claim['text'])}",
+                    ]
+                )
+            lines.append("")
+        if entry["matched_evidence"]:
+            lines.extend(["### Matched evidence", ""])
+            for item in entry["matched_evidence"]:
+                lines.extend(
+                    [
+                        f"- `{item.get('stable_id') or item.get('evidence_id')}` {item['kind']} - {item['title']}: "
+                        f"{one_line(item['quote'])}",
+                    ]
+                )
+            lines.append("")
+    return "\n".join(lines)
+
+
+def render_archive_show(payload: dict) -> str:
+    if payload.get("message"):
+        return "\n".join(["# OSS Cognition Archived Dossier", "", payload["message"], ""])
+
+    summary = payload["repository"]
+    lines = [
+        "# OSS Cognition Archived Dossier",
+        "",
+        f"- 数据库：{payload['db']}",
+        f"- 生成时间：{payload['generated_at']}",
+        "",
+        f"## {summary['full_name']}",
+        "",
+    ]
+    lines.extend(render_archive_repo_brief(summary, payload["db"]))
+    lines.append("")
+    lines.extend(render_repository_health(summary))
+    lines.extend(render_track_score(summary))
+    lines.extend(["", "## Claims", ""])
+    if not payload.get("claims"):
+        lines.extend(["该归档快照没有深度 claim；请先运行 `python3 radar.py --repo owner/name`。", ""])
+    for claim in payload.get("claims", []):
+        stable_refs = claim.get("evidence_stable_ids") or []
+        refs = ", ".join(f"`{item}`" for item in stable_refs) if stable_refs else evidence_refs(claim.get("evidence_ids") or [])
+        lines.extend(
+            [
+                f"### {claim['field']}",
+                "",
+                claim["text"],
+                "",
+                f"- Claim ID：`{claim.get('claim_id') or '无'}`",
+                f"- 证据：{refs}",
+                f"- 置信度：{claim['confidence']}",
+                "",
+            ]
+        )
+
+    lines.extend(["## Evidence", ""])
+    if not payload.get("evidence"):
+        lines.extend(["该归档快照没有证据链。", ""])
+    for item in payload.get("evidence", []):
+        lines.extend(
+            [
+                f"### {item['evidence_id']}. {item['kind']} - {item['title']}",
+                "",
+                f"- Stable ID：`{item.get('stable_id') or '无'}`",
+                f"- 证据层级：L{item['level']}",
+                f"- 链接：{item.get('url') or '无'}",
+                f"- 摘录：{textwrap.fill(item.get('quote') or '无摘录。', width=88)}",
+                "",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def emit_archive_result(markdown: str, payload: dict, args: argparse.Namespace) -> None:
+    if args.archive_output:
+        write_report(args.archive_output, markdown)
+    else:
+        print(markdown)
+    if args.json_output:
+        write_json(args.json_output, payload)
+
+
+def handle_archive(args: argparse.Namespace) -> None:
+    modes = [
+        bool(args.archive_list),
+        args.archive_search is not None,
+        args.archive_show is not None,
+    ]
+    if sum(modes) != 1:
+        raise SystemExit("Choose exactly one archive mode: --archive-list, --archive-search, or --archive-show.")
+    if args.archive_search is not None and not args.archive_search.strip():
+        raise SystemExit("--archive-search requires non-empty text.")
+
+    conn = connect_archive_db(args.db)
+    if conn is None:
+        payload = archive_message_payload("archive", args, f"Archive database not found: {args.db}")
+        emit_archive_result(render_archive_list(payload), payload, args)
+        return
+
+    try:
+        with conn:
+            if args.archive_list:
+                payload = archive_list_payload(conn, args)
+                markdown = render_archive_list(payload)
+            elif args.archive_search is not None:
+                payload = archive_search_payload(conn, args)
+                markdown = render_archive_search(payload)
+            else:
+                payload = archive_show_payload(conn, args)
+                markdown = render_archive_show(payload)
+    finally:
+        conn.close()
+    emit_archive_result(markdown, payload, args)
+
+
 def render_star_growth(summary: dict) -> list[str]:
     growth = summary.get("star_growth") or empty_star_growth()
     lines = ["- Star growth:"]
@@ -1285,6 +1864,10 @@ def write_json(path: str, payload: dict) -> None:
 def main() -> None:
     args = parse_args()
     run_at = utc_now()
+
+    if args.archive_list or args.archive_search is not None or args.archive_show is not None:
+        handle_archive(args)
+        return
 
     if args.repo:
         repo = fetch_repository(args.repo)
