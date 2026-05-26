@@ -72,6 +72,12 @@ python3 radar.py --archive-search durable --db data/radar.sqlite --limit 10
 python3 radar.py --archive-show langchain-ai/langgraph --db data/radar.sqlite
 ```
 
+聚合已经归档的 evidence-to-claim bindings，观察跨项目重复出现的 claim-gap 修补模式：
+
+```bash
+python3 radar.py --archive-patterns --db data/radar.sqlite --limit 20
+```
+
 归档查询默认输出到终端；如需保存 Markdown：
 
 ```bash
@@ -184,11 +190,12 @@ SQLite 当前会保存：
 - `archive_search_fts`
 - `archive_search_meta`
 
-归档模式会基于这些表提供四类本地查询：
+归档模式会基于这些表提供五类本地查询：
 
 - `--archive-list`：按最新快照列出已归档项目，支持 track 和最低 track score 过滤
 - `--archive-search TEXT`：用 SQLite FTS5 搜索 repository 元数据、claims、claim gaps、evidence acquisition bindings 和 evidence 文本，并返回 relevance 信息
 - `--archive-show owner/name`：优先展示最新 deep dossier，没有 deep 快照时回退到最新 discovery 快照
+- `--archive-patterns`：聚合最新 deep dossiers 中的 evidence acquisition bindings，按 claim 字段和缺口证据层输出跨项目重复模式、例子仓库和 evidence
 - `--archive-dashboard [PATH]`：生成一个可直接打开的静态 HTML dashboard，包含搜索、track 过滤、最低分过滤、项目详情、claims、claim gaps、evidence acquisition bindings 和 evidence 摘要
 
 `star_growth` 只有在数据库里存在对应窗口附近的历史快照时才会显示真实增量；否则会标记为 `insufficient history`。当前匹配窗口为：1d 使用 1–2 天前快照，7d 使用 7–10 天前快照，30d 使用 30–45 天前快照。这避免把几分钟前的重复运行或过旧快照误当作 1 天增长。
@@ -241,4 +248,4 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 ## 下一步
 
-- 继续把 archive 中的 acquisition bindings 用于更精细的 claim gap 回看和跨项目模式聚合
+- 把 `--archive-patterns` 的跨项目模式接入 dashboard，并开始加入手工校准过的 binding confidence

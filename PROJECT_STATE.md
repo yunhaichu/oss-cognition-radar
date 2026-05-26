@@ -24,6 +24,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Claim gap report: deep payloads, Markdown reports, archive show, and the dashboard now rank high-value claims with weak support coverage and recommend the next evidence layer to collect.
 - Targeted evidence acquisition: deep mode now runs a second evidence pass based on the initial claim gap report, ranking source/test/benchmark/configuration/release/issue/PR candidates by claim field, missing layer, and claim keywords, then binding added evidence back to the target claim before rebuilding final support coverage.
 - Acquisition binding archive: evidence-to-claim acquisition bindings are persisted to SQLite, included in archive search/show payloads, and displayed in the dashboard so each added evidence item can show which claim gap it was collected for.
+- Cross-project pattern view: `--archive-patterns` groups persisted acquisition bindings from latest deep dossiers by claim field and missing evidence layer, surfacing repeated claim-gap repair moves with example repositories and evidence.
 - Repository health: captures 180d merged PR / closed issue counts, open PRs, release sample cadence, and top contributor samples.
 - Track scoring: classifies projects as agent, developer tools, local-first, protocol, or general, then applies track-specific weights across momentum, collaboration, release, governance, evidence, and ecosystem signals.
 - Archive queries: `--archive-list`, `--archive-search TEXT`, and `--archive-show owner/name` query persisted SQLite snapshots locally, with track and minimum track score filters plus optional Markdown/JSON export.
@@ -40,6 +41,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Implementation-layer file selection is heuristic and may miss the true core module in unusual repository layouts.
 - Support coverage reflects evidence linked to each claim; targeted bindings can now add missing-layer evidence, but those bindings are still heuristic and can over-associate broad artifacts.
 - Persisted acquisition bindings are searchable and visible, but the binding confidence itself is still rule-based and not yet calibrated across manually reviewed examples.
+- Cross-project pattern grouping is currently deterministic and shallow; it groups exact claim fields and evidence layers, not semantic variants across differently named claims.
 - Star growth depends on repeated snapshots; fresh databases correctly show insufficient history.
 - Repository health release/contributor fields are first-pass API samples, not complete longitudinal analytics.
 - Track classification is heuristic and should be refined with manually reviewed samples.
@@ -51,4 +53,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Use persisted acquisition bindings to build a cross-project pattern view that groups repeated claim-gap-to-evidence repair moves across archived dossiers.
+Expose `--archive-patterns` in the dashboard and add a first binding confidence/calibration field so repeated patterns can be reviewed by reliability, not only frequency.

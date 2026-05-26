@@ -165,6 +165,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--archive-search", metavar="TEXT", help="Search archived repositories, claims, and evidence.")
     parser.add_argument("--archive-show", metavar="OWNER/REPO", help="Show the latest archived dossier for one repository.")
     parser.add_argument(
+        "--archive-patterns",
+        action="store_true",
+        help="Group archived acquisition bindings into cross-project claim-gap repair patterns.",
+    )
+    parser.add_argument(
         "--archive-dashboard",
         nargs="?",
         const="reports/archive-dashboard.html",
@@ -3445,6 +3450,171 @@ def query_archive_binding_matches(
     ]
 
 
+def count_value(counts: dict[str, int], value: str | None) -> None:
+    cleaned = str(value or "").strip()
+    if cleaned:
+        counts[cleaned] = counts.get(cleaned, 0) + 1
+
+
+def top_count_items(counts: dict[str, int], limit: int = 8) -> list[dict]:
+    return [
+        {"value": value, "count": count}
+        for value, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]
+    ]
+
+
+def query_archive_pattern_bindings(
+    conn: sqlite3.Connection,
+    track: str | None = None,
+    min_track_score: float = 0.0,
+) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT b.run_id, b.repo_full_name, b.evidence_id, b.evidence_stable_id,
+               b.claim_id, b.field, b.missing_layer, b.missing_layer_label,
+               b.keywords_json, b.reason,
+               r.created_at AS run_created_at,
+               s.project_track, s.track_score,
+               e.kind AS evidence_kind, e.title AS evidence_title,
+               e.url AS evidence_url, e.quote AS evidence_quote,
+               e.evidence_type, e.polarity, e.signal_tags_json
+        FROM evidence_acquisition_bindings b
+        JOIN runs r ON r.id = b.run_id
+        JOIN repository_snapshots s
+          ON s.run_id = b.run_id AND s.full_name = b.repo_full_name
+        LEFT JOIN evidence_items e
+          ON e.run_id = b.run_id
+         AND e.repo_full_name = b.repo_full_name
+         AND e.evidence_id = b.evidence_id
+        WHERE r.mode = 'deep'
+          AND b.run_id = (
+              SELECT s2.run_id
+              FROM repository_snapshots s2
+              JOIN runs r2 ON r2.id = s2.run_id
+              WHERE s2.full_name = b.repo_full_name
+                AND r2.mode = 'deep'
+              ORDER BY r2.created_at DESC, s2.run_id DESC
+              LIMIT 1
+          )
+          AND (? IS NULL OR s.project_track = ?)
+          AND (? <= 0 OR COALESCE(s.track_score, 0) >= ?)
+        ORDER BY b.field, b.missing_layer, COALESCE(s.track_score, 0) DESC, b.repo_full_name, b.evidence_id
+        """,
+        (track, track, min_track_score, min_track_score),
+    ).fetchall()
+    return [
+        {
+            "run_id": row["run_id"],
+            "run_created_at": row["run_created_at"],
+            "repo_full_name": row["repo_full_name"],
+            "track": row["project_track"] or "unknown",
+            "track_score": row["track_score"],
+            "claim_id": row["claim_id"],
+            "field": row["field"],
+            "missing_layer": row["missing_layer"],
+            "missing_layer_label": row["missing_layer_label"] or SUPPORT_LAYER_LABELS.get(row["missing_layer"], row["missing_layer"]),
+            "keywords": safe_json_loads(row["keywords_json"], []),
+            "reason": row["reason"],
+            "evidence_id": row["evidence_id"],
+            "evidence_stable_id": row["evidence_stable_id"],
+            "evidence_kind": row["evidence_kind"],
+            "evidence_title": row["evidence_title"],
+            "evidence_url": row["evidence_url"],
+            "evidence_quote": row["evidence_quote"],
+            "evidence_type": row["evidence_type"] or "general",
+            "polarity": row["polarity"] or "supporting",
+            "signal_tags": safe_json_loads(row["signal_tags_json"], []),
+        }
+        for row in rows
+    ]
+
+
+def build_archive_acquisition_patterns(rows: list[dict], limit: int) -> list[dict]:
+    groups: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        field = row.get("field") or "未知 claim"
+        layer = row.get("missing_layer") or "unknown"
+        key = (field, layer)
+        pattern = groups.setdefault(
+            key,
+            {
+                "pattern_id": stable_id("pattern", field, layer),
+                "field": field,
+                "missing_layer": layer,
+                "missing_layer_label": row.get("missing_layer_label") or SUPPORT_LAYER_LABELS.get(layer, layer),
+                "binding_count": 0,
+                "_repositories": set(),
+                "_track_counts": {},
+                "_evidence_type_counts": {},
+                "_evidence_kind_counts": {},
+                "_keyword_counts": {},
+                "_reason_counts": {},
+                "examples": [],
+            },
+        )
+        pattern["binding_count"] += 1
+        pattern["_repositories"].add(row.get("repo_full_name") or "")
+        count_value(pattern["_track_counts"], row.get("track"))
+        count_value(pattern["_evidence_type_counts"], row.get("evidence_type"))
+        count_value(pattern["_evidence_kind_counts"], row.get("evidence_kind"))
+        count_value(pattern["_reason_counts"], row.get("reason"))
+        for keyword in row.get("keywords") or []:
+            count_value(pattern["_keyword_counts"], keyword)
+
+        if len(pattern["examples"]) < 6:
+            pattern["examples"].append(
+                {
+                    "repo_full_name": row.get("repo_full_name"),
+                    "run_id": row.get("run_id"),
+                    "run_created_at": row.get("run_created_at"),
+                    "track": row.get("track"),
+                    "track_score": row.get("track_score"),
+                    "claim_id": row.get("claim_id"),
+                    "evidence_id": row.get("evidence_id"),
+                    "evidence_stable_id": row.get("evidence_stable_id"),
+                    "evidence_kind": row.get("evidence_kind"),
+                    "evidence_title": row.get("evidence_title"),
+                    "evidence_url": row.get("evidence_url"),
+                    "evidence_type": row.get("evidence_type"),
+                    "polarity": row.get("polarity"),
+                    "keywords": row.get("keywords") or [],
+                    "reason": row.get("reason"),
+                    "quote": excerpt(row.get("evidence_quote") or "", 220),
+                }
+            )
+
+    patterns = []
+    for pattern in groups.values():
+        repositories = sorted(repo for repo in pattern.pop("_repositories") if repo)
+        repo_count = len(repositories)
+        binding_count = pattern["binding_count"]
+        pattern.update(
+            {
+                "repository_count": repo_count,
+                "repositories": repositories[:12],
+                "repeat_status": "cross_project" if repo_count >= 2 else "single_project",
+                "pattern_score": min(100, repo_count * 18 + binding_count * 6),
+                "tracks": top_count_items(pattern.pop("_track_counts")),
+                "evidence_types": top_count_items(pattern.pop("_evidence_type_counts")),
+                "evidence_kinds": top_count_items(pattern.pop("_evidence_kind_counts")),
+                "keywords": top_count_items(pattern.pop("_keyword_counts"), limit=10),
+                "reasons": top_count_items(pattern.pop("_reason_counts"), limit=3),
+            }
+        )
+        patterns.append(pattern)
+
+    patterns.sort(
+        key=lambda item: (
+            -item["repository_count"],
+            -item["binding_count"],
+            -item["pattern_score"],
+            item["field"],
+            item["missing_layer"],
+        )
+    )
+    return patterns[: max(limit, 1)]
+
+
 def archive_message_payload(mode: str, args: argparse.Namespace, message: str) -> dict:
     return {
         "schema_version": 1,
@@ -3515,6 +3685,31 @@ def archive_show_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> 
         return payload
     payload.update(dossier)
     return payload
+
+
+def archive_patterns_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
+    rows = query_archive_pattern_bindings(
+        conn,
+        track=args.archive_track,
+        min_track_score=args.min_track_score,
+    )
+    patterns = build_archive_acquisition_patterns(rows, args.limit)
+    repositories = sorted({row.get("repo_full_name") for row in rows if row.get("repo_full_name")})
+    return {
+        "schema_version": 1,
+        "mode": "archive_patterns",
+        "generated_at": utc_now().isoformat(),
+        "db": args.db,
+        "filters": archive_filters_payload(args),
+        "scope": "latest_deep_dossiers",
+        "statistics": {
+            "bindings": len(rows),
+            "patterns": len(patterns),
+            "repositories": len(repositories),
+            "cross_project_patterns": sum(1 for item in patterns if item.get("repository_count", 0) >= 2),
+        },
+        "patterns": patterns,
+    }
 
 
 def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
@@ -4536,6 +4731,73 @@ def render_archive_search(payload: dict) -> str:
     return "\n".join(lines)
 
 
+def count_items_text(items: list[dict], limit: int = 6) -> str:
+    text = "、".join(f"{item.get('value')}={item.get('count')}" for item in items[:limit] if item.get("value"))
+    return text or "无"
+
+
+def render_archive_patterns(payload: dict) -> str:
+    if payload.get("message"):
+        return "\n".join(["# OSS Cognition Archive Patterns", "", payload["message"], ""])
+    stats = payload.get("statistics") or {}
+    lines = [
+        "# OSS Cognition Archive Patterns",
+        "",
+        f"- 数据库：{payload['db']}",
+        f"- 生成时间：{payload['generated_at']}",
+        f"- 数据范围：{payload.get('scope') or 'latest_deep_dossiers'}",
+        f"- Track 过滤：{payload['filters'].get('track') or '无'}",
+        f"- 最低 track score：{payload['filters'].get('min_track_score') or 0}",
+        f"- 参与绑定数：{stats.get('bindings', 0)}",
+        f"- 参与仓库数：{stats.get('repositories', 0)}",
+        f"- 模式数：{stats.get('patterns', 0)}",
+        f"- 跨项目重复模式：{stats.get('cross_project_patterns', 0)}",
+        "",
+    ]
+    if not payload.get("patterns"):
+        lines.extend(["当前 archive 中没有可聚合的 evidence acquisition bindings。", ""])
+        return "\n".join(lines)
+
+    for index, pattern in enumerate(payload["patterns"], 1):
+        lines.extend(
+            [
+                f"## {index}. {pattern.get('field')} -> {pattern.get('missing_layer_label') or pattern.get('missing_layer')}",
+                "",
+                f"- Pattern ID：`{pattern.get('pattern_id')}`",
+                f"- 状态：{pattern.get('repeat_status')}",
+                f"- 仓库数 / 绑定数：{pattern.get('repository_count', 0)} / {pattern.get('binding_count', 0)}",
+                f"- Pattern score：{pattern.get('pattern_score', 0)}/100",
+                f"- Tracks：{count_items_text(pattern.get('tracks') or [])}",
+                f"- Evidence types：{count_items_text(pattern.get('evidence_types') or [])}",
+                f"- Evidence kinds：{count_items_text(pattern.get('evidence_kinds') or [])}",
+                f"- Keywords：{count_items_text(pattern.get('keywords') or [], limit=10)}",
+                f"- 常见缺口原因：{count_items_text(pattern.get('reasons') or [], limit=3)}",
+                "",
+            ]
+        )
+        if pattern.get("repositories"):
+            lines.extend([f"- Repositories：{', '.join(pattern['repositories'])}", ""])
+        if pattern.get("examples"):
+            lines.extend(["### Examples", ""])
+            for example in pattern["examples"]:
+                stable_ref = example.get("evidence_stable_id") or example.get("evidence_id") or "no-evidence-id"
+                title = " - ".join(
+                    item for item in [example.get("evidence_kind"), example.get("evidence_title")] if item
+                )
+                keywords = "、".join(example.get("keywords") or []) or "无"
+                lines.extend(
+                    [
+                        f"- `{stable_ref}` {example.get('repo_full_name')} ({example.get('track') or 'unknown'} / "
+                        f"{example.get('track_score') if example.get('track_score') is not None else 'unknown'}): "
+                        f"{title or 'Evidence'}；关键词：{keywords}；原因：{one_line(example.get('reason'))}",
+                    ]
+                )
+                if example.get("quote"):
+                    lines.append(f"  摘录：{one_line(example.get('quote'), 220)}")
+            lines.append("")
+    return "\n".join(lines)
+
+
 def render_archive_show(payload: dict) -> str:
     if payload.get("message"):
         return "\n".join(["# OSS Cognition Archived Dossier", "", payload["message"], ""])
@@ -4626,11 +4888,12 @@ def handle_archive(args: argparse.Namespace) -> None:
         bool(args.archive_list),
         args.archive_search is not None,
         args.archive_show is not None,
+        bool(args.archive_patterns),
         args.archive_dashboard is not None,
     ]
     if sum(modes) != 1:
         raise SystemExit(
-            "Choose exactly one archive mode: --archive-list, --archive-search, --archive-show, or --archive-dashboard."
+            "Choose exactly one archive mode: --archive-list, --archive-search, --archive-show, --archive-patterns, or --archive-dashboard."
         )
     if args.archive_search is not None and not args.archive_search.strip():
         raise SystemExit("--archive-search requires non-empty text.")
@@ -4652,6 +4915,9 @@ def handle_archive(args: argparse.Namespace) -> None:
             elif args.archive_show is not None:
                 payload = archive_show_payload(conn, args)
                 markdown = render_archive_show(payload)
+            elif args.archive_patterns:
+                payload = archive_patterns_payload(conn, args)
+                markdown = render_archive_patterns(payload)
             else:
                 payload = archive_dashboard_payload(conn, args)
                 write_dashboard(args.archive_dashboard, payload)
@@ -4990,6 +5256,7 @@ def main() -> None:
         args.archive_list
         or args.archive_search is not None
         or args.archive_show is not None
+        or args.archive_patterns
         or args.archive_dashboard is not None
     ):
         handle_archive(args)
