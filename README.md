@@ -1,24 +1,38 @@
-# GitHub Project Radar
+# OSS Cognition Radar
 
-一个从零开始的 GitHub 热门项目雷达。它不追踪“人说了什么”，而是看开发者正在做什么：近期活跃、增长快、设计表达清楚的开源项目，并尝试从项目设计里反推出开发者的底层判断、工程审美和产品哲学。
+从热门开源项目的公开工程痕迹中，反向提炼开发者的认知模式、设计取舍和治理方式。
 
-第一版只依赖 Python 标准库，通过 GitHub REST API 抓取最近创建且 star 较高的项目，计算一个简单的热度/质量分数，并生成 Markdown 报告。
+这个项目不把 GitHub star 当成质量本身。star 只是发现候选项目的入口；真正的分析对象是 README、docs、examples、release、issue、PR、治理文件等可观察、可复核的工程证据。
+
+## 核心定位
+
+```text
+不是：GitHub 热榜网站
+而是：开源项目认知模式解剖器
+```
+
+它尝试回答：
+
+- 作者如何重新定义问题？
+- 项目的关键抽象是什么？
+- 架构边界在哪里？
+- 真正复杂的地方藏在哪里？
+- 失败、恢复、兼容性和维护成本如何被处理？
+- 治理方式体现了什么长期判断？
+- 哪些思想可迁移，哪些势能不可复制？
 
 ## 使用
 
+发现近期高信号候选项目：
+
 ```bash
-python3 radar.py --days 30 --limit 20 --min-stars 100 --output reports/latest.md
+python3 radar.py --days 30 --limit 20 --min-stars 100 --topic ai --output reports/latest.md
 ```
 
-可选参数：
+深度分析单个项目：
 
 ```bash
-python3 radar.py \
-  --days 30 \
-  --limit 20 \
-  --min-stars 100 \
-  --topic ai \
-  --output reports/ai.md
+python3 radar.py --repo langchain-ai/langgraph --output reports/langgraph.md
 ```
 
 如果设置了 `GITHUB_TOKEN`，API 限额会更高：
@@ -27,32 +41,49 @@ python3 radar.py \
 export GITHUB_TOKEN=ghp_xxx
 ```
 
-## 当前评分逻辑
+## 当前输出
 
-```text
-score =
-  stars_per_day * 0.45
-+ log(stars) * 8
-+ log(forks) * 4
-+ recent_push_bonus
-+ issue_activity_signal
-```
-
-报告会包含：
+发现模式会输出：
 
 - 项目基础信息
-- 热度信号
-- 主题标签
-- README 摘要片段
-- 思想本质切片：核心命题、关键取舍、开发者心智模型、精读入口
-- 初步观察点
+- star/day 近似增长信号
+- fork、issue、topic 等基础指标
+- 初步 fake-star 风险提示
+- 深度分析命令提示
 
-## 方向
+深度模式会输出：
 
-后续可以继续加：
+- 方法边界
+- 项目档案
+- 领域
+- 作者如何重新定义问题
+- 关键抽象
+- 架构边界
+- 复杂度藏处
+- 治理模式
+- 可复用思想
+- 不可复制条件
+- fake-star 风险与复核建议
+- 可追溯证据链
 
-- GitHub Trending 抓取
-- Hacker News 共振信号
-- README/issue/PR 的 AI 深度分析
-- SQLite 历史趋势
-- 每周自动报告
+## 方法原则
+
+1. **证据优先**
+   每条判断都应尽量回到公开 GitHub 工程痕迹。
+
+2. **star 降权**
+   star 是兴趣信号，不是质量代理。后续会加入真实增长快照、fork/PR/contributor 联合观察和异常增长惩罚。
+
+3. **分析公共行为，不猜私密动机**
+   本项目只归纳公开可见的工程模式，不声称证明作者的完整心理本质。
+
+4. **从项目行为反推设计思想**
+   真正有价值的不是“项目很火”，而是它如何定义问题、隐藏复杂度、暴露抽象、组织贡献和处理失败。
+
+## 下一步
+
+- 把证据链存入 SQLite 快照
+- 增加 1d / 7d / 30d 真实 star 增长
+- 抓取高评论 issue、最近合并 PR、release cadence、contributors
+- 为不同项目类型建立分轨评分：agent、developer tools、local-first、protocol
+- 将项目档案导出为 JSON，方便后续做仪表盘或知识库

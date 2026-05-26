@@ -2,24 +2,26 @@
 
 ## Current Goal
 
-Build a lightweight GitHub project radar that studies what developers are building, using popular repositories as evidence for developer taste, priorities, engineering ideas, and deeper design philosophy.
+Build OSS Cognition Radar: a lightweight tool that studies popular open-source repositories as public engineering evidence, then extracts observable, reviewable, and transferable cognition/design/governance patterns.
 
 ## Current Phase
 
-MVP created. The project is a pure Python standard-library script that queries GitHub REST API and generates a Markdown report. The report is being shaped around "project philosophy analysis", not only popularity ranking.
+The project has pivoted from a simple GitHub hot-project radar to an evidence-backed project dossier generator. Discovery mode still finds candidate repositories; deep mode analyzes one repository through README, docs/examples files, releases, issues, PRs, and governance artifacts.
 
 ## Implemented
 
-- `radar.py`: searches recently created GitHub repositories, scores them, fetches README excerpts, infers design-thesis/tradeoff/mental-model notes, and writes a Markdown report.
-- `README.md`: documents usage and current scoring logic.
+- `radar.py`: supports discovery mode and `--repo owner/name` deep analysis mode.
+- Deep reports include method boundaries, project dossier fields, fake-star risk, confidence labels, and a traceable evidence chain.
+- `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
 
 ## Known Limits
 
-- No historical database yet, so real star growth is approximated by `stars / age_days`.
-- No Hacker News, GitHub Trending, YouTube, or newsletter resonance signals yet.
-- No AI analysis yet; “philosophy” notes are heuristic and should be treated as prompts for deeper reading.
+- No persistent database yet, so star growth still uses `stars / age_days`.
+- Evidence extraction is heuristic and limited to a small number of files, releases, issues, and PRs.
+- No LLM analysis yet; claims are rule-based and should be treated as first-pass research prompts.
+- No per-category scoring yet for agent, developer tools, local-first, and protocol projects.
 
 ## Next Local Step
 
-Add deeper evidence extraction from README, examples, recent PRs, and high-signal issues so philosophy inference is grounded in concrete design decisions.
+Add SQLite snapshots and JSON dossier export so evidence items, claims, scores, and later manual/LLM review can be preserved and compared across runs.
