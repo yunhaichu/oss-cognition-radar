@@ -78,6 +78,23 @@ python3 radar.py --archive-show langchain-ai/langgraph --db data/radar.sqlite
 python3 radar.py --archive-patterns --db data/radar.sqlite --limit 20
 ```
 
+导出 acquisition binding 的人工校准队列：
+
+```bash
+python3 radar.py \
+  --archive-calibration-export reports/binding-calibration.json \
+  --db data/radar.sqlite \
+  --limit 50
+```
+
+编辑 JSON 中每个 `item.review`，把 `status` 改为 `reviewed`，填入 `score`、可选 `label`、`notes`、`calibrator`，再应用回 SQLite：
+
+```bash
+python3 radar.py \
+  --archive-calibration-apply reports/binding-calibration.json \
+  --db data/radar.sqlite
+```
+
 归档查询默认输出到终端；如需保存 Markdown：
 
 ```bash
@@ -196,6 +213,8 @@ SQLite 当前会保存：
 - `--archive-search TEXT`：用 SQLite FTS5 搜索 repository 元数据、claims、claim gaps、evidence acquisition bindings 和 evidence 文本，并返回 relevance 信息
 - `--archive-show owner/name`：优先展示最新 deep dossier，没有 deep 快照时回退到最新 discovery 快照
 - `--archive-patterns`：聚合最新 deep dossiers 中的 evidence acquisition bindings，按 claim 字段和缺口证据层输出跨项目重复模式、例子仓库和 evidence
+- `--archive-calibration-export PATH`：导出 acquisition bindings 的人工复核 JSON 队列
+- `--archive-calibration-apply PATH`：把人工复核后的 confidence 覆盖值写回 SQLite，并重建 archive search index
 - `--archive-dashboard [PATH]`：生成一个可直接打开的静态 HTML dashboard，包含搜索、track 过滤、最低分过滤、跨项目 patterns、项目详情、claims、claim gaps、evidence acquisition bindings 和 evidence 摘要
 
 `star_growth` 只有在数据库里存在对应窗口附近的历史快照时才会显示真实增量；否则会标记为 `insufficient history`。当前匹配窗口为：1d 使用 1–2 天前快照，7d 使用 7–10 天前快照，30d 使用 30–45 天前快照。这避免把几分钟前的重复运行或过旧快照误当作 1 天增长。
@@ -232,6 +251,8 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 - `calibration`：当前为 `heuristic_v1`，用于后续人工校准时区分来源
 - `signals`：分数来自哪些可解释信号，例如是否命中目标缺口层、证据层是否匹配、关键词命中和是否有稳定 artifact URL
 
+人工校准不会删除原始 heuristic 分数。应用校准后，归档读取会把 `human_v1` 作为有效 confidence，同时保留 `heuristic` 子字段，方便比较人工判断和规则判断。
+
 实现层证据会从 Git tree 中限量抽取：
 
 - 核心源码入口：`src`、`lib`、`packages`、`pkg`、`crates` 等目录中的主要源码文件
@@ -255,4 +276,4 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 ## 下一步
 
-- 加入人工校准入口，让 archive 中的 binding confidence 可以被人工复核并反向改进 heuristic_v1
+- 用人工校准样本反向调整 `heuristic_v1` 的打分权重，并在 dashboard 中增加按 confidence 来源过滤
