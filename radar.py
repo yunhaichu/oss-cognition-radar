@@ -31,7 +31,7 @@ MAX_TEXT_CHARS = 5000
 MAX_IMPLEMENTATION_FILE_SIZE = 120_000
 GROWTH_WINDOWS = {"1d": 1, "7d": 7, "30d": 30}
 GROWTH_MAX_AGE_DAYS = {"1d": 2, "7d": 10, "30d": 45}
-ARCHIVE_SEARCH_INDEX_VERSION = 2
+ARCHIVE_SEARCH_INDEX_VERSION = 3
 SOURCE_EXTENSIONS = {
     ".py",
     ".ts",
@@ -146,6 +146,7 @@ class Claim:
     template: str = ""
     rationale: str = ""
     counter_evidence_ids: list[str] = dataclasses.field(default_factory=list)
+    support_coverage: dict[str, object] = dataclasses.field(default_factory=dict)
 
 
 def parse_args() -> argparse.Namespace:
@@ -843,6 +844,122 @@ def counter_evidence(
     return [item.evidence_id for item in candidates[:limit]]
 
 
+SUPPORT_LAYER_ORDER = ["narrative", "release", "collaboration", "configuration", "source", "tests", "benchmarks"]
+SUPPORT_LAYER_LABELS = {
+    "narrative": "叙事",
+    "release": "发布",
+    "collaboration": "协作",
+    "configuration": "配置",
+    "source": "源码",
+    "tests": "测试",
+    "benchmarks": "Benchmark",
+}
+SUPPORT_LEVEL_LABELS = {
+    "source_and_validation": "源码 + 测试/benchmark 支撑",
+    "source_backed": "源码支撑",
+    "validation_backed": "测试/benchmark 支撑",
+    "configuration_backed": "配置支撑",
+    "engineering_trace": "协作/发布痕迹支撑",
+    "narrative_only": "叙事支撑",
+    "no_direct_evidence": "缺少直接证据",
+}
+
+
+def evidence_support_layer(item: Evidence) -> str:
+    if item.evidence_type == "source_entrypoint":
+        return "source"
+    if item.evidence_type == "test_surface":
+        return "tests"
+    if item.evidence_type == "benchmark":
+        return "benchmarks"
+    if item.evidence_type == "configuration":
+        return "configuration"
+    if item.kind == "Release" or item.evidence_type == "release_delta":
+        return "release"
+    if item.kind in {"Issue", "Pull Request"} or item.evidence_type in {"user_friction", "implementation_change"}:
+        return "collaboration"
+    return "narrative"
+
+
+def support_level_for_layers(layers: set[str], evidence_count: int) -> str:
+    if evidence_count == 0:
+        return "no_direct_evidence"
+    has_validation = bool(layers & {"tests", "benchmarks"})
+    if "source" in layers and has_validation:
+        return "source_and_validation"
+    if "source" in layers:
+        return "source_backed"
+    if has_validation:
+        return "validation_backed"
+    if "configuration" in layers:
+        return "configuration_backed"
+    if layers & {"release", "collaboration"}:
+        return "engineering_trace"
+    return "narrative_only"
+
+
+def support_score_for_layers(layers: set[str], evidence_count: int) -> int:
+    if evidence_count == 0:
+        return 0
+    score = 0
+    if "narrative" in layers:
+        score = max(score, 20)
+    if "release" in layers:
+        score = max(score, 35)
+    if "collaboration" in layers:
+        score = max(score, 40)
+    if "configuration" in layers:
+        score = max(score, 45)
+    if "source" in layers:
+        score = max(score, 65)
+    if "tests" in layers:
+        score = max(score, 55 if "source" not in layers else 80)
+    if "benchmarks" in layers:
+        score = max(score, 60 if "source" not in layers else 85)
+    if "source" in layers and {"tests", "benchmarks"} <= layers:
+        score = max(score, 90)
+    return min(100, score + min(max(evidence_count - 1, 0), 5) * 2)
+
+
+def claim_support_coverage(claim: Claim, evidence_map: dict[str, Evidence]) -> dict[str, object]:
+    layer_evidence_ids: dict[str, list[str]] = {layer: [] for layer in SUPPORT_LAYER_ORDER}
+    for evidence_id in claim.evidence_ids:
+        item = evidence_map.get(evidence_id)
+        if not item:
+            continue
+        layer_evidence_ids[evidence_support_layer(item)].append(evidence_id)
+
+    layer_evidence_ids = {layer: ids for layer, ids in layer_evidence_ids.items() if ids}
+    layers = [layer for layer in SUPPORT_LAYER_ORDER if layer in layer_evidence_ids]
+    layer_set = set(layers)
+    evidence_count = sum(len(ids) for ids in layer_evidence_ids.values())
+    level = support_level_for_layers(layer_set, evidence_count)
+    label = SUPPORT_LEVEL_LABELS[level]
+    layer_labels = [SUPPORT_LAYER_LABELS.get(layer, layer) for layer in layers]
+    return {
+        "level": level,
+        "label": label,
+        "score": support_score_for_layers(layer_set, evidence_count),
+        "layers": layers,
+        "layer_labels": layer_labels,
+        "layer_counts": {layer: len(ids) for layer, ids in layer_evidence_ids.items()},
+        "layer_evidence_ids": layer_evidence_ids,
+        "summary": f"{label}；覆盖层：{', '.join(layer_labels) if layer_labels else '无'}",
+    }
+
+
+def support_coverage_text(coverage: dict | None) -> str:
+    if not coverage:
+        return "未计算"
+    label = coverage.get("label") or SUPPORT_LEVEL_LABELS["no_direct_evidence"]
+    layers = coverage.get("layer_labels") or []
+    score = coverage.get("score")
+    layer_text = "、".join(str(item) for item in layers) if layers else "无"
+    if isinstance(score, (int, float)):
+        return f"{label}（{layer_text}，{score}/100）"
+    return f"{label}（{layer_text}）"
+
+
 def make_claim(
     field: str,
     text: str,
@@ -1353,6 +1470,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             counter_evidence_stable_ids_json TEXT,
             template TEXT,
             rationale TEXT,
+            support_coverage_json TEXT,
             confidence TEXT NOT NULL,
             PRIMARY KEY (run_id, repo_full_name, field),
             FOREIGN KEY (run_id) REFERENCES runs(id)
@@ -1377,6 +1495,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "claims", "counter_evidence_stable_ids_json", "TEXT")
     ensure_column(conn, "claims", "template", "TEXT")
     ensure_column(conn, "claims", "rationale", "TEXT")
+    ensure_column(conn, "claims", "support_coverage_json", "TEXT")
     ensure_column(conn, "repository_snapshots", "project_track", "TEXT")
     ensure_column(conn, "repository_snapshots", "track_score", "REAL")
     ensure_column(conn, "repository_snapshots", "track_score_json", "TEXT")
@@ -1513,21 +1632,42 @@ def rebuild_archive_search_index(conn: sqlite3.Connection) -> dict:
     claim_rows = conn.execute(
         """
         SELECT c.run_id, c.repo_full_name, COALESCE(c.claim_id, c.field), c.field,
-               c.text, c.confidence, c.template, c.rationale, s.project_track, s.track_score
+               c.text, c.confidence, c.template, c.rationale, c.support_coverage_json,
+               s.project_track, s.track_score
         FROM claims c
         LEFT JOIN repository_snapshots s
           ON s.run_id = c.run_id AND s.full_name = c.repo_full_name
         """
     ).fetchall()
     for row in claim_rows:
-        run_id, full_name, source_id, field, text, confidence, template, rationale, track, track_score = row
+        run_id, full_name, source_id, field, text, confidence, template, rationale, coverage_json, track, track_score = row
+        coverage = safe_json_loads(coverage_json, {})
+        coverage_terms = " ".join(
+            str(item or "")
+            for item in [
+                coverage.get("level"),
+                coverage.get("label"),
+                coverage.get("summary"),
+                " ".join(coverage.get("layers") or []),
+                " ".join(coverage.get("layer_labels") or []),
+            ]
+        )
         conn.execute(
             """
             INSERT INTO archive_search_fts (
                 repo_full_name, run_id, source_type, source_id, title, body, track, track_score
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (full_name, run_id, "claim", source_id, field, f"{text} {confidence} {template or ''} {rationale or ''}", track, track_score),
+            (
+                full_name,
+                run_id,
+                "claim",
+                source_id,
+                field,
+                f"{text} {confidence} {template or ''} {rationale or ''} {coverage_terms}",
+                track,
+                track_score,
+            ),
         )
         indexed_documents += 1
 
@@ -1768,8 +1908,8 @@ def persist_deep_snapshot(db_path: str, payload: dict) -> int:
                 INSERT INTO claims (
                     run_id, repo_full_name, claim_id, field, text, evidence_ids_json,
                     evidence_stable_ids_json, counter_evidence_ids_json,
-                    counter_evidence_stable_ids_json, template, rationale, confidence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    counter_evidence_stable_ids_json, template, rationale, support_coverage_json, confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -1783,6 +1923,7 @@ def persist_deep_snapshot(db_path: str, payload: dict) -> int:
                     json.dumps(item.get("counter_evidence_stable_ids") or [], ensure_ascii=False),
                     item.get("template"),
                     item.get("rationale"),
+                    json.dumps(item.get("support_coverage") or {}, ensure_ascii=False),
                     item["confidence"],
                 ),
             )
@@ -2038,7 +2179,7 @@ def query_archive_search_like(
                 SELECT 1
                 FROM claims c
                 WHERE c.repo_full_name = s.full_name
-                AND LOWER(COALESCE(c.field, '') || ' ' || COALESCE(c.text, '')) LIKE ?
+                AND LOWER(COALESCE(c.field, '') || ' ' || COALESCE(c.text, '') || ' ' || COALESCE(c.support_coverage_json, '')) LIKE ?
             )
             OR EXISTS (
                 SELECT 1
@@ -2146,7 +2287,7 @@ def query_archive_claims(conn: sqlite3.Connection, run_id: int, full_name: str) 
         """
         SELECT claim_id, field, text, evidence_ids_json, evidence_stable_ids_json,
                counter_evidence_ids_json, counter_evidence_stable_ids_json,
-               template, rationale, confidence
+               template, rationale, support_coverage_json, confidence
         FROM claims
         WHERE run_id = ? AND repo_full_name = ?
         ORDER BY rowid
@@ -2164,6 +2305,7 @@ def query_archive_claims(conn: sqlite3.Connection, run_id: int, full_name: str) 
             "counter_evidence_stable_ids": safe_json_loads(row["counter_evidence_stable_ids_json"], []),
             "template": row["template"],
             "rationale": row["rationale"],
+            "support_coverage": safe_json_loads(row["support_coverage_json"], {}),
             "confidence": row["confidence"],
         }
         for row in rows
@@ -2210,7 +2352,7 @@ def query_archive_claim_matches(
         rows = conn.execute(
             """
             SELECT c.run_id, c.claim_id, c.field, c.text, c.template, c.rationale, c.confidence,
-                   archive_search_fts.rank AS relevance_rank
+                   c.support_coverage_json, archive_search_fts.rank AS relevance_rank
             FROM archive_search_fts
             JOIN claims c
               ON c.run_id = archive_search_fts.run_id
@@ -2233,6 +2375,7 @@ def query_archive_claim_matches(
                 "template": row["template"],
                 "rationale": row["rationale"],
                 "confidence": row["confidence"],
+                "support_coverage": safe_json_loads(row["support_coverage_json"], {}),
                 "relevance": {"backend": "fts5", "score": round(max(0.0, -float(row["relevance_rank"] or 0.0)), 6)},
             }
             for row in rows
@@ -2241,10 +2384,10 @@ def query_archive_claim_matches(
     like = f"%{query.lower()}%"
     rows = conn.execute(
         """
-        SELECT run_id, claim_id, field, text, template, rationale, confidence
+        SELECT run_id, claim_id, field, text, template, rationale, support_coverage_json, confidence
         FROM claims
         WHERE repo_full_name = ?
-        AND LOWER(COALESCE(field, '') || ' ' || COALESCE(text, '')) LIKE ?
+        AND LOWER(COALESCE(field, '') || ' ' || COALESCE(text, '') || ' ' || COALESCE(support_coverage_json, '')) LIKE ?
         ORDER BY run_id DESC, rowid
         LIMIT ?
         """,
@@ -2259,6 +2402,7 @@ def query_archive_claim_matches(
             "template": row["template"],
             "rationale": row["rationale"],
             "confidence": row["confidence"],
+            "support_coverage": safe_json_loads(row["support_coverage_json"], {}),
             "relevance": {"backend": "like", "score": None},
         }
         for row in rows
@@ -2707,6 +2851,7 @@ def render_archive_dashboard(payload: dict) -> str:
     }
 
     .chip.track { color: var(--teal); border-color: #98ccc2; }
+    .chip.support { color: var(--teal); border-color: #98ccc2; background: #f3fbf8; }
     .chip.risk-high { color: var(--red); border-color: #f2b8b5; }
     .chip.risk-mid { color: var(--amber); border-color: #e7bd78; }
 
@@ -2917,7 +3062,17 @@ def render_archive_dashboard(payload: dict) -> str:
         repo.description,
         repo.language,
         (repo.topics || []).join(" "),
-        ...(dossier.claims || []).flatMap((item) => [item.field, item.text, item.template, item.rationale]),
+        ...(dossier.claims || []).flatMap((item) => [
+          item.field,
+          item.text,
+          item.template,
+          item.rationale,
+          item.support_coverage?.level,
+          item.support_coverage?.label,
+          item.support_coverage?.summary,
+          (item.support_coverage?.layers || []).join(" "),
+          (item.support_coverage?.layer_labels || []).join(" "),
+        ]),
         ...(dossier.evidence || []).flatMap((item) => [
           item.kind,
           item.title,
@@ -2938,7 +3093,13 @@ def render_archive_dashboard(payload: dict) -> str:
         { weight: 8, text: repo.full_name },
         { weight: 5, text: repo.description },
         { weight: 3, text: (repo.topics || []).join(" ") },
-        { weight: 3, text: (dossier.claims || []).map((item) => `${item.field} ${item.text} ${item.template || ""} ${item.rationale || ""}`).join(" ") },
+        {
+          weight: 3,
+          text: (dossier.claims || []).map((item) => {
+            const support = item.support_coverage || {};
+            return `${item.field} ${item.text} ${item.template || ""} ${item.rationale || ""} ${support.level || ""} ${support.label || ""} ${support.summary || ""} ${(support.layers || []).join(" ")} ${(support.layer_labels || []).join(" ")}`;
+          }).join(" "),
+        },
         { weight: 2, text: (dossier.evidence || []).map((item) => `${item.kind} ${item.title} ${item.quote} ${item.evidence_type || ""} ${item.polarity || ""} ${(item.signal_tags || []).join(" ")}`).join(" ") },
       ];
       return sources.reduce((score, source) => {
@@ -3071,17 +3232,24 @@ def render_archive_dashboard(payload: dict) -> str:
       const signalChips = Object.entries(signals).map(([name, value]) =>
         `<span class="chip">${escapeHtml(name)} ${escapeHtml(value)}</span>`
       ).join("");
-      const claims = (dossier.claims || []).map((claim) => `
-        <article class="item">
-          <h3>${escapeHtml(claim.field)} <span class="subtle">${escapeHtml(claim.confidence || "")}</span></h3>
-          <p>${escapeHtml(claim.text)}</p>
-          <div class="chips">
-            ${claim.template ? `<span class="chip">${escapeHtml(claim.template)}</span>` : ""}
-            ${(claim.counter_evidence_ids || []).length ? `<span class="chip risk-mid">Boundary ${escapeHtml(claim.counter_evidence_ids.length)}</span>` : ""}
-          </div>
-          <div class="subtle">${escapeHtml(claim.claim_id || "")}</div>
-        </article>
-      `).join("");
+      const claims = (dossier.claims || []).map((claim) => {
+        const support = claim.support_coverage || {};
+        const supportLayers = (support.layer_labels || support.layers || []).slice(0, 4);
+        return `
+          <article class="item">
+            <h3>${escapeHtml(claim.field)} <span class="subtle">${escapeHtml(claim.confidence || "")}</span></h3>
+            <p>${escapeHtml(claim.text)}</p>
+            <div class="chips">
+              ${support.label ? `<span class="chip support">${escapeHtml(support.label)}</span>` : ""}
+              ${Number.isFinite(Number(support.score)) ? `<span class="chip">Coverage ${escapeHtml(support.score)}</span>` : ""}
+              ${supportLayers.map((layer) => `<span class="chip">${escapeHtml(layer)}</span>`).join("")}
+              ${claim.template ? `<span class="chip">${escapeHtml(claim.template)}</span>` : ""}
+              ${(claim.counter_evidence_ids || []).length ? `<span class="chip risk-mid">Boundary ${escapeHtml(claim.counter_evidence_ids.length)}</span>` : ""}
+            </div>
+            <div class="subtle">${escapeHtml(claim.claim_id || "")}</div>
+          </article>
+        `;
+      }).join("");
       const evidence = (dossier.evidence || []).slice(0, 12).map((item) => `
         <article class="item">
           <h3>${escapeHtml(item.kind)} - ${escapeHtml(item.title)}</h3>
@@ -3266,7 +3434,7 @@ def render_archive_search(payload: dict) -> str:
                 lines.extend(
                     [
                         f"- `{claim.get('claim_id') or 'no-claim-id'}` {claim['field']} ({claim['confidence']}): "
-                        f"{one_line(claim['text'])}",
+                        f"{one_line(claim['text'])} / {support_coverage_text(claim.get('support_coverage'))}",
                     ]
                 )
             lines.append("")
@@ -3322,6 +3490,7 @@ def render_archive_show(payload: dict) -> str:
                 f"- Claim ID：`{claim.get('claim_id') or '无'}`",
                 f"- 模板：{claim.get('template') or '无'}",
                 f"- 推断依据：{claim.get('rationale') or '无'}",
+                f"- 支撑覆盖：{support_coverage_text(claim.get('support_coverage'))}",
                 f"- 证据：{refs}",
                 f"- 边界/反向证据：{counter_text}",
                 f"- 置信度：{claim['confidence']}",
@@ -3490,8 +3659,10 @@ def build_claims(repo: dict, evidence: list[Evidence]) -> list[Claim]:
             counter_evidence(evidence, ["bug", "confusing", "unsupported", "deprecated", "experimental"]),
         ),
     ]
+    evidence_map = {item.evidence_id: item for item in evidence}
     for claim in claims:
         claim.claim_id = stable_id("claim", repo["full_name"], claim.field)
+        claim.support_coverage = claim_support_coverage(claim, evidence_map)
     return claims
 
 
@@ -3561,6 +3732,7 @@ def render_deep_report(repo: dict, summary: dict, evidence: list[Evidence], clai
                 f"- Claim ID：`{claim.claim_id}`",
                 f"- 模板：{claim.template or '无'}",
                 f"- 推断依据：{claim.rationale or '无'}",
+                f"- 支撑覆盖：{support_coverage_text(claim.support_coverage)}",
                 f"- 证据：{evidence_refs(claim.evidence_ids)}",
                 f"- 边界/反向证据：{evidence_refs(claim.counter_evidence_ids)}",
                 f"- 置信度：{claim.confidence}",

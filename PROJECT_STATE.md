@@ -20,6 +20,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Stable IDs: adds dossier IDs, claim IDs, evidence stable IDs, and claim-to-evidence stable references for JSON/search use.
 - Evidence quality fields: deep evidence now carries `evidence_type`, `polarity`, and `signal_tags`; claims carry `template`, `rationale`, `counter_evidence_ids`, and counter-evidence stable references.
 - Implementation-layer evidence: deep mode now samples source entrypoints, tests, benchmarks, and configuration files from the Git tree, then emits an `实现层复核线索` claim so high-level judgments can be checked against code artifacts.
+- Claim support coverage: each claim now records whether its direct evidence is narrative-only, collaboration/release backed, configuration backed, source backed, validation backed, or source-plus-validation backed; the field is exported to JSON, SQLite, archive search, Markdown, and the dashboard.
 - Repository health: captures 180d merged PR / closed issue counts, open PRs, release sample cadence, and top contributor samples.
 - Track scoring: classifies projects as agent, developer tools, local-first, protocol, or general, then applies track-specific weights across momentum, collaboration, release, governance, evidence, and ecosystem signals.
 - Archive queries: `--archive-list`, `--archive-search TEXT`, and `--archive-show owner/name` query persisted SQLite snapshots locally, with track and minimum track score filters plus optional Markdown/JSON export.
@@ -34,6 +35,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - No LLM analysis yet; claims are rule-based and should be treated as first-pass research prompts.
 - Evidence type/polarity classification is rule-based and can still misclassify domain-specific wording.
 - Implementation-layer file selection is heuristic and may miss the true core module in unusual repository layouts.
+- Support coverage only reflects evidence currently linked to each claim; it does not yet auto-search for missing source/test proof.
 - Star growth depends on repeated snapshots; fresh databases correctly show insufficient history.
 - Repository health release/contributor fields are first-pass API samples, not complete longitudinal analytics.
 - Track classification is heuristic and should be refined with manually reviewed samples.
@@ -45,4 +47,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add claim support coverage so each claim can show whether it is backed only by narrative artifacts or also by source, tests, benchmarks, and configuration evidence.
+Add a claim gap report that ranks high-value claims with weak support coverage and recommends the next evidence layer to collect.

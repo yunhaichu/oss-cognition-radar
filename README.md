@@ -141,6 +141,7 @@ export GITHUB_TOKEN=ghp_xxx
 - 不可复制条件
 - claim / evidence stable IDs
 - claim 模板、推断依据、边界/反向证据
+- claim support coverage：区分叙事、发布/协作、源码、测试/benchmark、配置支撑
 - evidence type、polarity、signal tags
 - repository health
 - track score
@@ -162,6 +163,7 @@ JSON 输出会包含：
 - `counter_evidence_stable_ids`
 - `template`
 - `rationale`
+- `support_coverage`
 - `evidence_type`
 - `polarity`
 - `signal_tags`
@@ -196,7 +198,16 @@ SQLite 当前会保存：
 - `polarity`：`supporting`、`boundary`、`negative`
 - `signal_tags`：例如 `abstraction`、`complexity`、`recoverability`、`governance`、`performance`、`implementation`、`test_strategy`、`configuration`
 
-claim 现在会记录 `template` 和 `rationale`，并把边界/反向证据放到 `counter_evidence_ids`。这让报告更像可审查的研究笔记，而不是单向总结。
+claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把边界/反向证据放到 `counter_evidence_ids`。这让报告更像可审查的研究笔记，而不是单向总结。
+
+`support_coverage` 会按每条 claim 直接引用的 evidence 计算支撑层级：
+
+- `narrative_only`：主要由 README、文档或治理文本支撑
+- `engineering_trace`：已有 release、issue、PR 等协作/发布痕迹支撑
+- `source_backed`：已有源码入口证据支撑
+- `validation_backed`：已有测试或 benchmark 证据支撑
+- `source_and_validation`：同时有源码和测试/benchmark 支撑
+- `configuration_backed`：主要由配置、CI、package metadata 等支撑
 
 实现层证据会从 Git tree 中限量抽取：
 
@@ -221,4 +232,4 @@ claim 现在会记录 `template` 和 `rationale`，并把边界/反向证据放�
 
 ## 下一步
 
-- 基于实现层证据给 claim 增加 support coverage：区分只有叙事支撑、已有源码支撑、已有测试/benchmark 支撑的判断
+- 基于 support coverage 生成 claim gap report：优先列出高价值但只有叙事支撑的判断，并提示下一轮应补源码、测试、benchmark 还是配置证据
