@@ -27,6 +27,8 @@ import urllib.request
 API_ROOT = "https://api.github.com"
 USER_AGENT = "oss-cognition-radar"
 MAX_TEXT_CHARS = 5000
+GROWTH_WINDOWS = {"1d": 1, "7d": 7, "30d": 30}
+GROWTH_MAX_AGE_DAYS = {"1d": 2, "7d": 10, "30d": 45}
 
 
 @dataclasses.dataclass
@@ -152,6 +154,10 @@ def evidence_refs(ids: list[str]) -> str:
 
 def utc_now() -> dt.datetime:
     return dt.datetime.now(dt.UTC)
+
+
+def parse_iso_datetime(value: str) -> dt.datetime:
+    return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def search_repositories(days: int, min_stars: int, topic: str | None, language: str | None, limit: int) -> list[dict]:
@@ -468,18 +474,19 @@ def claim_to_dict(claim: Claim) -> dict:
 
 
 def build_deep_payload(repo: dict, evidence: list[Evidence], claims: list[Claim], run_at: dt.datetime) -> dict:
+    summary = repo_summary(repo, run_at)
     return {
         "schema_version": 1,
         "mode": "deep",
         "generated_at": run_at.isoformat(),
         "method_boundary": "Only public GitHub engineering artifacts are used to infer observable, reviewable, transferable cognition/design/governance patterns.",
-        "repository": repo_summary(repo, run_at),
+        "repository": summary,
         "claims": [claim_to_dict(item) for item in claims],
         "evidence": [evidence_to_dict(item) for item in evidence],
     }
 
 
-def build_discovery_payload(repos: list[dict], args: argparse.Namespace, run_at: dt.datetime) -> dict:
+def build_discovery_payload(repo_summaries: list[dict], args: argparse.Namespace, run_at: dt.datetime) -> dict:
     return {
         "schema_version": 1,
         "mode": "discovery",
@@ -491,7 +498,7 @@ def build_discovery_payload(repos: list[dict], args: argparse.Namespace, run_at:
             "topic": args.topic,
             "language": args.language,
         },
-        "repositories": [repo_summary(repo, run_at) for repo in repos],
+        "repositories": repo_summaries,
     }
 
 
@@ -555,6 +562,71 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         """
     )
+
+
+def empty_star_growth() -> dict:
+    return {
+        label: {
+            "available": False,
+            "delta": None,
+            "baseline_stars": None,
+            "baseline_at": None,
+            "days_between": None,
+            "reason": "insufficient history",
+        }
+        for label in GROWTH_WINDOWS
+    }
+
+
+def load_star_growth(db_path: str, summaries: list[dict], run_at: dt.datetime) -> dict[str, dict]:
+    growth = {summary["full_name"]: empty_star_growth() for summary in summaries}
+    path = pathlib.Path(db_path)
+    if not path.exists():
+        return growth
+
+    with sqlite3.connect(path) as conn:
+        init_db(conn)
+        for summary in summaries:
+            full_name = summary["full_name"]
+            current_stars = summary["stars"]
+            for label, days in GROWTH_WINDOWS.items():
+                target = (run_at - dt.timedelta(days=days)).isoformat()
+                earliest = (run_at - dt.timedelta(days=GROWTH_MAX_AGE_DAYS[label])).isoformat()
+                row = conn.execute(
+                    """
+                    SELECT r.created_at, s.stars
+                    FROM repository_snapshots s
+                    JOIN runs r ON r.id = s.run_id
+                    WHERE s.full_name = ? AND r.created_at <= ? AND r.created_at >= ?
+                    ORDER BY r.created_at DESC
+                    LIMIT 1
+                    """,
+                    (full_name, target, earliest),
+                ).fetchone()
+                if not row:
+                    continue
+
+                baseline_at, baseline_stars = row
+                baseline_dt = parse_iso_datetime(baseline_at)
+                actual_days = max((run_at - baseline_dt).total_seconds() / 86400, 0)
+                growth[full_name][label] = {
+                    "available": True,
+                    "delta": current_stars - baseline_stars,
+                    "baseline_stars": baseline_stars,
+                    "baseline_at": baseline_at,
+                    "days_between": actual_days,
+                    "reason": None,
+                }
+    return growth
+
+
+def attach_star_growth(summaries: list[dict], db_path: str | None, run_at: dt.datetime) -> None:
+    if not db_path:
+        growth = {summary["full_name"]: empty_star_growth() for summary in summaries}
+    else:
+        growth = load_star_growth(db_path, summaries, run_at)
+    for summary in summaries:
+        summary["star_growth"] = growth.get(summary["full_name"], empty_star_growth())
 
 
 def insert_repo_snapshot(conn: sqlite3.Connection, run_id: int, summary: dict) -> None:
@@ -666,6 +738,22 @@ def persist_discovery_snapshot(db_path: str, payload: dict) -> int:
         return run_id
 
 
+def render_star_growth(summary: dict) -> list[str]:
+    growth = summary.get("star_growth") or empty_star_growth()
+    lines = ["- Star growth:"]
+    for label in GROWTH_WINDOWS:
+        item = growth.get(label) or {}
+        if item.get("available"):
+            days_between_value = item.get("days_between")
+            days_text = f"{days_between_value:.1f}d" if isinstance(days_between_value, (int, float)) else "unknown"
+            lines.append(
+                f"  - {label}: {item['delta']:+d} stars since {item['baseline_at']} ({days_text})"
+            )
+        else:
+            lines.append(f"  - {label}: insufficient history")
+    return lines
+
+
 def build_claims(repo: dict, evidence: list[Evidence]) -> list[Claim]:
     text = corpus(evidence, repo)
     return [
@@ -708,33 +796,38 @@ def render_evidence_table(evidence: list[Evidence]) -> list[str]:
     return lines
 
 
-def render_deep_report(repo: dict, evidence: list[Evidence], claims: list[Claim]) -> str:
+def render_deep_report(repo: dict, summary: dict, evidence: list[Evidence], claims: list[Claim]) -> str:
     now = dt.datetime.now(dt.UTC)
     topics = ", ".join(repo.get("topics") or []) or "无"
-    age_days = days_between(repo["created_at"], now)
     lines = [
         "# OSS 认知模式项目档案",
         "",
         f"- 生成时间：{now.astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}",
-        f"- 项目：{repo['full_name']}",
-        f"- 链接：{repo['html_url']}",
-        f"- 描述：{repo.get('description') or '无'}",
-        f"- 语言：{repo.get('language') or '未知'}",
-        f"- Stars：{repo['stargazers_count']}",
-        f"- Forks：{repo['forks_count']}",
-        f"- Open issues：{repo['open_issues_count']}",
-        f"- 创建时间：{repo['created_at']}",
-        f"- 最近推送：{repo['pushed_at']}",
-        f"- Star/day：{repo['stargazers_count'] / age_days:.1f}",
+        f"- 项目：{summary['full_name']}",
+        f"- 链接：{summary['html_url']}",
+        f"- 描述：{summary.get('description') or '无'}",
+        f"- 语言：{summary.get('language') or '未知'}",
+        f"- Stars：{summary['stars']}",
+        f"- Forks：{summary['forks']}",
+        f"- Open issues：{summary['open_issues']}",
+        f"- 创建时间：{summary['created_at']}",
+        f"- 最近推送：{summary['pushed_at']}",
+        f"- Star/day：{summary['stars_per_day']:.1f}",
         f"- Topics：{topics}",
         "",
-        "## 方法边界",
-        "",
-        "本报告只根据公开 GitHub 工程痕迹归纳可观察、可复核、可迁移的认知与治理模式；它不声称证明作者私密动机或完整心理本质。",
-        "",
-        "## 项目档案",
-        "",
     ]
+    lines.extend(render_star_growth(summary))
+    lines.extend(
+        [
+            "",
+            "## 方法边界",
+            "",
+            "本报告只根据公开 GitHub 工程痕迹归纳可观察、可复核、可迁移的认知与治理模式；它不声称证明作者私密动机或完整心理本质。",
+            "",
+            "## 项目档案",
+            "",
+        ]
+    )
     for claim in claims:
         lines.extend(
             [
@@ -761,7 +854,7 @@ def render_deep_report(repo: dict, evidence: list[Evidence], claims: list[Claim]
     return "\n".join(lines)
 
 
-def render_discovery_report(repos: list[dict], args: argparse.Namespace) -> str:
+def render_discovery_report(repo_summaries: list[dict], args: argparse.Namespace) -> str:
     now = dt.datetime.now(dt.UTC)
     lines = [
         "# OSS Cognition Radar",
@@ -780,27 +873,27 @@ def render_discovery_report(repos: list[dict], args: argparse.Namespace) -> str:
         "",
     ]
 
-    for index, repo in enumerate(repos, 1):
-        age_days = days_between(repo["created_at"], now)
-        topics = ", ".join(repo.get("topics") or []) or "无"
+    for index, summary in enumerate(repo_summaries, 1):
+        topics = ", ".join(summary.get("topics") or []) or "无"
         lines.extend(
             [
-                f"## {index}. {repo['full_name']}",
+                f"## {index}. {summary['full_name']}",
                 "",
-                repo.get("description") or "无描述。",
+                summary.get("description") or "无描述。",
                 "",
-                f"- 链接：{repo['html_url']}",
-                f"- 语言：{repo.get('language') or '未知'}",
-                f"- Stars：{repo['stargazers_count']}",
-                f"- Forks：{repo['forks_count']}",
-                f"- Open issues：{repo['open_issues_count']}",
-                f"- Star/day：{repo['stargazers_count'] / age_days:.1f}",
-                f"- Radar score：{repo['_score']:.1f}",
-                f"- Fake-star 风险：{fake_star_risk(repo)}",
+                f"- 链接：{summary['html_url']}",
+                f"- 语言：{summary.get('language') or '未知'}",
+                f"- Stars：{summary['stars']}",
+                f"- Forks：{summary['forks']}",
+                f"- Open issues：{summary['open_issues']}",
+                f"- Star/day：{summary['stars_per_day']:.1f}",
+                f"- Radar score：{summary['score']:.1f}",
+                f"- Fake-star 风险：{summary['fake_star_risk']}",
                 f"- Topics：{topics}",
-                "",
             ]
         )
+        lines.extend(render_star_growth(summary))
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -827,7 +920,8 @@ def main() -> None:
         evidence = build_evidence(repo)
         claims = build_claims(repo, evidence)
         payload = build_deep_payload(repo, evidence, claims, run_at)
-        write_report(args.output, render_deep_report(repo, evidence, claims))
+        attach_star_growth([payload["repository"]], None if args.no_db else args.db, run_at)
+        write_report(args.output, render_deep_report(repo, payload["repository"], evidence, claims))
         if args.json_output:
             write_json(args.json_output, payload)
         if not args.no_db:
@@ -839,8 +933,10 @@ def main() -> None:
     for repo in candidates:
         repo["_score"] = score_repo(repo, run_at)
     repos = sorted(candidates, key=lambda item: item["_score"], reverse=True)[: args.limit]
-    payload = build_discovery_payload(repos, args, run_at)
-    write_report(args.output, render_discovery_report(repos, args))
+    repo_summaries = [repo_summary(repo, run_at) for repo in repos]
+    attach_star_growth(repo_summaries, None if args.no_db else args.db, run_at)
+    payload = build_discovery_payload(repo_summaries, args, run_at)
+    write_report(args.output, render_discovery_report(repo_summaries, args))
     if args.json_output:
         write_json(args.json_output, payload)
     if not args.no_db:

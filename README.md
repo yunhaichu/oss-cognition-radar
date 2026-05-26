@@ -68,6 +68,7 @@ export GITHUB_TOKEN=ghp_xxx
 
 - 项目基础信息
 - star/day 近似增长信号
+- 基于 SQLite 历史快照的 1d / 7d / 30d star 增长
 - fork、issue、topic 等基础指标
 - 初步 fake-star 风险提示
 - 深度分析命令提示
@@ -93,6 +94,7 @@ JSON 输出会包含：
 - `claims`
 - `evidence`
 - `query` 或 `method_boundary`
+- `star_growth`
 
 SQLite 当前会保存：
 
@@ -100,6 +102,8 @@ SQLite 当前会保存：
 - `repository_snapshots`
 - `evidence_items`
 - `claims`
+
+`star_growth` 只有在数据库里存在对应窗口附近的历史快照时才会显示真实增量；否则会标记为 `insufficient history`。当前匹配窗口为：1d 使用 1–2 天前快照，7d 使用 7–10 天前快照，30d 使用 30–45 天前快照。这避免把几分钟前的重复运行或过旧快照误当作 1 天增长。
 
 ## 方法原则
 
@@ -117,7 +121,6 @@ SQLite 当前会保存：
 
 ## 下一步
 
-- 基于 SQLite 快照计算 1d / 7d / 30d 真实 star 增长
 - 抓取高评论 issue、最近合并 PR、release cadence、contributors
 - 为不同项目类型建立分轨评分：agent、developer tools、local-first、protocol
 - 基于 JSON dossier 做仪表盘或知识库
