@@ -179,6 +179,7 @@ SQLite 当前会保存：
 - `repository_snapshots`
 - `repository_health_snapshots`
 - `evidence_items`
+- `evidence_acquisition_bindings`
 - `claims`
 - `archive_search_fts`
 - `archive_search_meta`
@@ -186,9 +187,9 @@ SQLite 当前会保存：
 归档模式会基于这些表提供四类本地查询：
 
 - `--archive-list`：按最新快照列出已归档项目，支持 track 和最低 track score 过滤
-- `--archive-search TEXT`：用 SQLite FTS5 搜索 repository 元数据、claims、claim gaps 和 evidence 文本，并返回 relevance 信息
+- `--archive-search TEXT`：用 SQLite FTS5 搜索 repository 元数据、claims、claim gaps、evidence acquisition bindings 和 evidence 文本，并返回 relevance 信息
 - `--archive-show owner/name`：优先展示最新 deep dossier，没有 deep 快照时回退到最新 discovery 快照
-- `--archive-dashboard [PATH]`：生成一个可直接打开的静态 HTML dashboard，包含搜索、track 过滤、最低分过滤、项目详情、claims 和 evidence 摘要
+- `--archive-dashboard [PATH]`：生成一个可直接打开的静态 HTML dashboard，包含搜索、track 过滤、最低分过滤、项目详情、claims、claim gaps、evidence acquisition bindings 和 evidence 摘要
 
 `star_growth` 只有在数据库里存在对应窗口附近的历史快照时才会显示真实增量；否则会标记为 `insufficient history`。当前匹配窗口为：1d 使用 1–2 天前快照，7d 使用 7–10 天前快照，30d 使用 30–45 天前快照。这避免把几分钟前的重复运行或过旧快照误当作 1 天增长。
 
@@ -215,7 +216,7 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 `claim_gap_report` 会基于 claim 的价值权重和支撑薄弱程度排序，优先提示哪些判断需要补源码、测试、benchmark、配置、release 或 issue/PR 证据。它是从 claim 当前证据派生出来的复核清单，不会伪装成新的事实来源。
 
-深度模式现在会执行两阶段采样：先用初始 evidence 生成 claims 和 gap report，再根据具体 claim 字段、缺口层和 claim 关键词重排候选源码、测试、benchmark、配置、release、issue/PR，最后用扩展后的 evidence 重建 claims。`evidence_acquisition` 会记录请求的缺口层、新增证据数、新增 evidence ID、目标 claim 字段和 evidence-to-claim bindings。
+深度模式现在会执行两阶段采样：先用初始 evidence 生成 claims 和 gap report，再根据具体 claim 字段、缺口层和 claim 关键词重排候选源码、测试、benchmark、配置、release、issue/PR，最后用扩展后的 evidence 重建 claims。`evidence_acquisition` 会记录请求的缺口层、新增证据数、新增 evidence ID、目标 claim 字段和 evidence-to-claim bindings；这些绑定会写入 SQLite，并在 `--archive-show` 与 dashboard 中显示每条新增证据补强了哪个 claim gap。
 
 实现层证据会从 Git tree 中限量抽取：
 
@@ -240,4 +241,4 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 ## 下一步
 
-- 把 evidence-to-claim bindings 持久化进 SQLite/archive view，并在 dashboard 中显示每条新增证据补强了哪个 claim
+- 继续把 archive 中的 acquisition bindings 用于更精细的 claim gap 回看和跨项目模式聚合

@@ -31,7 +31,7 @@ MAX_TEXT_CHARS = 5000
 MAX_IMPLEMENTATION_FILE_SIZE = 120_000
 GROWTH_WINDOWS = {"1d": 1, "7d": 7, "30d": 30}
 GROWTH_MAX_AGE_DAYS = {"1d": 2, "7d": 10, "30d": 45}
-ARCHIVE_SEARCH_INDEX_VERSION = 5
+ARCHIVE_SEARCH_INDEX_VERSION = 6
 SOURCE_EXTENSIONS = {
     ".py",
     ".ts",
@@ -2008,6 +2008,21 @@ def init_db(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (run_id) REFERENCES runs(id)
         );
 
+        CREATE TABLE IF NOT EXISTS evidence_acquisition_bindings (
+            run_id INTEGER NOT NULL,
+            repo_full_name TEXT NOT NULL,
+            evidence_id TEXT NOT NULL,
+            evidence_stable_id TEXT,
+            claim_id TEXT NOT NULL DEFAULT '',
+            field TEXT NOT NULL,
+            missing_layer TEXT NOT NULL,
+            missing_layer_label TEXT,
+            keywords_json TEXT NOT NULL,
+            reason TEXT,
+            PRIMARY KEY (run_id, repo_full_name, evidence_id, field, missing_layer),
+            FOREIGN KEY (run_id) REFERENCES runs(id)
+        );
+
         CREATE TABLE IF NOT EXISTS repository_health_snapshots (
             run_id INTEGER NOT NULL,
             full_name TEXT NOT NULL,
@@ -2043,12 +2058,14 @@ def ensure_archive_search_schema(conn: sqlite3.Connection) -> tuple[bool, str | 
             source_snapshot_count INTEGER NOT NULL,
             source_claim_count INTEGER NOT NULL,
             source_evidence_count INTEGER NOT NULL,
+            source_binding_count INTEGER NOT NULL DEFAULT 0,
             indexed_documents INTEGER NOT NULL,
             index_version INTEGER NOT NULL DEFAULT 1
         )
         """
     )
     ensure_column(conn, "archive_search_meta", "index_version", "INTEGER NOT NULL DEFAULT 1")
+    ensure_column(conn, "archive_search_meta", "source_binding_count", "INTEGER NOT NULL DEFAULT 0")
     try:
         conn.execute(
             """
@@ -2076,13 +2093,15 @@ def archive_source_counts(conn: sqlite3.Connection) -> dict:
         "source_snapshot_count": conn.execute("SELECT COUNT(*) FROM repository_snapshots").fetchone()[0],
         "source_claim_count": conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0],
         "source_evidence_count": conn.execute("SELECT COUNT(*) FROM evidence_items").fetchone()[0],
+        "source_binding_count": conn.execute("SELECT COUNT(*) FROM evidence_acquisition_bindings").fetchone()[0],
     }
 
 
 def archive_search_index_current(conn: sqlite3.Connection, counts: dict) -> bool:
     row = conn.execute(
         """
-        SELECT source_run_count, source_snapshot_count, source_claim_count, source_evidence_count, index_version
+        SELECT source_run_count, source_snapshot_count, source_claim_count,
+               source_evidence_count, source_binding_count, index_version
         FROM archive_search_meta
         WHERE id = 1
         """
@@ -2094,7 +2113,8 @@ def archive_search_index_current(conn: sqlite3.Connection, counts: dict) -> bool
         and row[1] == counts["source_snapshot_count"]
         and row[2] == counts["source_claim_count"]
         and row[3] == counts["source_evidence_count"]
-        and row[4] == ARCHIVE_SEARCH_INDEX_VERSION
+        and row[4] == counts["source_binding_count"]
+        and row[5] == ARCHIVE_SEARCH_INDEX_VERSION
     )
 
 
@@ -2294,13 +2314,83 @@ def rebuild_archive_search_index(conn: sqlite3.Connection) -> dict:
         )
         indexed_documents += 1
 
+    binding_rows = conn.execute(
+        """
+        SELECT b.run_id, b.repo_full_name, b.evidence_id, b.evidence_stable_id,
+               b.claim_id, b.field, b.missing_layer, b.missing_layer_label,
+               b.keywords_json, b.reason, e.kind, e.title, e.quote,
+               s.project_track, s.track_score
+        FROM evidence_acquisition_bindings b
+        LEFT JOIN evidence_items e
+          ON e.run_id = b.run_id
+         AND e.repo_full_name = b.repo_full_name
+         AND e.evidence_id = b.evidence_id
+        LEFT JOIN repository_snapshots s
+          ON s.run_id = b.run_id AND s.full_name = b.repo_full_name
+        """
+    ).fetchall()
+    for row in binding_rows:
+        (
+            run_id,
+            full_name,
+            evidence_id,
+            evidence_stable_id,
+            claim_id,
+            field,
+            missing_layer,
+            missing_layer_label,
+            keywords_json,
+            reason,
+            kind,
+            title,
+            quote,
+            track,
+            track_score,
+        ) = row
+        keywords = " ".join(safe_json_loads(keywords_json, []))
+        body = " ".join(
+            str(value or "")
+            for value in [
+                "acquisition_binding",
+                "claim_gap",
+                claim_id,
+                field,
+                missing_layer,
+                missing_layer_label,
+                keywords,
+                reason,
+                kind,
+                title,
+                quote,
+            ]
+        )
+        conn.execute(
+            """
+            INSERT INTO archive_search_fts (
+                repo_full_name, run_id, source_type, source_id, title, body, track, track_score
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                full_name,
+                run_id,
+                "acquisition_binding",
+                f"{evidence_id}|{field}|{missing_layer}",
+                f"Acquisition - {field} - {missing_layer_label or missing_layer}",
+                body,
+                track,
+                track_score,
+            ),
+        )
+        indexed_documents += 1
+
     rebuilt_at = utc_now().isoformat()
     conn.execute(
         """
         INSERT OR REPLACE INTO archive_search_meta (
             id, rebuilt_at, source_run_count, source_snapshot_count,
-            source_claim_count, source_evidence_count, indexed_documents, index_version
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+            source_claim_count, source_evidence_count, source_binding_count,
+            indexed_documents, index_version
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             rebuilt_at,
@@ -2308,6 +2398,7 @@ def rebuild_archive_search_index(conn: sqlite3.Connection) -> dict:
             counts["source_snapshot_count"],
             counts["source_claim_count"],
             counts["source_evidence_count"],
+            counts["source_binding_count"],
             indexed_documents,
             ARCHIVE_SEARCH_INDEX_VERSION,
         ),
@@ -2453,6 +2544,42 @@ def insert_health_snapshot(conn: sqlite3.Connection, run_id: int, summary: dict)
     )
 
 
+def insert_acquisition_bindings(conn: sqlite3.Connection, run_id: int, payload: dict) -> None:
+    repository = payload["repository"]["full_name"]
+    evidence_stable_ids = {
+        item.get("evidence_id"): item.get("stable_id")
+        for item in payload.get("evidence") or []
+        if item.get("evidence_id")
+    }
+    bindings = ((payload.get("evidence_acquisition") or {}).get("bindings") or [])
+    for binding in bindings:
+        evidence_id = binding.get("evidence_id")
+        field = binding.get("field") or ""
+        layer = binding.get("missing_layer") or ""
+        if not evidence_id or not field or not layer:
+            continue
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO evidence_acquisition_bindings (
+                run_id, repo_full_name, evidence_id, evidence_stable_id, claim_id,
+                field, missing_layer, missing_layer_label, keywords_json, reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                repository,
+                evidence_id,
+                binding.get("evidence_stable_id") or evidence_stable_ids.get(evidence_id),
+                binding.get("claim_id") or "",
+                field,
+                layer,
+                binding.get("missing_layer_label") or SUPPORT_LAYER_LABELS.get(layer, layer),
+                json.dumps(binding.get("keywords") or [], ensure_ascii=False),
+                binding.get("reason") or "",
+            ),
+        )
+
+
 def persist_deep_snapshot(db_path: str, payload: dict) -> int:
     path = pathlib.Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2518,6 +2645,7 @@ def persist_deep_snapshot(db_path: str, payload: dict) -> int:
                     item["confidence"],
                 ),
             )
+        insert_acquisition_bindings(conn, run_id, payload)
         rebuild_archive_search_index(conn)
         conn.commit()
         return run_id
@@ -2733,6 +2861,7 @@ def query_archive_search_fts(
                 },
                 "matched_claims": query_archive_claim_matches(conn, summary["full_name"], query, backend="fts5"),
                 "matched_gaps": query_archive_gap_matches(conn, summary["full_name"], query, backend="fts5"),
+                "matched_bindings": query_archive_binding_matches(conn, summary["full_name"], query, backend="fts5"),
                 "matched_evidence": query_archive_evidence_matches(conn, summary["full_name"], query, backend="fts5"),
             }
         )
@@ -2779,6 +2908,18 @@ def query_archive_search_like(
                 WHERE e.repo_full_name = s.full_name
                 AND LOWER(COALESCE(e.kind, '') || ' ' || COALESCE(e.title, '') || ' ' || COALESCE(e.quote, '')) LIKE ?
             )
+            OR EXISTS (
+                SELECT 1
+                FROM evidence_acquisition_bindings b
+                WHERE b.repo_full_name = s.full_name
+                AND LOWER(
+                    COALESCE(b.field, '') || ' ' ||
+                    COALESCE(b.missing_layer, '') || ' ' ||
+                    COALESCE(b.missing_layer_label, '') || ' ' ||
+                    COALESCE(b.keywords_json, '') || ' ' ||
+                    COALESCE(b.reason, '')
+                ) LIKE ?
+            )
         )
         ORDER BY COALESCE(s.track_score, 0) DESC, s.stars DESC
         LIMIT ?
@@ -2788,6 +2929,7 @@ def query_archive_search_like(
             track,
             min_track_score,
             min_track_score,
+            like,
             like,
             like,
             like,
@@ -2814,6 +2956,7 @@ def query_archive_search_like(
                 },
                 "matched_claims": query_archive_claim_matches(conn, summary["full_name"], query),
                 "matched_gaps": query_archive_gap_matches(conn, summary["full_name"], query),
+                "matched_bindings": query_archive_binding_matches(conn, summary["full_name"], query),
                 "matched_evidence": query_archive_evidence_matches(conn, summary["full_name"], query),
             }
         )
@@ -2857,11 +3000,16 @@ def query_archive_show(conn: sqlite3.Connection, full_name: str) -> dict | None:
     summary = row_to_archive_summary(row)
     summary["health"] = load_archive_health(conn, summary["run_id"], summary["full_name"])
     claims = query_archive_claims(conn, summary["run_id"], summary["full_name"])
+    gaps = build_claim_gap_report(claims)
+    evidence = query_archive_evidence(conn, summary["run_id"], summary["full_name"])
+    bindings = query_archive_acquisition_bindings(conn, summary["run_id"], summary["full_name"])
+    attach_acquisition_bindings(evidence, bindings)
     return {
         "repository": summary,
         "claims": claims,
-        "claim_gap_report": build_claim_gap_report(claims),
-        "evidence": query_archive_evidence(conn, summary["run_id"], summary["full_name"]),
+        "claim_gap_report": gaps,
+        "evidence_acquisition": archive_evidence_acquisition_summary(gaps, evidence, bindings),
+        "evidence": evidence,
     }
 
 
@@ -2933,6 +3081,84 @@ def query_archive_evidence(conn: sqlite3.Connection, run_id: int, full_name: str
         }
         for row in rows
     ]
+
+
+def query_archive_acquisition_bindings(conn: sqlite3.Connection, run_id: int, full_name: str) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT evidence_id, evidence_stable_id, claim_id, field, missing_layer,
+               missing_layer_label, keywords_json, reason
+        FROM evidence_acquisition_bindings
+        WHERE run_id = ? AND repo_full_name = ?
+        ORDER BY rowid
+        """,
+        (run_id, full_name),
+    ).fetchall()
+    return [
+        {
+            "evidence_id": row["evidence_id"],
+            "evidence_stable_id": row["evidence_stable_id"],
+            "claim_id": row["claim_id"],
+            "field": row["field"],
+            "missing_layer": row["missing_layer"],
+            "missing_layer_label": row["missing_layer_label"] or SUPPORT_LAYER_LABELS.get(row["missing_layer"], row["missing_layer"]),
+            "keywords": safe_json_loads(row["keywords_json"], []),
+            "reason": row["reason"],
+        }
+        for row in rows
+    ]
+
+
+def attach_acquisition_bindings(evidence: list[dict], bindings: list[dict]) -> None:
+    by_evidence_id: dict[str, list[dict]] = {}
+    by_stable_id: dict[str, list[dict]] = {}
+    for binding in bindings:
+        if binding.get("evidence_id"):
+            by_evidence_id.setdefault(binding["evidence_id"], []).append(binding)
+        if binding.get("evidence_stable_id"):
+            by_stable_id.setdefault(binding["evidence_stable_id"], []).append(binding)
+
+    for item in evidence:
+        matches = by_evidence_id.get(item.get("evidence_id") or "", [])
+        if not matches:
+            matches = by_stable_id.get(item.get("stable_id") or "", [])
+        if matches:
+            item["acquisition_bindings"] = matches
+
+
+def unique_ordered(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        output.append(value)
+    return output
+
+
+def archive_evidence_acquisition_summary(gaps: list[dict], evidence: list[dict], bindings: list[dict]) -> dict:
+    if not bindings:
+        return {}
+    evidence_ids = unique_ordered([binding.get("evidence_id", "") for binding in bindings])
+    requested_layers = unique_ordered([binding.get("missing_layer", "") for binding in bindings])
+    added_counts: dict[str, int] = {}
+    for binding in bindings:
+        layer = binding.get("missing_layer") or "unknown"
+        added_counts[layer] = added_counts.get(layer, 0) + 1
+    return {
+        "strategy": "claim_gap_targeted",
+        "requested_layers": requested_layers,
+        "requested_layer_labels": [SUPPORT_LAYER_LABELS.get(layer, layer) for layer in requested_layers],
+        "added_total": len(evidence_ids),
+        "added_counts": added_counts,
+        "added_evidence_ids": evidence_ids,
+        "binding_count": len(bindings),
+        "bindings": bindings,
+        "target_claim_fields": unique_ordered([binding.get("field", "") for binding in bindings]),
+        "status": "expanded",
+        "source": "archive",
+    }
 
 
 def query_archive_claim_matches(
@@ -3140,6 +3366,85 @@ def query_archive_evidence_matches(
     ]
 
 
+def query_archive_binding_matches(
+    conn: sqlite3.Connection,
+    full_name: str,
+    query: str,
+    limit: int = 3,
+    backend: str = "like",
+) -> list[dict]:
+    if backend == "fts5":
+        fts_query = fts_query_from_user(query)
+        rows = conn.execute(
+            """
+            SELECT b.run_id, b.evidence_id, b.evidence_stable_id, b.claim_id, b.field,
+                   b.missing_layer, b.missing_layer_label, b.keywords_json, b.reason,
+                   archive_search_fts.rank AS relevance_rank
+            FROM archive_search_fts
+            JOIN evidence_acquisition_bindings b
+              ON b.run_id = archive_search_fts.run_id
+             AND b.repo_full_name = archive_search_fts.repo_full_name
+             AND b.evidence_id || '|' || b.field || '|' || b.missing_layer = archive_search_fts.source_id
+            WHERE archive_search_fts MATCH ?
+              AND archive_search_fts.repo_full_name = ?
+              AND archive_search_fts.source_type = 'acquisition_binding'
+            ORDER BY rank ASC, b.run_id DESC
+            LIMIT ?
+            """,
+            (fts_query, full_name, limit),
+        ).fetchall()
+        return [
+            {
+                "run_id": row["run_id"],
+                "evidence_id": row["evidence_id"],
+                "evidence_stable_id": row["evidence_stable_id"],
+                "claim_id": row["claim_id"],
+                "field": row["field"],
+                "missing_layer": row["missing_layer"],
+                "missing_layer_label": row["missing_layer_label"] or SUPPORT_LAYER_LABELS.get(row["missing_layer"], row["missing_layer"]),
+                "keywords": safe_json_loads(row["keywords_json"], []),
+                "reason": row["reason"],
+                "relevance": {"backend": "fts5", "score": round(max(0.0, -float(row["relevance_rank"] or 0.0)), 6)},
+            }
+            for row in rows
+        ]
+
+    like = f"%{query.lower()}%"
+    rows = conn.execute(
+        """
+        SELECT run_id, evidence_id, evidence_stable_id, claim_id, field,
+               missing_layer, missing_layer_label, keywords_json, reason
+        FROM evidence_acquisition_bindings
+        WHERE repo_full_name = ?
+        AND LOWER(
+            COALESCE(field, '') || ' ' ||
+            COALESCE(missing_layer, '') || ' ' ||
+            COALESCE(missing_layer_label, '') || ' ' ||
+            COALESCE(keywords_json, '') || ' ' ||
+            COALESCE(reason, '')
+        ) LIKE ?
+        ORDER BY run_id DESC, rowid
+        LIMIT ?
+        """,
+        (full_name, like, limit),
+    ).fetchall()
+    return [
+        {
+            "run_id": row["run_id"],
+            "evidence_id": row["evidence_id"],
+            "evidence_stable_id": row["evidence_stable_id"],
+            "claim_id": row["claim_id"],
+            "field": row["field"],
+            "missing_layer": row["missing_layer"],
+            "missing_layer_label": row["missing_layer_label"] or SUPPORT_LAYER_LABELS.get(row["missing_layer"], row["missing_layer"]),
+            "keywords": safe_json_loads(row["keywords_json"], []),
+            "reason": row["reason"],
+            "relevance": {"backend": "like", "score": None},
+        }
+        for row in rows
+    ]
+
+
 def archive_message_payload(mode: str, args: argparse.Namespace, message: str) -> dict:
     return {
         "schema_version": 1,
@@ -3226,6 +3531,7 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
         dossiers[summary["full_name"]] = {
             "claims": dossier.get("claims") or [],
             "claim_gap_report": dossier.get("claim_gap_report") or [],
+            "evidence_acquisition": dossier.get("evidence_acquisition") or {},
             "evidence": dossier.get("evidence") or [],
             "dossier_run_id": ((dossier.get("repository") or {}).get("run_id")),
             "dossier_run_created_at": ((dossier.get("repository") or {}).get("run_created_at")),
@@ -3254,6 +3560,7 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
             "deep_dossiers": sum(1 for item in dossiers.values() if item["claims"] or item["evidence"]),
             "claims": sum(len(item["claims"]) for item in dossiers.values()),
             "claim_gaps": sum(len(item["claim_gap_report"]) for item in dossiers.values()),
+            "acquisition_bindings": sum((item.get("evidence_acquisition") or {}).get("binding_count", 0) for item in dossiers.values()),
             "evidence": sum(len(item["evidence"]) for item in dossiers.values()),
             "average_track_score": round(sum(scores) / len(scores), 1) if scores else None,
             "tracks": tracks,
@@ -3388,7 +3695,7 @@ def render_archive_dashboard(payload: dict) -> str:
 
     .stats {
       display: grid;
-      grid-template-columns: repeat(6, minmax(0, 1fr));
+      grid-template-columns: repeat(7, minmax(0, 1fr));
       gap: 10px;
       padding: 14px 24px 0;
     }
@@ -3574,7 +3881,7 @@ def render_archive_dashboard(payload: dict) -> str:
       font-size: 16px;
     }
 
-    .claims, .gaps, .evidence {
+    .claims, .gaps, .acquisition, .evidence {
       display: grid;
       gap: 10px;
       margin-top: 16px;
@@ -3638,7 +3945,7 @@ def render_archive_dashboard(payload: dict) -> str:
     </header>
 
     <section class="toolbar" aria-label="Archive filters">
-      <input id="searchInput" type="search" placeholder="Search repositories, claims, evidence" autocomplete="off">
+      <input id="searchInput" type="search" placeholder="Search repositories, claims, gaps, bindings, evidence" autocomplete="off">
       <select id="trackSelect" aria-label="Track"></select>
       <label class="range" for="scoreRange">
         <input id="scoreRange" type="range" min="0" max="100" step="1" value="0">
@@ -3710,7 +4017,7 @@ def render_archive_dashboard(payload: dict) -> str:
     }
 
     function dossierOf(repo) {
-      return dossiers[repo.full_name] || { claims: [], claim_gap_report: [], evidence: [] };
+      return dossiers[repo.full_name] || { claims: [], claim_gap_report: [], evidence_acquisition: {}, evidence: [] };
     }
 
     function corpusOf(repo) {
@@ -3741,6 +4048,17 @@ def render_archive_dashboard(payload: dict) -> str:
           (item.missing_layers || []).join(" "),
           (item.missing_layer_labels || []).join(" "),
         ]),
+        ...((dossier.evidence_acquisition || {}).bindings || []).flatMap((item) => [
+          "acquisition_binding",
+          item.field,
+          item.claim_id,
+          item.evidence_id,
+          item.evidence_stable_id,
+          item.missing_layer,
+          item.missing_layer_label,
+          (item.keywords || []).join(" "),
+          item.reason,
+        ]),
         ...(dossier.evidence || []).flatMap((item) => [
           item.kind,
           item.title,
@@ -3748,6 +4066,13 @@ def render_archive_dashboard(payload: dict) -> str:
           item.evidence_type,
           item.polarity,
           (item.signal_tags || []).join(" "),
+          ...(item.acquisition_bindings || []).flatMap((binding) => [
+            binding.field,
+            binding.missing_layer,
+            binding.missing_layer_label,
+            (binding.keywords || []).join(" "),
+            binding.reason,
+          ]),
         ]),
       ];
       return parts.filter(Boolean).join(" ").toLowerCase();
@@ -3774,7 +4099,18 @@ def render_archive_dashboard(payload: dict) -> str:
             `claim_gap ${item.field} ${item.support_level || ""} ${item.support_label || ""} ${item.gap_reason || ""} ${item.recommendation || ""} ${(item.missing_layers || []).join(" ")} ${(item.missing_layer_labels || []).join(" ")}`
           ).join(" "),
         },
-        { weight: 2, text: (dossier.evidence || []).map((item) => `${item.kind} ${item.title} ${item.quote} ${item.evidence_type || ""} ${item.polarity || ""} ${(item.signal_tags || []).join(" ")}`).join(" ") },
+        {
+          weight: 4,
+          text: ((dossier.evidence_acquisition || {}).bindings || []).map((item) =>
+            `acquisition_binding ${item.field || ""} ${item.claim_id || ""} ${item.evidence_id || ""} ${item.evidence_stable_id || ""} ${item.missing_layer || ""} ${item.missing_layer_label || ""} ${(item.keywords || []).join(" ")} ${item.reason || ""}`
+          ).join(" "),
+        },
+        {
+          weight: 2,
+          text: (dossier.evidence || []).map((item) =>
+            `${item.kind} ${item.title} ${item.quote} ${item.evidence_type || ""} ${item.polarity || ""} ${(item.signal_tags || []).join(" ")} ${(item.acquisition_bindings || []).map((binding) => `${binding.field || ""} ${binding.missing_layer || ""} ${binding.missing_layer_label || ""} ${(binding.keywords || []).join(" ")} ${binding.reason || ""}`).join(" ")}`
+          ).join(" "),
+        },
       ];
       return sources.reduce((score, source) => {
         const text = String(source.text || "").toLowerCase();
@@ -3814,6 +4150,7 @@ def render_archive_dashboard(payload: dict) -> str:
       }).length;
       const claimCount = items.reduce((sum, repo) => sum + (dossierOf(repo).claims || []).length, 0);
       const gapCount = items.reduce((sum, repo) => sum + (dossierOf(repo).claim_gap_report || []).length, 0);
+      const bindingCount = items.reduce((sum, repo) => sum + ((dossierOf(repo).evidence_acquisition || {}).binding_count || 0), 0);
       const evidenceCount = items.reduce((sum, repo) => sum + (dossierOf(repo).evidence || []).length, 0);
       const average = items.length
         ? items.reduce((sum, repo) => sum + scoreOf(repo), 0) / items.length
@@ -3831,6 +4168,7 @@ def render_archive_dashboard(payload: dict) -> str:
         ["Deep dossiers", deepCount],
         ["Claims", claimCount],
         ["Claim gaps", gapCount],
+        ["Bindings", bindingCount],
         ["Evidence", evidenceCount],
         ["Avg score", average ? average.toFixed(1) : "0.0"],
       ];
@@ -3903,6 +4241,8 @@ def render_archive_dashboard(payload: dict) -> str:
       }
       githubLink.href = repo.html_url || "#";
       const dossier = dossierOf(repo);
+      const acquisition = dossier.evidence_acquisition || {};
+      const bindings = acquisition.bindings || [];
       const health = repo.health || {};
       const signals = repo.track_score?.signals || {};
       const signalChips = Object.entries(signals).map(([name, value]) =>
@@ -3938,18 +4278,38 @@ def render_archive_dashboard(payload: dict) -> str:
           <div class="subtle">${escapeHtml(gap.gap_reason || "")}</div>
         </article>
       `).join("");
-      const evidence = (dossier.evidence || []).slice(0, 12).map((item) => `
+      const acquisitionCards = bindings.slice(0, 8).map((binding) => `
         <article class="item">
-          <h3>${escapeHtml(item.kind)} - ${escapeHtml(item.title)}</h3>
-          <p>${escapeHtml(compact(item.quote, 360))}</p>
+          <h3>${escapeHtml(binding.field || "Unknown claim")} <span class="subtle">${escapeHtml(binding.missing_layer_label || binding.missing_layer || "")}</span></h3>
+          <p>${escapeHtml(binding.reason || "No gap reason archived.")}</p>
           <div class="chips">
-            <span class="chip">${escapeHtml(item.evidence_type || "general")}</span>
-            <span class="chip ${item.polarity === "negative" || item.polarity === "boundary" ? "risk-mid" : ""}">${escapeHtml(item.polarity || "supporting")}</span>
-            ${(item.signal_tags || []).slice(0, 3).map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`).join("")}
+            <span class="chip support">${escapeHtml(binding.evidence_stable_id || binding.evidence_id || "")}</span>
+            ${(binding.keywords || []).slice(0, 4).map((keyword) => `<span class="chip">${escapeHtml(keyword)}</span>`).join("")}
           </div>
-          <div class="subtle">${escapeHtml(item.stable_id || item.evidence_id || "")}</div>
         </article>
       `).join("");
+      const evidence = (dossier.evidence || []).slice(0, 12).map((item) => {
+        const itemBindings = item.acquisition_bindings || [];
+        const bindingChips = itemBindings.slice(0, 3).map((binding) =>
+          `<span class="chip support">补强 ${escapeHtml(binding.field || "claim")} / ${escapeHtml(binding.missing_layer_label || binding.missing_layer || "gap")}</span>`
+        ).join("");
+        const bindingReason = itemBindings.length ? itemBindings.map((binding) =>
+          `${binding.field || "claim"}: ${binding.reason || binding.missing_layer_label || binding.missing_layer || ""}`
+        ).join(" | ") : "";
+        return `
+          <article class="item">
+            <h3>${escapeHtml(item.kind)} - ${escapeHtml(item.title)}</h3>
+            <p>${escapeHtml(compact(item.quote, 360))}</p>
+            <div class="chips">
+              <span class="chip">${escapeHtml(item.evidence_type || "general")}</span>
+              <span class="chip ${item.polarity === "negative" || item.polarity === "boundary" ? "risk-mid" : ""}">${escapeHtml(item.polarity || "supporting")}</span>
+              ${(item.signal_tags || []).slice(0, 3).map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`).join("")}
+              ${bindingChips}
+            </div>
+            <div class="subtle">${escapeHtml(item.stable_id || item.evidence_id || "")}${bindingReason ? " · " + escapeHtml(compact(bindingReason, 180)) : ""}</div>
+          </article>
+        `;
+      }).join("");
 
       detailBody.innerHTML = `
         <h2 class="detail-title">${escapeHtml(repo.full_name)}</h2>
@@ -3978,6 +4338,17 @@ def render_archive_dashboard(payload: dict) -> str:
         <section class="gaps">
           <div class="section-title">Claim Gaps</div>
           ${gaps || '<div class="empty">No high-priority claim gaps.</div>'}
+        </section>
+        <section class="acquisition">
+          <div class="section-title">Evidence Acquisition</div>
+          ${bindings.length ? `
+            <div class="chips">
+              <span class="chip support">${escapeHtml(acquisition.strategy || "claim_gap_targeted")}</span>
+              <span class="chip">Bindings ${escapeHtml(acquisition.binding_count || bindings.length)}</span>
+              <span class="chip">Added ${escapeHtml(acquisition.added_total || 0)}</span>
+            </div>
+            ${acquisitionCards}
+          ` : '<div class="empty">No acquisition bindings archived.</div>'}
         </section>
         <section class="evidence">
           <div class="section-title">Evidence</div>
@@ -4140,6 +4511,18 @@ def render_archive_search(payload: dict) -> str:
                     ]
                 )
             lines.append("")
+        if entry.get("matched_bindings"):
+            lines.extend(["### Matched acquisition bindings", ""])
+            for binding in entry["matched_bindings"]:
+                stable_ref = binding.get("evidence_stable_id") or binding.get("evidence_id") or "no-evidence-id"
+                lines.extend(
+                    [
+                        f"- `{stable_ref}` -> {binding.get('field') or 'Claim'} / "
+                        f"{binding.get('missing_layer_label') or binding.get('missing_layer') or 'gap'}: "
+                        f"{one_line(binding.get('reason'))}",
+                    ]
+                )
+            lines.append("")
         if entry["matched_evidence"]:
             lines.extend(["### Matched evidence", ""])
             for item in entry["matched_evidence"]:
@@ -4201,15 +4584,23 @@ def render_archive_show(payload: dict) -> str:
         )
 
     lines.extend(render_claim_gap_report(payload.get("claim_gap_report") or []))
+    lines.extend(render_evidence_acquisition_summary(payload.get("evidence_acquisition") or {}))
     lines.extend(["## Evidence", ""])
     if not payload.get("evidence"):
         lines.extend(["该归档快照没有证据链。", ""])
     for item in payload.get("evidence", []):
+        binding_text = "无"
+        if item.get("acquisition_bindings"):
+            binding_text = "；".join(
+                f"{binding.get('field') or '未知 claim'} / {binding.get('missing_layer_label') or binding.get('missing_layer') or '未知层'}"
+                for binding in item.get("acquisition_bindings") or []
+            )
         lines.extend(
             [
                 f"### {item['evidence_id']}. {item['kind']} - {item['title']}",
                 "",
                 f"- Stable ID：`{item.get('stable_id') or '无'}`",
+                f"- Gap 采集绑定：{binding_text}",
                 f"- 类型 / 极性：{item.get('evidence_type') or 'general'} / {item.get('polarity') or 'supporting'}",
                 f"- 信号标签：{', '.join(item.get('signal_tags') or []) or '无'}",
                 f"- 证据层级：L{item['level']}",
@@ -4350,6 +4741,22 @@ def render_evidence_acquisition_summary(summary: dict | None) -> list[str]:
             "",
         ]
     )
+    bindings = summary.get("bindings") or []
+    if bindings:
+        lines.extend(["### Evidence-to-claim bindings", ""])
+        for binding in bindings[:12]:
+            stable_ref = binding.get("evidence_stable_id") or binding.get("evidence_id") or "无"
+            keywords = "、".join(binding.get("keywords") or []) or "无"
+            lines.extend(
+                [
+                    f"- `{stable_ref}` -> {binding.get('field') or '未知 claim'} / "
+                    f"{binding.get('missing_layer_label') or binding.get('missing_layer') or '未知层'}；"
+                    f"关键词：{keywords}；原因：{binding.get('reason') or '无'}",
+                ]
+            )
+        if len(bindings) > 12:
+            lines.append(f"- 其余 {len(bindings) - 12} 条绑定已省略。")
+        lines.append("")
     return lines
 
 
