@@ -242,6 +242,7 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 - `label`：`low`、`medium` 或 `high`
 - `calibration`：原始分数为 `heuristic_v1`；运行 `--archive-auto-calibrate` 后有效分数会变为 `archive_auto_v1`
 - `signals`：分数来自哪些可解释信号，例如是否命中目标缺口层、证据层是否匹配、跨项目重复、同仓库跨版本稳定、release/issue/PR 活跃趋势、关键词命中和是否有稳定 artifact URL
+- `signal_breakdown`：把原始信号自动分组为 `time_series`、`drift`、`pattern`、`evidence`、`calibration` 等可读维度；`--archive-show` 和 dashboard 详情页会直接展示这些分组
 - `source`：`heuristic` 或 `auto`，dashboard 可按该来源过滤
 
 自动校准不会删除原始 heuristic 分数。应用校准后，归档读取会把 `archive_auto_v1` 作为有效 confidence，同时保留 `heuristic` 子字段，方便比较自动归档信号和原始规则信号。
@@ -269,4 +270,4 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 ## 下一步
 
-- 在 dashboard 和 archive show 中展开 `archive_auto_v1` 的 drift/time-series 信号贡献，让每次自动校准的依据更容易追踪
+- 用 `signal_breakdown` 继续强化 archive patterns 的可靠度排序和过滤，让跨项目设计模式不仅按重复次数排序，也按自动证据结构排序

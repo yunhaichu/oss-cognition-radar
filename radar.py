@@ -1048,6 +1048,103 @@ def normalized_binding_signal(signal: str) -> str:
     return signal
 
 
+CONFIDENCE_SIGNAL_GROUPS = [
+    ("time_series", "Time series"),
+    ("drift", "Version drift"),
+    ("pattern", "Archive pattern"),
+    ("evidence", "Evidence quality"),
+    ("calibration", "Calibration"),
+    ("other", "Other"),
+]
+
+
+def confidence_signal_group(signal: str) -> str:
+    if signal.startswith(("repo_activity:", "repo_history:", "release_cadence:")):
+        return "time_series"
+    if signal.startswith("cross_version_"):
+        return "drift"
+    if signal.startswith(("cross_project_repeated:", "repeated_binding:")):
+        return "pattern"
+    if signal in {
+        "stable_artifact_url",
+        "keyword_sparse",
+        "generic_evidence",
+        "requested_missing_layer",
+        "target_layer",
+        "evidence_layer_match",
+    } or signal.startswith(
+        (
+            "source_or_validation_evidence:",
+            "engineering_trace_evidence:",
+            "boundary_polarity:",
+            "keyword_hits:",
+            "typed_evidence:",
+        )
+    ):
+        return "evidence"
+    if signal in {AUTO_CONFIDENCE_CALIBRATION, "heuristic_v1"}:
+        return "calibration"
+    return "other"
+
+
+def confidence_signal_label(signal: str) -> str:
+    labels = {
+        AUTO_CONFIDENCE_CALIBRATION: AUTO_CONFIDENCE_CALIBRATION,
+        "heuristic_v1": "heuristic_v1",
+        "stable_artifact_url": "stable artifact URL",
+        "keyword_sparse": "keyword sparse",
+        "generic_evidence": "generic evidence",
+        "requested_missing_layer": "requested missing layer",
+        "target_layer": "target layer",
+        "evidence_layer_match": "evidence layer match",
+    }
+    if signal in labels:
+        return labels[signal]
+    if ":" not in signal:
+        return signal.replace("_", " ")
+    name, value = signal.split(":", 1)
+    name_labels = {
+        "cross_project_repeated": "cross-project repeated",
+        "repeated_binding": "repeated binding",
+        "cross_version_binding_stable": "cross-version stable",
+        "cross_version_evidence_drift": "evidence drift",
+        "repo_history": "repository history",
+        "repo_activity": "repository activity",
+        "release_cadence": "release cadence",
+        "source_or_validation_evidence": "source/validation evidence",
+        "engineering_trace_evidence": "engineering trace",
+        "boundary_polarity": "boundary polarity",
+        "keyword_hits": "keyword hits",
+        "typed_evidence": "typed evidence",
+    }
+    return f"{name_labels.get(name, name.replace('_', ' '))} {value}"
+
+
+def confidence_signal_breakdown(signals: list | tuple | None) -> list[dict]:
+    buckets = {
+        group: {"group": group, "label": label, "signals": []}
+        for group, label in CONFIDENCE_SIGNAL_GROUPS
+    }
+    if isinstance(signals, str):
+        signals = [signals]
+    elif not isinstance(signals, (list, tuple, set)):
+        signals = []
+    seen = set()
+    for raw_signal in signals or []:
+        signal = str(raw_signal)
+        if not signal or signal in seen:
+            continue
+        seen.add(signal)
+        group = confidence_signal_group(signal)
+        buckets[group]["signals"].append(
+            {
+                "raw": signal,
+                "label": confidence_signal_label(signal),
+            }
+        )
+    return [buckets[group] for group, _label in CONFIDENCE_SIGNAL_GROUPS if buckets[group]["signals"]]
+
+
 def binding_confidence_weight_snapshot() -> dict:
     return {
         "base": BINDING_CONFIDENCE_BASE,
@@ -1096,6 +1193,7 @@ def binding_confidence_for(item: Evidence, gap: dict, layer: str, keywords: list
         "label": binding_confidence_label(score),
         "calibration": "heuristic_v1",
         "signals": signals,
+        "signal_breakdown": confidence_signal_breakdown(signals),
     }
 
 
@@ -2719,11 +2817,13 @@ def normalize_binding_confidence(binding: dict | None) -> dict:
     label = confidence.get("label") or binding_confidence_label(score)
     calibration = confidence.get("calibration") or "legacy_or_imported"
     signals = confidence.get("signals") or []
+    signal_breakdown = confidence.get("signal_breakdown") or confidence_signal_breakdown(signals)
     return {
         "score": score,
         "label": label,
         "calibration": calibration,
         "signals": signals,
+        "signal_breakdown": signal_breakdown,
     }
 
 
@@ -2889,6 +2989,14 @@ def binding_confidence_from_row(row: sqlite3.Row) -> dict:
     ) or "legacy_or_imported"
     signals_json = row["binding_confidence_signals_json"] if "binding_confidence_signals_json" in row_keys else None
     heuristic_signals = safe_json_loads(signals_json, [])
+    heuristic_breakdown = confidence_signal_breakdown(heuristic_signals)
+    heuristic_confidence = {
+        "score": heuristic_score,
+        "label": heuristic_label,
+        "calibration": heuristic_calibration,
+        "signals": heuristic_signals,
+        "signal_breakdown": heuristic_breakdown,
+    }
 
     auto_score = row["auto_confidence_score"] if "auto_confidence_score" in row_keys else None
     try:
@@ -2902,13 +3010,9 @@ def binding_confidence_from_row(row: sqlite3.Row) -> dict:
             "label": heuristic_label,
             "calibration": heuristic_calibration,
             "signals": heuristic_signals,
+            "signal_breakdown": heuristic_breakdown,
             "source": "heuristic",
-            "heuristic": {
-                "score": heuristic_score,
-                "label": heuristic_label,
-                "calibration": heuristic_calibration,
-                "signals": heuristic_signals,
-            },
+            "heuristic": heuristic_confidence,
         }
 
     auto_score = int(clamp(auto_score, 0, 100))
@@ -2920,23 +3024,21 @@ def binding_confidence_from_row(row: sqlite3.Row) -> dict:
     ) or AUTO_CONFIDENCE_CALIBRATION
     auto_signals_json = row["auto_confidence_signals_json"] if "auto_confidence_signals_json" in row_keys else None
     auto_signals = safe_json_loads(auto_signals_json, [])
+    auto_breakdown = confidence_signal_breakdown(auto_signals)
     return {
         "score": auto_score,
         "label": auto_label,
         "calibration": auto_calibration,
         "signals": auto_signals,
+        "signal_breakdown": auto_breakdown,
         "source": "auto",
-        "heuristic": {
-            "score": heuristic_score,
-            "label": heuristic_label,
-            "calibration": heuristic_calibration,
-            "signals": heuristic_signals,
-        },
+        "heuristic": heuristic_confidence,
         "auto_calibration": {
             "score": auto_score,
             "label": auto_label,
             "calibration": auto_calibration,
             "signals": auto_signals,
+            "signal_breakdown": auto_breakdown,
             "calibrated_at": row["auto_calibrated_at"] if "auto_calibrated_at" in row_keys else None,
         },
     }
@@ -4085,6 +4187,12 @@ def auto_confidence_signal_delta(row: dict, context: dict) -> tuple[int, list[st
 def auto_confidence_for_row(row: dict, context: dict) -> dict:
     current = row.get("binding_confidence") or {}
     heuristic = current.get("heuristic") or current
+    heuristic_signals = heuristic.get("signals") or []
+    if not heuristic.get("signal_breakdown"):
+        heuristic = {
+            **heuristic,
+            "signal_breakdown": confidence_signal_breakdown(heuristic_signals),
+        }
     heuristic_score = heuristic.get("score")
     if not isinstance(heuristic_score, (int, float)):
         heuristic_score = 50
@@ -4095,6 +4203,7 @@ def auto_confidence_for_row(row: dict, context: dict) -> dict:
         "label": binding_confidence_label(score),
         "calibration": AUTO_CONFIDENCE_CALIBRATION,
         "signals": signals,
+        "signal_breakdown": confidence_signal_breakdown(signals),
         "source": "auto",
         "heuristic": heuristic,
         "score_delta": score - int(heuristic_score),
@@ -4998,6 +5107,49 @@ def render_archive_dashboard(payload: dict) -> str:
       return "";
     }
 
+    function confidenceSignalBreakdown(confidence) {
+      const breakdown = confidence?.signal_breakdown || [];
+      if (breakdown.length) return breakdown;
+      const signals = confidence?.signals || [];
+      return signals.length
+        ? [{ group: "signals", label: "Signals", signals: signals.map((signal) => ({ raw: signal, label: signal })) }]
+        : [];
+    }
+
+    function confidenceSignalText(confidence, maxGroups = 4, maxSignals = 2) {
+      return confidenceSignalBreakdown(confidence).slice(0, maxGroups).map((group) => {
+        const signals = group.signals || [];
+        const labels = signals.slice(0, maxSignals).map((signal) => signal.label || signal.raw).filter(Boolean);
+        if (signals.length > maxSignals) labels.push("+" + (signals.length - maxSignals));
+        return labels.length ? `${group.group || "other"}: ${labels.join(", ")}` : "";
+      }).filter(Boolean).join(" | ");
+    }
+
+    function confidenceSignalChips(confidence, maxGroups = 3, maxSignals = 2) {
+      return confidenceSignalBreakdown(confidence).slice(0, maxGroups).map((group) => {
+        const signals = group.signals || [];
+        const labels = signals.slice(0, maxSignals).map((signal) => signal.label || signal.raw).filter(Boolean);
+        if (signals.length > maxSignals) labels.push("+" + (signals.length - maxSignals));
+        if (!labels.length) return "";
+        return `<span class="chip">${escapeHtml(group.group || "other")}: ${escapeHtml(labels.join(", "))}</span>`;
+      }).filter(Boolean).join("");
+    }
+
+    function confidenceCorpus(confidence) {
+      return [
+        confidence?.label,
+        confidence?.score,
+        confidence?.calibration,
+        confidence?.source,
+        (confidence?.signals || []).join(" "),
+        ...confidenceSignalBreakdown(confidence).flatMap((group) => [
+          group.group,
+          group.label,
+          ...(group.signals || []).flatMap((signal) => [signal.raw, signal.label]),
+        ]),
+      ].filter(Boolean).join(" ");
+    }
+
     function dossierOf(repo) {
       return dossiers[repo.full_name] || { claims: [], claim_gap_report: [], evidence_acquisition: {}, evidence: [] };
     }
@@ -5042,6 +5194,7 @@ def render_archive_dashboard(payload: dict) -> str:
           item.binding_confidence?.calibration,
           item.binding_confidence?.source,
           (item.binding_confidence?.signals || []).join(" "),
+          confidenceCorpus(item.binding_confidence),
         ]),
       ];
       return parts.filter(Boolean).join(" ").toLowerCase();
@@ -5088,6 +5241,7 @@ def render_archive_dashboard(payload: dict) -> str:
           item.binding_confidence?.calibration,
           item.binding_confidence?.source,
           (item.binding_confidence?.signals || []).join(" "),
+          confidenceCorpus(item.binding_confidence),
           (item.keywords || []).join(" "),
           item.reason,
         ]),
@@ -5107,6 +5261,7 @@ def render_archive_dashboard(payload: dict) -> str:
             binding.binding_confidence?.calibration,
             binding.binding_confidence?.source,
             (binding.binding_confidence?.signals || []).join(" "),
+            confidenceCorpus(binding.binding_confidence),
             (binding.keywords || []).join(" "),
             binding.reason,
           ]),
@@ -5139,13 +5294,13 @@ def render_archive_dashboard(payload: dict) -> str:
         {
           weight: 4,
           text: ((dossier.evidence_acquisition || {}).bindings || []).map((item) =>
-            `acquisition_binding ${item.field || ""} ${item.claim_id || ""} ${item.evidence_id || ""} ${item.evidence_stable_id || ""} ${item.missing_layer || ""} ${item.missing_layer_label || ""} ${item.binding_confidence?.label || ""} ${item.binding_confidence?.score || ""} ${item.binding_confidence?.calibration || ""} ${item.binding_confidence?.source || ""} ${(item.binding_confidence?.signals || []).join(" ")} ${(item.keywords || []).join(" ")} ${item.reason || ""}`
+            `acquisition_binding ${item.field || ""} ${item.claim_id || ""} ${item.evidence_id || ""} ${item.evidence_stable_id || ""} ${item.missing_layer || ""} ${item.missing_layer_label || ""} ${confidenceCorpus(item.binding_confidence)} ${(item.keywords || []).join(" ")} ${item.reason || ""}`
           ).join(" "),
         },
         {
           weight: 2,
           text: (dossier.evidence || []).map((item) =>
-            `${item.kind} ${item.title} ${item.quote} ${item.evidence_type || ""} ${item.polarity || ""} ${(item.signal_tags || []).join(" ")} ${(item.acquisition_bindings || []).map((binding) => `${binding.field || ""} ${binding.missing_layer || ""} ${binding.missing_layer_label || ""} ${binding.binding_confidence?.label || ""} ${binding.binding_confidence?.score || ""} ${binding.binding_confidence?.source || ""} ${(binding.keywords || []).join(" ")} ${binding.reason || ""}`).join(" ")}`
+            `${item.kind} ${item.title} ${item.quote} ${item.evidence_type || ""} ${item.polarity || ""} ${(item.signal_tags || []).join(" ")} ${(item.acquisition_bindings || []).map((binding) => `${binding.field || ""} ${binding.missing_layer || ""} ${binding.missing_layer_label || ""} ${confidenceCorpus(binding.binding_confidence)} ${(binding.keywords || []).join(" ")} ${binding.reason || ""}`).join(" ")}`
           ).join(" "),
         },
       ];
@@ -5402,6 +5557,7 @@ def render_archive_dashboard(payload: dict) -> str:
             <span class="chip support">${escapeHtml(binding.evidence_stable_id || binding.evidence_id || "")}</span>
             <span class="chip ${confidenceClass(binding.binding_confidence)}">Confidence ${escapeHtml(confidenceText(binding.binding_confidence))}</span>
             <span class="chip">${escapeHtml(confidenceSourceText(binding.binding_confidence))}</span>
+            ${confidenceSignalChips(binding.binding_confidence, 4, 2)}
             ${(binding.keywords || []).slice(0, 4).map((keyword) => `<span class="chip">${escapeHtml(keyword)}</span>`).join("")}
           </div>
         </article>
@@ -5412,10 +5568,10 @@ def render_archive_dashboard(payload: dict) -> str:
         .map((item) => {
         const itemBindings = (item.acquisition_bindings || []).filter(bindingMatchesConfidenceSource);
         const bindingChips = itemBindings.slice(0, 3).map((binding) =>
-          `<span class="chip support">补强 ${escapeHtml(binding.field || "claim")} / ${escapeHtml(binding.missing_layer_label || binding.missing_layer || "gap")}</span><span class="chip ${confidenceClass(binding.binding_confidence)}">${escapeHtml(confidenceText(binding.binding_confidence))}</span><span class="chip">${escapeHtml(confidenceSourceText(binding.binding_confidence))}</span>`
+          `<span class="chip support">补强 ${escapeHtml(binding.field || "claim")} / ${escapeHtml(binding.missing_layer_label || binding.missing_layer || "gap")}</span><span class="chip ${confidenceClass(binding.binding_confidence)}">${escapeHtml(confidenceText(binding.binding_confidence))}</span><span class="chip">${escapeHtml(confidenceSourceText(binding.binding_confidence))}</span>${confidenceSignalChips(binding.binding_confidence, 2, 1)}`
         ).join("");
         const bindingReason = itemBindings.length ? itemBindings.map((binding) =>
-          `${binding.field || "claim"}: ${binding.reason || binding.missing_layer_label || binding.missing_layer || ""} (${confidenceText(binding.binding_confidence)})`
+          `${binding.field || "claim"}: ${binding.reason || binding.missing_layer_label || binding.missing_layer || ""} (${confidenceText(binding.binding_confidence)}${confidenceSignalText(binding.binding_confidence, 2, 1) ? " / " + confidenceSignalText(binding.binding_confidence, 2, 1) : ""})`
         ).join(" | ") : "";
         return `
           <article class="item">
@@ -5677,6 +5833,21 @@ def count_items_text(items: list[dict], limit: int = 6) -> str:
     return text or "无"
 
 
+def confidence_signal_breakdown_text(confidence: dict | None, group_limit: int = 5, signal_limit: int = 3) -> str:
+    if not confidence:
+        return "无"
+    breakdown = confidence.get("signal_breakdown") or confidence_signal_breakdown(confidence.get("signals") or [])
+    parts = []
+    for group in breakdown[:group_limit]:
+        signals = group.get("signals") or []
+        labels = [item.get("label") or item.get("raw") for item in signals[:signal_limit]]
+        if len(signals) > signal_limit:
+            labels.append(f"+{len(signals) - signal_limit}")
+        if labels:
+            parts.append(f"{group.get('group') or 'other'}: {', '.join(labels)}")
+    return "；".join(parts) or "无"
+
+
 def render_archive_patterns(payload: dict) -> str:
     if payload.get("message"):
         return "\n".join(["# OSS Cognition Archive Patterns", "", payload["message"], ""])
@@ -5844,6 +6015,7 @@ def render_archive_show(payload: dict) -> str:
                 f" / confidence {(binding.get('binding_confidence') or {}).get('label') or 'unknown'} "
                 f"{(binding.get('binding_confidence') or {}).get('score') if (binding.get('binding_confidence') or {}).get('score') is not None else 'unknown'}"
                 f" / source {(binding.get('binding_confidence') or {}).get('source') or 'heuristic'}"
+                f" / signals {confidence_signal_breakdown_text(binding.get('binding_confidence') or {}, group_limit=3, signal_limit=2)}"
                 for binding in item.get("acquisition_bindings") or []
             )
         lines.extend(
@@ -6017,6 +6189,7 @@ def render_evidence_acquisition_summary(summary: dict | None) -> list[str]:
                     f"{binding.get('missing_layer_label') or binding.get('missing_layer') or '未知层'}；"
                     f"可靠度：{confidence.get('label') or 'unknown'} {confidence.get('score') if confidence.get('score') is not None else 'unknown'}；"
                     f"来源：{confidence.get('source') or 'heuristic'}；"
+                    f"信号：{confidence_signal_breakdown_text(confidence, group_limit=4, signal_limit=2)}；"
                     f"关键词：{keywords}；原因：{binding.get('reason') or '无'}",
                 ]
             )
