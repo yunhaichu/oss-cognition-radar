@@ -31,7 +31,31 @@ MAX_TEXT_CHARS = 5000
 MAX_IMPLEMENTATION_FILE_SIZE = 120_000
 GROWTH_WINDOWS = {"1d": 1, "7d": 7, "30d": 30}
 GROWTH_MAX_AGE_DAYS = {"1d": 2, "7d": 10, "30d": 45}
-ARCHIVE_SEARCH_INDEX_VERSION = 8
+ARCHIVE_SEARCH_INDEX_VERSION = 9
+BINDING_CONFIDENCE_BASE = 35
+BINDING_CONFIDENCE_SIGNAL_WEIGHTS = {
+    "requested_missing_layer": 22,
+    "target_layer": 12,
+    "evidence_layer_match": 18,
+    "stable_artifact_url": 5,
+    "typed_evidence": 5,
+}
+BINDING_CONFIDENCE_KEYWORD_HIT_WEIGHT = 5
+BINDING_CONFIDENCE_KEYWORD_HIT_MAX = 15
+AUTO_CONFIDENCE_CALIBRATION = "archive_auto_v1"
+AUTO_CONFIDENCE_PATTERN_WEIGHTS = {
+    "cross_project_5plus": 12,
+    "cross_project_3plus": 8,
+    "cross_project_2plus": 5,
+    "repeated_binding_5plus": 5,
+    "repeated_binding_3plus": 3,
+    "source_or_validation_evidence": 6,
+    "configuration_or_release_evidence": 4,
+    "generic_evidence": -5,
+    "negative_or_boundary_polarity": -8,
+    "stable_artifact_url": 3,
+    "keyword_sparse": -4,
+}
 SOURCE_EXTENSIONS = {
     ".py",
     ".ts",
@@ -170,14 +194,9 @@ def parse_args() -> argparse.Namespace:
         help="Group archived acquisition bindings into cross-project claim-gap repair patterns.",
     )
     parser.add_argument(
-        "--archive-calibration-export",
-        metavar="PATH",
-        help="Export a JSON review queue for manually calibrating acquisition binding confidence.",
-    )
-    parser.add_argument(
-        "--archive-calibration-apply",
-        metavar="PATH",
-        help="Apply a reviewed acquisition binding calibration JSON file to the SQLite archive.",
+        "--archive-auto-calibrate",
+        action="store_true",
+        help="Automatically recalibrate archived acquisition binding confidence from archive evidence signals.",
     )
     parser.add_argument(
         "--archive-dashboard",
@@ -1013,35 +1032,54 @@ def binding_confidence_label(score: int | float) -> str:
     return "low"
 
 
+def normalized_binding_signal(signal: str) -> str:
+    if signal.startswith("keyword_hits:"):
+        return "keyword_hits"
+    if signal.startswith("typed_evidence:"):
+        return "typed_evidence"
+    return signal
+
+
+def binding_confidence_weight_snapshot() -> dict:
+    return {
+        "base": BINDING_CONFIDENCE_BASE,
+        "signals": dict(BINDING_CONFIDENCE_SIGNAL_WEIGHTS),
+        "keyword_hits": {
+            "per_hit": BINDING_CONFIDENCE_KEYWORD_HIT_WEIGHT,
+            "max": BINDING_CONFIDENCE_KEYWORD_HIT_MAX,
+        },
+    }
+
+
 def binding_confidence_for(item: Evidence, gap: dict, layer: str, keywords: list[str]) -> dict:
-    score = 35
+    score = BINDING_CONFIDENCE_BASE
     signals = ["heuristic_v1"]
     missing_layers = gap.get("missing_layers") or []
     target_layers = gap.get("target_layers") or []
 
     if layer in missing_layers:
-        score += 22
+        score += BINDING_CONFIDENCE_SIGNAL_WEIGHTS["requested_missing_layer"]
         signals.append("requested_missing_layer")
     elif layer in target_layers:
-        score += 12
+        score += BINDING_CONFIDENCE_SIGNAL_WEIGHTS["target_layer"]
         signals.append("target_layer")
 
     actual_layer = evidence_support_layer(item)
     if actual_layer == layer:
-        score += 18
+        score += BINDING_CONFIDENCE_SIGNAL_WEIGHTS["evidence_layer_match"]
         signals.append("evidence_layer_match")
 
     hit_count = keyword_hit_count(f"{item.title} {item.quote}", keywords)
     if hit_count:
-        score += min(hit_count * 5, 15)
+        score += min(hit_count * BINDING_CONFIDENCE_KEYWORD_HIT_WEIGHT, BINDING_CONFIDENCE_KEYWORD_HIT_MAX)
         signals.append(f"keyword_hits:{hit_count}")
 
     if item.url:
-        score += 5
+        score += BINDING_CONFIDENCE_SIGNAL_WEIGHTS["stable_artifact_url"]
         signals.append("stable_artifact_url")
 
     if item.evidence_type != "general":
-        score += 5
+        score += BINDING_CONFIDENCE_SIGNAL_WEIGHTS["typed_evidence"]
         signals.append(f"typed_evidence:{item.evidence_type}")
 
     score = int(clamp(score, 0, 100))
@@ -1507,7 +1545,7 @@ def target_layers_for_claim(field: str) -> list[str]:
 
 def claim_gap_recommendation(missing_layers: list[str]) -> str:
     if not missing_layers:
-        return "当前 direct evidence 已覆盖核心实现与验证层，保留人工复核即可。"
+        return "当前 direct evidence 已覆盖核心实现与验证层；后续可继续自动采样新增 release、issue、PR 和实现层变更。"
     return "；".join(CLAIM_GAP_RECOMMENDATIONS.get(layer, layer) for layer in missing_layers[:3])
 
 
@@ -2094,11 +2132,11 @@ def init_db(conn: sqlite3.Connection) -> None:
             binding_confidence_label TEXT,
             binding_calibration TEXT,
             binding_confidence_signals_json TEXT,
-            human_confidence_score REAL,
-            human_confidence_label TEXT,
-            human_calibration_notes TEXT,
-            human_calibrated_at TEXT,
-            human_calibrator TEXT,
+            auto_confidence_score REAL,
+            auto_confidence_label TEXT,
+            auto_calibration TEXT,
+            auto_confidence_signals_json TEXT,
+            auto_calibrated_at TEXT,
             PRIMARY KEY (run_id, repo_full_name, evidence_id, field, missing_layer),
             FOREIGN KEY (run_id) REFERENCES runs(id)
         );
@@ -2127,11 +2165,11 @@ def init_db(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "evidence_acquisition_bindings", "binding_confidence_label", "TEXT")
     ensure_column(conn, "evidence_acquisition_bindings", "binding_calibration", "TEXT")
     ensure_column(conn, "evidence_acquisition_bindings", "binding_confidence_signals_json", "TEXT")
-    ensure_column(conn, "evidence_acquisition_bindings", "human_confidence_score", "REAL")
-    ensure_column(conn, "evidence_acquisition_bindings", "human_confidence_label", "TEXT")
-    ensure_column(conn, "evidence_acquisition_bindings", "human_calibration_notes", "TEXT")
-    ensure_column(conn, "evidence_acquisition_bindings", "human_calibrated_at", "TEXT")
-    ensure_column(conn, "evidence_acquisition_bindings", "human_calibrator", "TEXT")
+    ensure_column(conn, "evidence_acquisition_bindings", "auto_confidence_score", "REAL")
+    ensure_column(conn, "evidence_acquisition_bindings", "auto_confidence_label", "TEXT")
+    ensure_column(conn, "evidence_acquisition_bindings", "auto_calibration", "TEXT")
+    ensure_column(conn, "evidence_acquisition_bindings", "auto_confidence_signals_json", "TEXT")
+    ensure_column(conn, "evidence_acquisition_bindings", "auto_calibrated_at", "TEXT")
     ensure_column(conn, "repository_snapshots", "project_track", "TEXT")
     ensure_column(conn, "repository_snapshots", "track_score", "REAL")
     ensure_column(conn, "repository_snapshots", "track_score_json", "TEXT")
@@ -2409,9 +2447,9 @@ def rebuild_archive_search_index(conn: sqlite3.Connection) -> dict:
                b.claim_id, b.field, b.missing_layer, b.missing_layer_label,
                b.keywords_json, b.reason, b.binding_confidence_score,
                b.binding_confidence_label, b.binding_calibration,
-               b.binding_confidence_signals_json, b.human_confidence_score,
-               b.human_confidence_label, b.human_calibration_notes,
-               b.human_calibrated_at, b.human_calibrator,
+               b.binding_confidence_signals_json, b.auto_confidence_score,
+               b.auto_confidence_label, b.auto_calibration,
+               b.auto_confidence_signals_json, b.auto_calibrated_at,
                e.kind, e.title, e.quote,
                s.project_track, s.track_score
         FROM evidence_acquisition_bindings b
@@ -2439,11 +2477,11 @@ def rebuild_archive_search_index(conn: sqlite3.Connection) -> dict:
             confidence_label,
             calibration,
             confidence_signals_json,
-            human_score,
-            human_label,
-            human_notes,
-            human_calibrated_at,
-            human_calibrator,
+            auto_score,
+            auto_label,
+            auto_calibration,
+            auto_signals_json,
+            auto_calibrated_at,
             kind,
             title,
             quote,
@@ -2458,11 +2496,11 @@ def rebuild_archive_search_index(conn: sqlite3.Connection) -> dict:
                 confidence_label,
                 calibration,
                 " ".join(safe_json_loads(confidence_signals_json, [])),
-                human_score,
-                human_label,
-                human_notes,
-                human_calibrated_at,
-                human_calibrator,
+                auto_score,
+                auto_label,
+                auto_calibration,
+                " ".join(safe_json_loads(auto_signals_json, [])),
+                auto_calibrated_at,
             ]
         )
         body = " ".join(
@@ -2844,13 +2882,13 @@ def binding_confidence_from_row(row: sqlite3.Row) -> dict:
     signals_json = row["binding_confidence_signals_json"] if "binding_confidence_signals_json" in row_keys else None
     heuristic_signals = safe_json_loads(signals_json, [])
 
-    human_score = row["human_confidence_score"] if "human_confidence_score" in row_keys else None
+    auto_score = row["auto_confidence_score"] if "auto_confidence_score" in row_keys else None
     try:
-        human_score = int(float(human_score))
+        auto_score = int(float(auto_score))
     except (TypeError, ValueError):
-        human_score = None
+        auto_score = None
 
-    if human_score is None:
+    if auto_score is None:
         return {
             "score": heuristic_score,
             "label": heuristic_label,
@@ -2865,28 +2903,33 @@ def binding_confidence_from_row(row: sqlite3.Row) -> dict:
             },
         }
 
-    human_score = int(clamp(human_score, 0, 100))
-    human_label = (
-        row["human_confidence_label"] if "human_confidence_label" in row_keys else None
-    ) or binding_confidence_label(human_score)
+    auto_score = int(clamp(auto_score, 0, 100))
+    auto_label = (
+        row["auto_confidence_label"] if "auto_confidence_label" in row_keys else None
+    ) or binding_confidence_label(auto_score)
+    auto_calibration = (
+        row["auto_calibration"] if "auto_calibration" in row_keys else None
+    ) or AUTO_CONFIDENCE_CALIBRATION
+    auto_signals_json = row["auto_confidence_signals_json"] if "auto_confidence_signals_json" in row_keys else None
+    auto_signals = safe_json_loads(auto_signals_json, [])
     return {
-        "score": human_score,
-        "label": human_label,
-        "calibration": "human_v1",
-        "signals": ["human_override"],
-        "source": "human",
+        "score": auto_score,
+        "label": auto_label,
+        "calibration": auto_calibration,
+        "signals": auto_signals,
+        "source": "auto",
         "heuristic": {
             "score": heuristic_score,
             "label": heuristic_label,
             "calibration": heuristic_calibration,
             "signals": heuristic_signals,
         },
-        "human_review": {
-            "score": human_score,
-            "label": human_label,
-            "notes": row["human_calibration_notes"] if "human_calibration_notes" in row_keys else None,
-            "calibrated_at": row["human_calibrated_at"] if "human_calibrated_at" in row_keys else None,
-            "calibrator": row["human_calibrator"] if "human_calibrator" in row_keys else None,
+        "auto_calibration": {
+            "score": auto_score,
+            "label": auto_label,
+            "calibration": auto_calibration,
+            "signals": auto_signals,
+            "calibrated_at": row["auto_calibrated_at"] if "auto_calibrated_at" in row_keys else None,
         },
     }
 
@@ -3129,10 +3172,10 @@ def query_archive_search_like(
                     COALESCE(b.binding_confidence_label, '') || ' ' ||
                     COALESCE(b.binding_calibration, '') || ' ' ||
                     COALESCE(b.binding_confidence_signals_json, '') || ' ' ||
-                    COALESCE(b.human_confidence_label, '') || ' ' ||
-                    COALESCE(b.human_calibration_notes, '') || ' ' ||
-                    COALESCE(b.human_calibrated_at, '') || ' ' ||
-                    COALESCE(b.human_calibrator, '')
+                    COALESCE(b.auto_confidence_label, '') || ' ' ||
+                    COALESCE(b.auto_calibration, '') || ' ' ||
+                    COALESCE(b.auto_confidence_signals_json, '') || ' ' ||
+                    COALESCE(b.auto_calibrated_at, '')
                 ) LIKE ?
             )
         )
@@ -3304,9 +3347,9 @@ def query_archive_acquisition_bindings(conn: sqlite3.Connection, run_id: int, fu
         SELECT evidence_id, evidence_stable_id, claim_id, field, missing_layer,
                missing_layer_label, keywords_json, reason,
                binding_confidence_score, binding_confidence_label, binding_calibration,
-               binding_confidence_signals_json, human_confidence_score,
-               human_confidence_label, human_calibration_notes,
-               human_calibrated_at, human_calibrator
+               binding_confidence_signals_json, auto_confidence_score,
+               auto_confidence_label, auto_calibration,
+               auto_confidence_signals_json, auto_calibrated_at
         FROM evidence_acquisition_bindings
         WHERE run_id = ? AND repo_full_name = ?
         ORDER BY rowid
@@ -3363,6 +3406,7 @@ def archive_evidence_acquisition_summary(gaps: list[dict], evidence: list[dict],
     evidence_ids = unique_ordered([binding.get("evidence_id", "") for binding in bindings])
     requested_layers = unique_ordered([binding.get("missing_layer", "") for binding in bindings])
     added_counts: dict[str, int] = {}
+    confidence_source_counts: dict[str, int] = {}
     confidence_scores = [
         (binding.get("binding_confidence") or {}).get("score")
         for binding in bindings
@@ -3371,6 +3415,8 @@ def archive_evidence_acquisition_summary(gaps: list[dict], evidence: list[dict],
     for binding in bindings:
         layer = binding.get("missing_layer") or "unknown"
         added_counts[layer] = added_counts.get(layer, 0) + 1
+        confidence = binding.get("binding_confidence") or {}
+        count_value(confidence_source_counts, confidence.get("source") or "heuristic")
     return {
         "strategy": "claim_gap_targeted",
         "requested_layers": requested_layers,
@@ -3382,6 +3428,7 @@ def archive_evidence_acquisition_summary(gaps: list[dict], evidence: list[dict],
         "bindings": bindings,
         "average_binding_confidence": round(sum(confidence_scores) / len(confidence_scores), 1) if confidence_scores else None,
         "minimum_binding_confidence": min(confidence_scores) if confidence_scores else None,
+        "confidence_sources": top_count_items(confidence_source_counts),
         "target_claim_fields": unique_ordered([binding.get("field", "") for binding in bindings]),
         "status": "expanded",
         "source": "archive",
@@ -3607,9 +3654,9 @@ def query_archive_binding_matches(
             SELECT b.run_id, b.evidence_id, b.evidence_stable_id, b.claim_id, b.field,
                    b.missing_layer, b.missing_layer_label, b.keywords_json, b.reason,
                    b.binding_confidence_score, b.binding_confidence_label, b.binding_calibration,
-                   b.binding_confidence_signals_json, b.human_confidence_score,
-                   b.human_confidence_label, b.human_calibration_notes,
-                   b.human_calibrated_at, b.human_calibrator,
+                   b.binding_confidence_signals_json, b.auto_confidence_score,
+                   b.auto_confidence_label, b.auto_calibration,
+                   b.auto_confidence_signals_json, b.auto_calibrated_at,
                    archive_search_fts.rank AS relevance_rank
             FROM archive_search_fts
             JOIN evidence_acquisition_bindings b
@@ -3647,9 +3694,9 @@ def query_archive_binding_matches(
         SELECT run_id, evidence_id, evidence_stable_id, claim_id, field,
                missing_layer, missing_layer_label, keywords_json, reason,
                binding_confidence_score, binding_confidence_label, binding_calibration,
-               binding_confidence_signals_json, human_confidence_score,
-               human_confidence_label, human_calibration_notes,
-               human_calibrated_at, human_calibrator
+               binding_confidence_signals_json, auto_confidence_score,
+               auto_confidence_label, auto_calibration,
+               auto_confidence_signals_json, auto_calibrated_at
         FROM evidence_acquisition_bindings
         WHERE repo_full_name = ?
         AND LOWER(
@@ -3661,10 +3708,10 @@ def query_archive_binding_matches(
             COALESCE(binding_confidence_label, '') || ' ' ||
             COALESCE(binding_calibration, '') || ' ' ||
             COALESCE(binding_confidence_signals_json, '') || ' ' ||
-            COALESCE(human_confidence_label, '') || ' ' ||
-            COALESCE(human_calibration_notes, '') || ' ' ||
-            COALESCE(human_calibrated_at, '') || ' ' ||
-            COALESCE(human_calibrator, '')
+            COALESCE(auto_confidence_label, '') || ' ' ||
+            COALESCE(auto_calibration, '') || ' ' ||
+            COALESCE(auto_confidence_signals_json, '') || ' ' ||
+            COALESCE(auto_calibrated_at, '')
         ) LIKE ?
         ORDER BY run_id DESC, rowid
         LIMIT ?
@@ -3713,9 +3760,9 @@ def query_archive_pattern_bindings(
                b.claim_id, b.field, b.missing_layer, b.missing_layer_label,
                b.keywords_json, b.reason, b.binding_confidence_score,
                b.binding_confidence_label, b.binding_calibration,
-               b.binding_confidence_signals_json, b.human_confidence_score,
-               b.human_confidence_label, b.human_calibration_notes,
-               b.human_calibrated_at, b.human_calibrator,
+               b.binding_confidence_signals_json, b.auto_confidence_score,
+               b.auto_confidence_label, b.auto_calibration,
+               b.auto_confidence_signals_json, b.auto_calibrated_at,
                r.created_at AS run_created_at,
                s.project_track, s.track_score,
                e.kind AS evidence_kind, e.title AS evidence_title,
@@ -3773,6 +3820,187 @@ def query_archive_pattern_bindings(
     ]
 
 
+def mean_number(values: list[int | float], digits: int = 1) -> float | None:
+    if not values:
+        return None
+    return round(sum(values) / len(values), digits)
+
+
+def archive_pattern_context(rows: list[dict]) -> dict[tuple[str, str], dict]:
+    context: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        key = (row.get("field") or "未知 claim", row.get("missing_layer") or "unknown")
+        item = context.setdefault(key, {"repositories": set(), "binding_count": 0})
+        item["repositories"].add(row.get("repo_full_name") or "")
+        item["binding_count"] += 1
+    return {
+        key: {
+            "repository_count": len({repo for repo in value["repositories"] if repo}),
+            "binding_count": value["binding_count"],
+        }
+        for key, value in context.items()
+    }
+
+
+def auto_confidence_signal_delta(row: dict, context: dict) -> tuple[int, list[str]]:
+    score_delta = 0
+    signals: list[str] = [AUTO_CONFIDENCE_CALIBRATION]
+    repo_count = context.get("repository_count", 0)
+    binding_count = context.get("binding_count", 0)
+
+    if repo_count >= 5:
+        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["cross_project_5plus"]
+        signals.append(f"cross_project_repeated:{repo_count}")
+    elif repo_count >= 3:
+        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["cross_project_3plus"]
+        signals.append(f"cross_project_repeated:{repo_count}")
+    elif repo_count >= 2:
+        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["cross_project_2plus"]
+        signals.append(f"cross_project_repeated:{repo_count}")
+
+    if binding_count >= 5:
+        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["repeated_binding_5plus"]
+        signals.append(f"repeated_binding:{binding_count}")
+    elif binding_count >= 3:
+        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["repeated_binding_3plus"]
+        signals.append(f"repeated_binding:{binding_count}")
+
+    evidence_type = row.get("evidence_type") or "general"
+    if evidence_type in {"source_entrypoint", "test_surface", "benchmark"}:
+        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["source_or_validation_evidence"]
+        signals.append(f"source_or_validation_evidence:{evidence_type}")
+    elif evidence_type in {"configuration", "release_delta", "implementation_change"}:
+        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["configuration_or_release_evidence"]
+        signals.append(f"engineering_trace_evidence:{evidence_type}")
+    elif evidence_type == "general":
+        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["generic_evidence"]
+        signals.append("generic_evidence")
+
+    polarity = row.get("polarity") or "supporting"
+    if polarity in {"negative", "boundary"}:
+        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["negative_or_boundary_polarity"]
+        signals.append(f"boundary_polarity:{polarity}")
+
+    if row.get("evidence_url"):
+        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["stable_artifact_url"]
+        signals.append("stable_artifact_url")
+
+    heuristic = (row.get("binding_confidence") or {}).get("heuristic") or row.get("binding_confidence") or {}
+    normalized_signals = {
+        normalized_binding_signal(str(signal))
+        for signal in heuristic.get("signals") or []
+        if str(signal) != "heuristic_v1"
+    }
+    if "keyword_hits" not in normalized_signals:
+        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["keyword_sparse"]
+        signals.append("keyword_sparse")
+
+    return score_delta, signals
+
+
+def auto_confidence_for_row(row: dict, context: dict) -> dict:
+    current = row.get("binding_confidence") or {}
+    heuristic = current.get("heuristic") or current
+    heuristic_score = heuristic.get("score")
+    if not isinstance(heuristic_score, (int, float)):
+        heuristic_score = 50
+    score_delta, signals = auto_confidence_signal_delta(row, context)
+    score = int(clamp(int(heuristic_score) + score_delta, 0, 100))
+    return {
+        "score": score,
+        "label": binding_confidence_label(score),
+        "calibration": AUTO_CONFIDENCE_CALIBRATION,
+        "signals": signals,
+        "source": "auto",
+        "heuristic": heuristic,
+        "score_delta": score - int(heuristic_score),
+        "pattern_context": context,
+    }
+
+
+def apply_archive_auto_calibration(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
+    rows = query_archive_pattern_bindings(
+        conn,
+        track=args.archive_track,
+        min_track_score=args.min_track_score,
+    )
+    context_by_key = archive_pattern_context(rows)
+    updated: list[dict] = []
+    now = utc_now().isoformat()
+    for row in rows:
+        key = (row.get("field") or "未知 claim", row.get("missing_layer") or "unknown")
+        auto_confidence = auto_confidence_for_row(row, context_by_key.get(key, {}))
+        cursor = conn.execute(
+            """
+            UPDATE evidence_acquisition_bindings
+            SET auto_confidence_score = ?,
+                auto_confidence_label = ?,
+                auto_calibration = ?,
+                auto_confidence_signals_json = ?,
+                auto_calibrated_at = ?
+            WHERE run_id = ? AND repo_full_name = ? AND evidence_id = ? AND field = ? AND missing_layer = ?
+            """,
+            (
+                auto_confidence["score"],
+                auto_confidence["label"],
+                auto_confidence["calibration"],
+                json.dumps(auto_confidence["signals"], ensure_ascii=False),
+                now,
+                row["run_id"],
+                row["repo_full_name"],
+                row["evidence_id"],
+                row["field"],
+                row["missing_layer"],
+            ),
+        )
+        if cursor.rowcount:
+            updated.append(
+                {
+                    "repo_full_name": row.get("repo_full_name"),
+                    "run_id": row.get("run_id"),
+                    "field": row.get("field"),
+                    "missing_layer": row.get("missing_layer"),
+                    "missing_layer_label": row.get("missing_layer_label"),
+                    "evidence_id": row.get("evidence_id"),
+                    "evidence_stable_id": row.get("evidence_stable_id"),
+                    "heuristic_score": (auto_confidence.get("heuristic") or {}).get("score"),
+                    "auto_score": auto_confidence.get("score"),
+                    "auto_label": auto_confidence.get("label"),
+                    "score_delta": auto_confidence.get("score_delta"),
+                    "signals": auto_confidence.get("signals") or [],
+                    "pattern_context": auto_confidence.get("pattern_context") or {},
+                }
+            )
+
+    conn.execute("DELETE FROM archive_search_meta WHERE id = 1")
+    index_status = rebuild_archive_search_index(conn)
+    scores = [item["auto_score"] for item in updated if isinstance(item.get("auto_score"), (int, float))]
+    deltas = [item["score_delta"] for item in updated if isinstance(item.get("score_delta"), (int, float))]
+    source_counts = {"auto": len(updated)} if updated else {}
+    return {
+        "schema_version": 1,
+        "mode": "archive_auto_calibrate",
+        "generated_at": utc_now().isoformat(),
+        "db": args.db,
+        "filters": archive_filters_payload(args),
+        "scope": "latest_deep_dossiers",
+        "weights": {
+            "heuristic_v1": binding_confidence_weight_snapshot(),
+            AUTO_CONFIDENCE_CALIBRATION: dict(AUTO_CONFIDENCE_PATTERN_WEIGHTS),
+        },
+        "statistics": {
+            "candidate_bindings": len(rows),
+            "updated_bindings": len(updated),
+            "repositories": len({item.get("repo_full_name") for item in updated if item.get("repo_full_name")}),
+            "mean_auto_confidence": mean_number(scores),
+            "mean_score_delta": mean_number(deltas),
+            "confidence_sources": top_count_items(source_counts),
+        },
+        "updated": sorted(updated, key=lambda item: (-(abs(item.get("score_delta") or 0)), item.get("repo_full_name") or ""))[: max(args.limit, 1)],
+        "search_index": index_status,
+    }
+
+
 def build_archive_acquisition_patterns(rows: list[dict], limit: int) -> list[dict]:
     groups: dict[tuple[str, str], dict] = {}
     for row in rows:
@@ -3795,6 +4023,7 @@ def build_archive_acquisition_patterns(rows: list[dict], limit: int) -> list[dic
                 "_reason_counts": {},
                 "_confidence_scores": [],
                 "_confidence_label_counts": {},
+                "_confidence_source_counts": {},
                 "examples": [],
             },
         )
@@ -3808,6 +4037,7 @@ def build_archive_acquisition_patterns(rows: list[dict], limit: int) -> list[dic
         if isinstance(confidence.get("score"), (int, float)):
             pattern["_confidence_scores"].append(confidence["score"])
         count_value(pattern["_confidence_label_counts"], confidence.get("label"))
+        count_value(pattern["_confidence_source_counts"], confidence.get("source") or "heuristic")
         for keyword in row.get("keywords") or []:
             count_value(pattern["_keyword_counts"], keyword)
 
@@ -3855,6 +4085,7 @@ def build_archive_acquisition_patterns(rows: list[dict], limit: int) -> list[dic
                 "minimum_binding_confidence": min(confidence_scores) if confidence_scores else None,
                 "reliability_status": binding_confidence_label(average_confidence or 0),
                 "confidence_labels": top_count_items(pattern.pop("_confidence_label_counts")),
+                "confidence_sources": top_count_items(pattern.pop("_confidence_source_counts")),
                 "tracks": top_count_items(pattern.pop("_track_counts")),
                 "evidence_types": top_count_items(pattern.pop("_evidence_type_counts")),
                 "evidence_kinds": top_count_items(pattern.pop("_evidence_kind_counts")),
@@ -3980,231 +4211,6 @@ def archive_patterns_payload(conn: sqlite3.Connection, args: argparse.Namespace)
     }
 
 
-def calibration_review_item(row: dict) -> dict:
-    confidence = row.get("binding_confidence") or {}
-    return {
-        "binding_key": {
-            "run_id": row.get("run_id"),
-            "repo_full_name": row.get("repo_full_name"),
-            "evidence_id": row.get("evidence_id"),
-            "field": row.get("field"),
-            "missing_layer": row.get("missing_layer"),
-        },
-        "repo_full_name": row.get("repo_full_name"),
-        "track": row.get("track"),
-        "track_score": row.get("track_score"),
-        "claim_id": row.get("claim_id"),
-        "field": row.get("field"),
-        "missing_layer": row.get("missing_layer"),
-        "missing_layer_label": row.get("missing_layer_label"),
-        "reason": row.get("reason"),
-        "keywords": row.get("keywords") or [],
-        "current_confidence": confidence,
-        "heuristic_confidence": confidence.get("heuristic") or confidence,
-        "review": {
-            "status": "unreviewed",
-            "score": None,
-            "label": None,
-            "notes": "",
-            "calibrator": "",
-        },
-        "evidence": {
-            "evidence_id": row.get("evidence_id"),
-            "stable_id": row.get("evidence_stable_id"),
-            "kind": row.get("evidence_kind"),
-            "title": row.get("evidence_title"),
-            "url": row.get("evidence_url"),
-            "quote": excerpt(row.get("evidence_quote") or "", 420),
-            "evidence_type": row.get("evidence_type"),
-            "polarity": row.get("polarity"),
-            "signal_tags": row.get("signal_tags") or [],
-        },
-    }
-
-
-def archive_calibration_export_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
-    rows = query_archive_pattern_bindings(
-        conn,
-        track=args.archive_track,
-        min_track_score=args.min_track_score,
-    )
-    rows.sort(
-        key=lambda item: (
-            (item.get("binding_confidence") or {}).get("score") or 50,
-            item.get("repo_full_name") or "",
-            item.get("field") or "",
-            item.get("missing_layer") or "",
-            item.get("evidence_id") or "",
-        )
-    )
-    items = [calibration_review_item(row) for row in rows[: max(args.limit, 1)]]
-    return {
-        "schema_version": 1,
-        "mode": "archive_calibration_export",
-        "generated_at": utc_now().isoformat(),
-        "db": args.db,
-        "filters": archive_filters_payload(args),
-        "instructions": [
-            "Edit each item.review when manually calibrated.",
-            "Set review.status to reviewed and review.score to a 0-100 number.",
-            "review.label is optional; it is derived from score when omitted.",
-            "Use review.status=skip to leave a row unchanged or clear to remove an existing human override.",
-            "Apply with: python3 radar.py --archive-calibration-apply PATH --db data/radar.sqlite",
-        ],
-        "statistics": {
-            "available_bindings": len(rows),
-            "exported_items": len(items),
-        },
-        "items": items,
-    }
-
-
-def calibration_review_from_item(item: dict) -> dict:
-    return item.get("review") or item.get("human_calibration") or {}
-
-
-def calibration_binding_key(item: dict) -> dict:
-    key = item.get("binding_key") or {}
-    return {
-        "run_id": key.get("run_id") or item.get("run_id"),
-        "repo_full_name": key.get("repo_full_name") or item.get("repo_full_name"),
-        "evidence_id": key.get("evidence_id") or item.get("evidence_id") or ((item.get("evidence") or {}).get("evidence_id")),
-        "field": key.get("field") or item.get("field"),
-        "missing_layer": key.get("missing_layer") or item.get("missing_layer"),
-    }
-
-
-def normalize_calibration_score(value) -> int | None:
-    try:
-        return int(clamp(float(value), 0, 100))
-    except (TypeError, ValueError):
-        return None
-
-
-def apply_archive_calibrations(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
-    path = pathlib.Path(args.archive_calibration_apply)
-    data = json.loads(path.read_text(encoding="utf-8"))
-    items = data.get("items") if isinstance(data, dict) else data
-    if not isinstance(items, list):
-        raise SystemExit("Calibration file must be a JSON object with an items list, or a JSON list.")
-
-    applied: list[dict] = []
-    cleared: list[dict] = []
-    skipped: list[dict] = []
-    missing: list[dict] = []
-    errors: list[dict] = []
-    now = utc_now().isoformat()
-
-    for index, item in enumerate(items, 1):
-        if not isinstance(item, dict):
-            errors.append({"index": index, "error": "item is not an object"})
-            continue
-        key = calibration_binding_key(item)
-        if not all(key.get(name) for name in ("run_id", "repo_full_name", "evidence_id", "field", "missing_layer")):
-            errors.append({"index": index, "binding_key": key, "error": "missing binding key fields"})
-            continue
-
-        review = calibration_review_from_item(item)
-        status = str(review.get("status") or "").strip().lower()
-        if status in {"", "unreviewed", "skip", "skipped"}:
-            skipped.append({"index": index, "binding_key": key, "reason": status or "unreviewed"})
-            continue
-
-        if status == "clear":
-            cursor = conn.execute(
-                """
-                UPDATE evidence_acquisition_bindings
-                SET human_confidence_score = NULL,
-                    human_confidence_label = NULL,
-                    human_calibration_notes = NULL,
-                    human_calibrated_at = NULL,
-                    human_calibrator = NULL
-                WHERE run_id = ? AND repo_full_name = ? AND evidence_id = ? AND field = ? AND missing_layer = ?
-                """,
-                (
-                    key["run_id"],
-                    key["repo_full_name"],
-                    key["evidence_id"],
-                    key["field"],
-                    key["missing_layer"],
-                ),
-            )
-            target = {"index": index, "binding_key": key}
-            if cursor.rowcount:
-                cleared.append(target)
-            else:
-                missing.append(target)
-            continue
-
-        score = normalize_calibration_score(review.get("score"))
-        if score is None:
-            errors.append({"index": index, "binding_key": key, "error": "review.score must be a 0-100 number"})
-            continue
-        label = review.get("label") or binding_confidence_label(score)
-        notes = review.get("notes") or ""
-        calibrator = review.get("calibrator") or "manual"
-        calibrated_at = review.get("calibrated_at") or now
-        cursor = conn.execute(
-            """
-            UPDATE evidence_acquisition_bindings
-            SET human_confidence_score = ?,
-                human_confidence_label = ?,
-                human_calibration_notes = ?,
-                human_calibrated_at = ?,
-                human_calibrator = ?
-            WHERE run_id = ? AND repo_full_name = ? AND evidence_id = ? AND field = ? AND missing_layer = ?
-            """,
-            (
-                score,
-                label,
-                notes,
-                calibrated_at,
-                calibrator,
-                key["run_id"],
-                key["repo_full_name"],
-                key["evidence_id"],
-                key["field"],
-                key["missing_layer"],
-            ),
-        )
-        target = {
-            "index": index,
-            "binding_key": key,
-            "score": score,
-            "label": label,
-            "calibrator": calibrator,
-            "calibrated_at": calibrated_at,
-        }
-        if cursor.rowcount:
-            applied.append(target)
-        else:
-            missing.append(target)
-
-    conn.execute("DELETE FROM archive_search_meta WHERE id = 1")
-    index_status = rebuild_archive_search_index(conn)
-    return {
-        "schema_version": 1,
-        "mode": "archive_calibration_apply",
-        "generated_at": utc_now().isoformat(),
-        "db": args.db,
-        "source": str(path),
-        "statistics": {
-            "items": len(items),
-            "applied": len(applied),
-            "cleared": len(cleared),
-            "skipped": len(skipped),
-            "missing": len(missing),
-            "errors": len(errors),
-        },
-        "applied": applied,
-        "cleared": cleared,
-        "skipped": skipped[:20],
-        "missing": missing,
-        "errors": errors,
-        "search_index": index_status,
-    }
-
-
 def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
     index_status = rebuild_archive_search_index(conn)
     repositories = query_latest_archive_snapshots(
@@ -4246,6 +4252,10 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
     for summary in repositories:
         track = (summary.get("track_score") or {}).get("track") or "unknown"
         tracks[track] = tracks.get(track, 0) + 1
+    confidence_sources: dict[str, int] = {}
+    for row in pattern_rows:
+        confidence = row.get("binding_confidence") or {}
+        count_value(confidence_sources, confidence.get("source") or "heuristic")
 
     return {
         "schema_version": 1,
@@ -4265,6 +4275,7 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
             "cross_project_patterns": sum(1 for item in patterns if item.get("repository_count", 0) >= 2),
             "average_pattern_confidence": round(sum(pattern_confidences) / len(pattern_confidences), 1) if pattern_confidences else None,
             "average_track_score": round(sum(scores) / len(scores), 1) if scores else None,
+            "confidence_sources": top_count_items(confidence_sources),
             "tracks": tracks,
         },
         "repositories": repositories,
@@ -4343,7 +4354,7 @@ def render_archive_dashboard(payload: dict) -> str:
 
     .toolbar {
       display: grid;
-      grid-template-columns: minmax(220px, 1fr) 180px 220px 92px;
+      grid-template-columns: minmax(220px, 1fr) 180px 170px 220px 92px;
       gap: 10px;
       padding: 12px 24px;
       border-bottom: 1px solid var(--line);
@@ -4685,6 +4696,7 @@ def render_archive_dashboard(payload: dict) -> str:
     <section class="toolbar" aria-label="Archive filters">
       <input id="searchInput" type="search" placeholder="Search repositories, patterns, claims, gaps, bindings, evidence" autocomplete="off">
       <select id="trackSelect" aria-label="Track"></select>
+      <select id="confidenceSourceSelect" aria-label="Confidence source"></select>
       <label class="range" for="scoreRange">
         <input id="scoreRange" type="range" min="0" max="100" step="1" value="0">
         <output id="scoreOutput">0</output>
@@ -4716,13 +4728,14 @@ def render_archive_dashboard(payload: dict) -> str:
 
   <script>
     const DATA = __DATA__;
-    const state = { query: "", track: "all", minScore: 0, selected: null };
+    const state = { query: "", track: "all", confidenceSource: "all", minScore: 0, selected: null };
     const repos = DATA.repositories || [];
     const dossiers = DATA.dossiers || {};
     const patterns = DATA.patterns || [];
 
     const searchInput = document.getElementById("searchInput");
     const trackSelect = document.getElementById("trackSelect");
+    const confidenceSourceSelect = document.getElementById("confidenceSourceSelect");
     const scoreRange = document.getElementById("scoreRange");
     const scoreOutput = document.getElementById("scoreOutput");
     const resetButton = document.getElementById("resetButton");
@@ -4763,6 +4776,16 @@ def render_archive_dashboard(payload: dict) -> str:
       return `${confidence.label || "unknown"} ${score}`;
     }
 
+    function confidenceSource(confidence) {
+      return confidence?.source || "heuristic";
+    }
+
+    function confidenceSourceText(confidence) {
+      const source = confidenceSource(confidence);
+      if (source === "auto") return "auto";
+      return "heuristic";
+    }
+
     function confidenceClass(confidence) {
       const label = confidence?.label || "";
       if (label === "high") return "support";
@@ -4772,6 +4795,23 @@ def render_archive_dashboard(payload: dict) -> str:
 
     function dossierOf(repo) {
       return dossiers[repo.full_name] || { claims: [], claim_gap_report: [], evidence_acquisition: {}, evidence: [] };
+    }
+
+    function bindingMatchesConfidenceSource(binding) {
+      return state.confidenceSource === "all" || confidenceSource(binding?.binding_confidence) === state.confidenceSource;
+    }
+
+    function repoMatchesConfidenceSource(repo) {
+      if (state.confidenceSource === "all") return true;
+      const dossier = dossierOf(repo);
+      const acquisitionBindings = (dossier.evidence_acquisition || {}).bindings || [];
+      const evidenceBindings = (dossier.evidence || []).flatMap((item) => item.acquisition_bindings || []);
+      return [...acquisitionBindings, ...evidenceBindings].some(bindingMatchesConfidenceSource);
+    }
+
+    function patternMatchesConfidenceSource(pattern) {
+      if (state.confidenceSource === "all") return true;
+      return (pattern.confidence_sources || []).some((item) => item.value === state.confidenceSource);
     }
 
     function patternCorpus(pattern) {
@@ -4786,6 +4826,7 @@ def render_archive_dashboard(payload: dict) -> str:
         ...(pattern.evidence_types || []).map((item) => item.value),
         ...(pattern.evidence_kinds || []).map((item) => item.value),
         ...(pattern.confidence_labels || []).map((item) => item.value),
+        ...(pattern.confidence_sources || []).map((item) => item.value),
         ...(pattern.examples || []).flatMap((item) => [
           item.repo_full_name,
           item.evidence_title,
@@ -4794,6 +4835,7 @@ def render_archive_dashboard(payload: dict) -> str:
           item.binding_confidence?.label,
           item.binding_confidence?.score,
           item.binding_confidence?.calibration,
+          item.binding_confidence?.source,
           (item.binding_confidence?.signals || []).join(" "),
         ]),
       ];
@@ -4839,6 +4881,7 @@ def render_archive_dashboard(payload: dict) -> str:
           item.binding_confidence?.label,
           item.binding_confidence?.score,
           item.binding_confidence?.calibration,
+          item.binding_confidence?.source,
           (item.binding_confidence?.signals || []).join(" "),
           (item.keywords || []).join(" "),
           item.reason,
@@ -4857,6 +4900,7 @@ def render_archive_dashboard(payload: dict) -> str:
             binding.binding_confidence?.label,
             binding.binding_confidence?.score,
             binding.binding_confidence?.calibration,
+            binding.binding_confidence?.source,
             (binding.binding_confidence?.signals || []).join(" "),
             (binding.keywords || []).join(" "),
             binding.reason,
@@ -4890,13 +4934,13 @@ def render_archive_dashboard(payload: dict) -> str:
         {
           weight: 4,
           text: ((dossier.evidence_acquisition || {}).bindings || []).map((item) =>
-            `acquisition_binding ${item.field || ""} ${item.claim_id || ""} ${item.evidence_id || ""} ${item.evidence_stable_id || ""} ${item.missing_layer || ""} ${item.missing_layer_label || ""} ${item.binding_confidence?.label || ""} ${item.binding_confidence?.score || ""} ${item.binding_confidence?.calibration || ""} ${(item.binding_confidence?.signals || []).join(" ")} ${(item.keywords || []).join(" ")} ${item.reason || ""}`
+            `acquisition_binding ${item.field || ""} ${item.claim_id || ""} ${item.evidence_id || ""} ${item.evidence_stable_id || ""} ${item.missing_layer || ""} ${item.missing_layer_label || ""} ${item.binding_confidence?.label || ""} ${item.binding_confidence?.score || ""} ${item.binding_confidence?.calibration || ""} ${item.binding_confidence?.source || ""} ${(item.binding_confidence?.signals || []).join(" ")} ${(item.keywords || []).join(" ")} ${item.reason || ""}`
           ).join(" "),
         },
         {
           weight: 2,
           text: (dossier.evidence || []).map((item) =>
-            `${item.kind} ${item.title} ${item.quote} ${item.evidence_type || ""} ${item.polarity || ""} ${(item.signal_tags || []).join(" ")} ${(item.acquisition_bindings || []).map((binding) => `${binding.field || ""} ${binding.missing_layer || ""} ${binding.missing_layer_label || ""} ${binding.binding_confidence?.label || ""} ${binding.binding_confidence?.score || ""} ${(binding.keywords || []).join(" ")} ${binding.reason || ""}`).join(" ")}`
+            `${item.kind} ${item.title} ${item.quote} ${item.evidence_type || ""} ${item.polarity || ""} ${(item.signal_tags || []).join(" ")} ${(item.acquisition_bindings || []).map((binding) => `${binding.field || ""} ${binding.missing_layer || ""} ${binding.missing_layer_label || ""} ${binding.binding_confidence?.label || ""} ${binding.binding_confidence?.score || ""} ${binding.binding_confidence?.source || ""} ${(binding.keywords || []).join(" ")} ${binding.reason || ""}`).join(" ")}`
           ).join(" "),
         },
       ];
@@ -4910,6 +4954,7 @@ def render_archive_dashboard(payload: dict) -> str:
       const query = state.query.trim().toLowerCase();
       const items = repos.filter((repo) => {
         if (state.track !== "all" && trackOf(repo) !== state.track) return false;
+        if (!repoMatchesConfidenceSource(repo)) return false;
         if (scoreOf(repo) < state.minScore) return false;
         if (query && !corpusOf(repo).includes(query)) return false;
         return true;
@@ -4928,6 +4973,24 @@ def render_archive_dashboard(payload: dict) -> str:
       trackSelect.innerHTML = [
         '<option value="all">All tracks</option>',
         ...tracks.map((track) => `<option value="${escapeHtml(track)}">${escapeHtml(track)}</option>`),
+      ].join("");
+    }
+
+    function renderConfidenceSourceOptions() {
+      const sources = Array.from(new Set([
+        ...(DATA.statistics?.confidence_sources || []).map((item) => item.value),
+        ...patterns.flatMap((pattern) => (pattern.confidence_sources || []).map((item) => item.value)),
+        ...repos.flatMap((repo) => {
+          const dossier = dossierOf(repo);
+          return [
+            ...(((dossier.evidence_acquisition || {}).bindings || []).map((binding) => confidenceSource(binding.binding_confidence))),
+            ...((dossier.evidence || []).flatMap((item) => (item.acquisition_bindings || []).map((binding) => confidenceSource(binding.binding_confidence)))),
+          ];
+        }),
+      ].filter(Boolean))).sort();
+      confidenceSourceSelect.innerHTML = [
+        '<option value="all">All confidence</option>',
+        ...sources.map((source) => `<option value="${escapeHtml(source)}">${escapeHtml(source)}</option>`),
       ].join("");
     }
 
@@ -4979,8 +5042,11 @@ def render_archive_dashboard(payload: dict) -> str:
 
     function filteredPatterns() {
       const query = state.query.trim().toLowerCase();
-      if (!query) return patterns;
-      return patterns.filter((pattern) => patternCorpus(pattern).includes(query));
+      return patterns.filter((pattern) => {
+        if (!patternMatchesConfidenceSource(pattern)) return false;
+        if (query && !patternCorpus(pattern).includes(query)) return false;
+        return true;
+      });
     }
 
     function renderPatterns() {
@@ -5005,6 +5071,7 @@ def render_archive_dashboard(payload: dict) -> str:
               <span class="chip">Repos ${escapeHtml(pattern.repository_count || 0)}</span>
               <span class="chip">Bindings ${escapeHtml(pattern.binding_count || 0)}</span>
               <span class="chip ${confidenceClass(confidence)}">Confidence ${escapeHtml(confidenceText(confidence))}</span>
+              ${(pattern.confidence_sources || []).slice(0, 2).map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
             </div>
             <p class="subtle">${escapeHtml(compact((pattern.repositories || []).join(", "), 120))}</p>
             <div class="chips">
@@ -5086,6 +5153,7 @@ def render_archive_dashboard(payload: dict) -> str:
       const dossier = dossierOf(repo);
       const acquisition = dossier.evidence_acquisition || {};
       const bindings = acquisition.bindings || [];
+      const displayedBindings = bindings.filter(bindingMatchesConfidenceSource);
       const health = repo.health || {};
       const signals = repo.track_score?.signals || {};
       const signalChips = Object.entries(signals).map(([name, value]) =>
@@ -5121,21 +5189,25 @@ def render_archive_dashboard(payload: dict) -> str:
           <div class="subtle">${escapeHtml(gap.gap_reason || "")}</div>
         </article>
       `).join("");
-      const acquisitionCards = bindings.slice(0, 8).map((binding) => `
+      const acquisitionCards = displayedBindings.slice(0, 8).map((binding) => `
         <article class="item">
           <h3>${escapeHtml(binding.field || "Unknown claim")} <span class="subtle">${escapeHtml(binding.missing_layer_label || binding.missing_layer || "")}</span></h3>
           <p>${escapeHtml(binding.reason || "No gap reason archived.")}</p>
           <div class="chips">
             <span class="chip support">${escapeHtml(binding.evidence_stable_id || binding.evidence_id || "")}</span>
             <span class="chip ${confidenceClass(binding.binding_confidence)}">Confidence ${escapeHtml(confidenceText(binding.binding_confidence))}</span>
+            <span class="chip">${escapeHtml(confidenceSourceText(binding.binding_confidence))}</span>
             ${(binding.keywords || []).slice(0, 4).map((keyword) => `<span class="chip">${escapeHtml(keyword)}</span>`).join("")}
           </div>
         </article>
       `).join("");
-      const evidence = (dossier.evidence || []).slice(0, 12).map((item) => {
-        const itemBindings = item.acquisition_bindings || [];
+      const evidence = (dossier.evidence || [])
+        .filter((item) => state.confidenceSource === "all" || (item.acquisition_bindings || []).some(bindingMatchesConfidenceSource))
+        .slice(0, 12)
+        .map((item) => {
+        const itemBindings = (item.acquisition_bindings || []).filter(bindingMatchesConfidenceSource);
         const bindingChips = itemBindings.slice(0, 3).map((binding) =>
-          `<span class="chip support">补强 ${escapeHtml(binding.field || "claim")} / ${escapeHtml(binding.missing_layer_label || binding.missing_layer || "gap")}</span><span class="chip ${confidenceClass(binding.binding_confidence)}">${escapeHtml(confidenceText(binding.binding_confidence))}</span>`
+          `<span class="chip support">补强 ${escapeHtml(binding.field || "claim")} / ${escapeHtml(binding.missing_layer_label || binding.missing_layer || "gap")}</span><span class="chip ${confidenceClass(binding.binding_confidence)}">${escapeHtml(confidenceText(binding.binding_confidence))}</span><span class="chip">${escapeHtml(confidenceSourceText(binding.binding_confidence))}</span>`
         ).join("");
         const bindingReason = itemBindings.length ? itemBindings.map((binding) =>
           `${binding.field || "claim"}: ${binding.reason || binding.missing_layer_label || binding.missing_layer || ""} (${confidenceText(binding.binding_confidence)})`
@@ -5185,15 +5257,16 @@ def render_archive_dashboard(payload: dict) -> str:
         </section>
         <section class="acquisition">
           <div class="section-title">Evidence Acquisition</div>
-          ${bindings.length ? `
+          ${displayedBindings.length ? `
             <div class="chips">
               <span class="chip support">${escapeHtml(acquisition.strategy || "claim_gap_targeted")}</span>
-              <span class="chip">Bindings ${escapeHtml(acquisition.binding_count || bindings.length)}</span>
+              <span class="chip">Bindings ${escapeHtml(displayedBindings.length)} / ${escapeHtml(acquisition.binding_count || bindings.length)}</span>
               <span class="chip">Added ${escapeHtml(acquisition.added_total || 0)}</span>
               ${Number.isFinite(Number(acquisition.average_binding_confidence)) ? `<span class="chip">Avg confidence ${escapeHtml(acquisition.average_binding_confidence)}</span>` : ""}
+              ${state.confidenceSource !== "all" ? `<span class="chip">${escapeHtml(state.confidenceSource)}</span>` : ""}
             </div>
             ${acquisitionCards}
-          ` : '<div class="empty">No acquisition bindings archived.</div>'}
+          ` : '<div class="empty">No acquisition bindings for this confidence source.</div>'}
         </section>
         <section class="evidence">
           <div class="section-title">Evidence</div>
@@ -5213,6 +5286,7 @@ def render_archive_dashboard(payload: dict) -> str:
     document.getElementById("dbMeta").textContent = DATA.db || "";
     document.getElementById("timeMeta").textContent = DATA.generated_at || "";
     renderTrackOptions();
+    renderConfidenceSourceOptions();
 
     searchInput.addEventListener("input", () => {
       state.query = searchInput.value;
@@ -5222,6 +5296,11 @@ def render_archive_dashboard(payload: dict) -> str:
       state.track = trackSelect.value;
       render();
     });
+    confidenceSourceSelect.addEventListener("change", () => {
+      state.confidenceSource = confidenceSourceSelect.value;
+      state.selected = null;
+      render();
+    });
     scoreRange.addEventListener("input", () => {
       state.minScore = Number(scoreRange.value) || 0;
       render();
@@ -5229,10 +5308,12 @@ def render_archive_dashboard(payload: dict) -> str:
     resetButton.addEventListener("click", () => {
       state.query = "";
       state.track = "all";
+      state.confidenceSource = "all";
       state.minScore = 0;
       state.selected = null;
       searchInput.value = "";
       trackSelect.value = "all";
+      confidenceSourceSelect.value = "all";
       scoreRange.value = "0";
       render();
     });
@@ -5368,7 +5449,8 @@ def render_archive_search(payload: dict) -> str:
                         f"{binding.get('missing_layer_label') or binding.get('missing_layer') or 'gap'}: "
                         f"{one_line(binding.get('reason'))} "
                         f"(confidence {confidence.get('label') or 'unknown'} "
-                        f"{confidence.get('score') if confidence.get('score') is not None else 'unknown'})",
+                        f"{confidence.get('score') if confidence.get('score') is not None else 'unknown'} / "
+                        f"source {confidence.get('source') or 'heuristic'})",
                     ]
                 )
             lines.append("")
@@ -5425,6 +5507,7 @@ def render_archive_patterns(payload: dict) -> str:
                 f"- 平均绑定可靠度：{pattern.get('average_binding_confidence') if pattern.get('average_binding_confidence') is not None else '未记录'}（{pattern.get('reliability_status') or 'unknown'}）",
                 f"- 最低绑定可靠度：{pattern.get('minimum_binding_confidence') if pattern.get('minimum_binding_confidence') is not None else '未记录'}",
                 f"- Confidence labels：{count_items_text(pattern.get('confidence_labels') or [])}",
+                f"- Confidence sources：{count_items_text(pattern.get('confidence_sources') or [])}",
                 f"- Tracks：{count_items_text(pattern.get('tracks') or [])}",
                 f"- Evidence types：{count_items_text(pattern.get('evidence_types') or [])}",
                 f"- Evidence kinds：{count_items_text(pattern.get('evidence_kinds') or [])}",
@@ -5459,71 +5542,33 @@ def render_archive_patterns(payload: dict) -> str:
     return "\n".join(lines)
 
 
-def render_archive_calibration_export(payload: dict, output_path: str) -> str:
+def render_archive_auto_calibrate(payload: dict) -> str:
     stats = payload.get("statistics") or {}
     lines = [
-        "# OSS Cognition Binding Calibration Export",
+        "# OSS Cognition Archive Auto Calibration",
         "",
         f"- 数据库：{payload['db']}",
-        f"- 导出文件：{output_path}",
         f"- 生成时间：{payload['generated_at']}",
-        f"- 可复核绑定数：{stats.get('available_bindings', 0)}",
-        f"- 已导出条目数：{stats.get('exported_items', 0)}",
-        "",
-        "编辑 JSON 中每个 `item.review`：把 `status` 改为 `reviewed`，填写 `score`、可选 `label`、`notes`、`calibrator`，再运行 `--archive-calibration-apply`。",
-        "",
-    ]
-    for index, item in enumerate((payload.get("items") or [])[:8], 1):
-        confidence = item.get("current_confidence") or {}
-        evidence = item.get("evidence") or {}
-        lines.extend(
-            [
-                f"## {index}. {item.get('repo_full_name')} / {item.get('field')} -> {item.get('missing_layer_label')}",
-                "",
-                f"- Evidence：`{evidence.get('stable_id') or evidence.get('evidence_id')}` {evidence.get('kind') or ''} - {evidence.get('title') or ''}",
-                f"- 当前可靠度：{confidence.get('label') or 'unknown'} {confidence.get('score') if confidence.get('score') is not None else 'unknown'} / {confidence.get('calibration') or 'unknown'}",
-                f"- 缺口原因：{one_line(item.get('reason'))}",
-                "",
-            ]
-        )
-    return "\n".join(lines)
-
-
-def render_archive_calibration_apply(payload: dict) -> str:
-    stats = payload.get("statistics") or {}
-    lines = [
-        "# OSS Cognition Binding Calibration Apply",
-        "",
-        f"- 数据库：{payload['db']}",
-        f"- 来源文件：{payload['source']}",
-        f"- 生成时间：{payload['generated_at']}",
-        f"- Applied：{stats.get('applied', 0)}",
-        f"- Cleared：{stats.get('cleared', 0)}",
-        f"- Skipped：{stats.get('skipped', 0)}",
-        f"- Missing：{stats.get('missing', 0)}",
-        f"- Errors：{stats.get('errors', 0)}",
+        f"- 数据范围：{payload.get('scope') or 'latest_deep_dossiers'}",
+        f"- 候选绑定数：{stats.get('candidate_bindings', 0)}",
+        f"- 已自动校准绑定数：{stats.get('updated_bindings', 0)}",
+        f"- 参与仓库数：{stats.get('repositories', 0)}",
+        f"- 平均自动 confidence：{stats.get('mean_auto_confidence') if stats.get('mean_auto_confidence') is not None else '未记录'}",
+        f"- 平均分数调整：{stats.get('mean_score_delta') if stats.get('mean_score_delta') is not None else '未记录'}",
         f"- Search backend：{(payload.get('search_index') or {}).get('backend', 'unknown')}",
         "",
     ]
-    if payload.get("applied"):
-        lines.extend(["## Applied", ""])
-        for item in payload["applied"][:12]:
-            key = item.get("binding_key") or {}
+    if payload.get("updated"):
+        lines.extend(["## Largest Adjustments", ""])
+        for item in payload["updated"][:12]:
+            stable_ref = item.get("evidence_stable_id") or item.get("evidence_id") or "no-evidence-id"
+            context = item.get("pattern_context") or {}
             lines.append(
-                f"- `{key.get('repo_full_name')}` {key.get('field')} / {key.get('missing_layer')} / "
-                f"{key.get('evidence_id')} -> {item.get('label')} {item.get('score')}"
+                f"- `{item.get('repo_full_name')}` {item.get('field')} / {item.get('missing_layer_label') or item.get('missing_layer')} / "
+                f"`{stable_ref}`：heuristic {item.get('heuristic_score')} -> auto {item.get('auto_score')} "
+                f"({item.get('auto_label')}, delta {item.get('score_delta')}); "
+                f"repos {context.get('repository_count', 0)}, bindings {context.get('binding_count', 0)}"
             )
-        lines.append("")
-    if payload.get("missing"):
-        lines.extend(["## Missing", ""])
-        for item in payload["missing"][:12]:
-            key = item.get("binding_key") or {}
-            lines.append(f"- `{key.get('repo_full_name')}` {key.get('field')} / {key.get('missing_layer')} / {key.get('evidence_id')}")
-        lines.append("")
-    if payload.get("errors"):
-        lines.extend(["## Errors", ""])
-        for item in payload["errors"][:12]:
-            lines.append(f"- item {item.get('index')}: {item.get('error')}")
         lines.append("")
     return "\n".join(lines)
 
@@ -5587,6 +5632,7 @@ def render_archive_show(payload: dict) -> str:
                 f"{binding.get('field') or '未知 claim'} / {binding.get('missing_layer_label') or binding.get('missing_layer') or '未知层'}"
                 f" / confidence {(binding.get('binding_confidence') or {}).get('label') or 'unknown'} "
                 f"{(binding.get('binding_confidence') or {}).get('score') if (binding.get('binding_confidence') or {}).get('score') is not None else 'unknown'}"
+                f" / source {(binding.get('binding_confidence') or {}).get('source') or 'heuristic'}"
                 for binding in item.get("acquisition_bindings") or []
             )
         lines.extend(
@@ -5621,13 +5667,12 @@ def handle_archive(args: argparse.Namespace) -> None:
         args.archive_search is not None,
         args.archive_show is not None,
         bool(args.archive_patterns),
-        args.archive_calibration_export is not None,
-        args.archive_calibration_apply is not None,
+        bool(args.archive_auto_calibrate),
         args.archive_dashboard is not None,
     ]
     if sum(modes) != 1:
         raise SystemExit(
-            "Choose exactly one archive mode: --archive-list, --archive-search, --archive-show, --archive-patterns, --archive-calibration-export, --archive-calibration-apply, or --archive-dashboard."
+            "Choose exactly one archive mode: --archive-list, --archive-search, --archive-show, --archive-patterns, --archive-auto-calibrate, or --archive-dashboard."
         )
     if args.archive_search is not None and not args.archive_search.strip():
         raise SystemExit("--archive-search requires non-empty text.")
@@ -5652,13 +5697,9 @@ def handle_archive(args: argparse.Namespace) -> None:
             elif args.archive_patterns:
                 payload = archive_patterns_payload(conn, args)
                 markdown = render_archive_patterns(payload)
-            elif args.archive_calibration_export is not None:
-                payload = archive_calibration_export_payload(conn, args)
-                write_json(args.archive_calibration_export, payload)
-                markdown = render_archive_calibration_export(payload, args.archive_calibration_export)
-            elif args.archive_calibration_apply is not None:
-                payload = apply_archive_calibrations(conn, args)
-                markdown = render_archive_calibration_apply(payload)
+            elif args.archive_auto_calibrate:
+                payload = apply_archive_auto_calibration(conn, args)
+                markdown = render_archive_auto_calibrate(payload)
             else:
                 payload = archive_dashboard_payload(conn, args)
                 write_dashboard(args.archive_dashboard, payload)
@@ -5735,6 +5776,7 @@ def render_evidence_acquisition_summary(summary: dict | None) -> list[str]:
     ) or "无"
     ids = ", ".join(f"`{item}`" for item in summary.get("added_evidence_ids") or []) or "无"
     fields = "、".join(summary.get("target_claim_fields") or []) or "无"
+    source_text = count_items_text(summary.get("confidence_sources") or [])
     lines.extend(
         [
             f"- 策略：{summary.get('strategy') or '未知'}",
@@ -5744,6 +5786,7 @@ def render_evidence_acquisition_summary(summary: dict | None) -> list[str]:
             f"- 绑定 claim 数：{summary.get('binding_count', 0)}",
             f"- 平均绑定可靠度：{summary.get('average_binding_confidence') if summary.get('average_binding_confidence') is not None else '未记录'}",
             f"- 最低绑定可靠度：{summary.get('minimum_binding_confidence') if summary.get('minimum_binding_confidence') is not None else '未记录'}",
+            f"- Confidence sources：{source_text}",
             f"- 目标 claim：{fields}",
             f"- 新增证据分布：{count_text}",
             f"- 新增证据 ID：{ids}",
@@ -5762,6 +5805,7 @@ def render_evidence_acquisition_summary(summary: dict | None) -> list[str]:
                     f"- `{stable_ref}` -> {binding.get('field') or '未知 claim'} / "
                     f"{binding.get('missing_layer_label') or binding.get('missing_layer') or '未知层'}；"
                     f"可靠度：{confidence.get('label') or 'unknown'} {confidence.get('score') if confidence.get('score') is not None else 'unknown'}；"
+                    f"来源：{confidence.get('source') or 'heuristic'}；"
                     f"关键词：{keywords}；原因：{binding.get('reason') or '无'}",
                 ]
             )
@@ -5925,7 +5969,7 @@ def render_deep_report(
             "## 风险与复核",
             "",
             f"- Fake-star 风险：{fake_star_risk(repo)}",
-            "- 复核建议：优先人工阅读证据链中涉及 README 第一屏、examples、最近 release、高评论 issue 和最近合并 PR 的条目。",
+            "- 自动复核建议：优先继续采样 README 第一屏、examples、最近 release、高评论 issue、最近合并 PR 和实现层变更。",
             "",
         ]
     )
@@ -6002,8 +6046,7 @@ def main() -> None:
         or args.archive_search is not None
         or args.archive_show is not None
         or args.archive_patterns
-        or args.archive_calibration_export is not None
-        or args.archive_calibration_apply is not None
+        or args.archive_auto_calibrate
         or args.archive_dashboard is not None
     ):
         handle_archive(args)

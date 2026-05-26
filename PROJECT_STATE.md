@@ -26,13 +26,13 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Acquisition binding archive: evidence-to-claim acquisition bindings are persisted to SQLite, included in archive search/show payloads, and displayed in the dashboard so each added evidence item can show which claim gap it was collected for.
 - Cross-project pattern view: `--archive-patterns` groups persisted acquisition bindings from latest deep dossiers by claim field and missing evidence layer, surfacing repeated claim-gap repair moves with example repositories and evidence.
 - Binding confidence: acquisition bindings now carry a heuristic `binding_confidence` score/label/calibration/signals field, persisted in SQLite and surfaced in archive show/search, patterns, and dashboard views.
-- Human calibration workflow: `--archive-calibration-export PATH` exports binding review queues, and `--archive-calibration-apply PATH` applies human `score`/`label`/notes overrides back to SQLite while preserving the original heuristic confidence.
+- Automatic confidence calibration: `--archive-auto-calibrate` recalculates binding confidence from archive-only signals such as cross-project repetition, evidence type, polarity, stable URLs, and keyword sparsity, while preserving the original heuristic score.
 - Dashboard patterns: the static dashboard now includes a cross-project patterns band with repeated claim-gap repair moves and average binding confidence.
 - Repository health: captures 180d merged PR / closed issue counts, open PRs, release sample cadence, and top contributor samples.
 - Track scoring: classifies projects as agent, developer tools, local-first, protocol, or general, then applies track-specific weights across momentum, collaboration, release, governance, evidence, and ecosystem signals.
 - Archive queries: `--archive-list`, `--archive-search TEXT`, and `--archive-show owner/name` query persisted SQLite snapshots locally, with track and minimum track score filters plus optional Markdown/JSON export.
 - FTS archive search: `--archive-search TEXT` now maintains a derived SQLite FTS5 index over repository metadata, claims, and evidence; it returns relevance backend, score, matched document count, and matched source types, with a LIKE fallback if FTS5 is unavailable or misses Chinese substrings.
-- Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
+- Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
 
@@ -43,12 +43,11 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Evidence type/polarity classification is rule-based and can still misclassify domain-specific wording.
 - Implementation-layer file selection is heuristic and may miss the true core module in unusual repository layouts.
 - Support coverage reflects evidence linked to each claim; targeted bindings can now add missing-layer evidence, but those bindings are still heuristic and can over-associate broad artifacts.
-- Binding confidence is still rule-based `heuristic_v1` and not yet calibrated across manually reviewed examples.
-- Human calibration is file-based JSON for now; there is no in-dashboard editing UI and no learned weight update yet.
+- Binding confidence calibration is fully automatic for now and still rule-based; `archive_auto_v1` has no learned model or longitudinal drift weighting yet.
 - Cross-project pattern grouping is currently deterministic and shallow; it groups exact claim fields and evidence layers, not semantic variants across differently named claims.
 - Star growth depends on repeated snapshots; fresh databases correctly show insufficient history.
 - Repository health release/contributor fields are first-pass API samples, not complete longitudinal analytics.
-- Track classification is heuristic and should be refined with manually reviewed samples.
+- Track classification is heuristic and should be refined with stronger automatic repository behavior signals.
 - Dashboard search is currently client-side weighted matching over exported JSON; CLI archive search uses SQLite FTS5 ranking.
 
 ## Release Policy
@@ -57,4 +56,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Use human calibration samples to tune `heuristic_v1` scoring weights and add dashboard filtering by confidence source (`heuristic` vs `human`).
+Extend `archive_auto_v1` with release/issue/PR time-series stability signals and cross-version drift checks.
