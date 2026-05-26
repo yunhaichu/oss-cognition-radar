@@ -78,7 +78,7 @@ python3 radar.py --archive-show langchain-ai/langgraph --db data/radar.sqlite
 python3 radar.py --archive-patterns --db data/radar.sqlite --limit 20
 ```
 
-自动校准 archive 中的 acquisition binding confidence。该步骤不需要人工标注，会根据跨项目重复性、证据类型、证据极性、稳定链接和关键词稀疏度等归档信号生成 `archive_auto_v1` confidence：
+自动校准 archive 中的 acquisition binding confidence。该步骤不需要人工标注，会根据跨项目重复性、同仓库跨版本稳定性、release/issue/PR 时间序列、证据类型、证据极性、稳定链接和关键词稀疏度等归档信号生成 `archive_auto_v1` confidence：
 
 ```bash
 python3 radar.py \
@@ -241,7 +241,7 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 - `score`：0–100 的启发式可靠度分数
 - `label`：`low`、`medium` 或 `high`
 - `calibration`：原始分数为 `heuristic_v1`；运行 `--archive-auto-calibrate` 后有效分数会变为 `archive_auto_v1`
-- `signals`：分数来自哪些可解释信号，例如是否命中目标缺口层、证据层是否匹配、关键词命中和是否有稳定 artifact URL
+- `signals`：分数来自哪些可解释信号，例如是否命中目标缺口层、证据层是否匹配、跨项目重复、同仓库跨版本稳定、release/issue/PR 活跃趋势、关键词命中和是否有稳定 artifact URL
 - `source`：`heuristic` 或 `auto`，dashboard 可按该来源过滤
 
 自动校准不会删除原始 heuristic 分数。应用校准后，归档读取会把 `archive_auto_v1` 作为有效 confidence，同时保留 `heuristic` 子字段，方便比较自动归档信号和原始规则信号。
@@ -269,4 +269,4 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 ## 下一步
 
-- 继续扩展自动校准信号，把 release/issue/PR 时间序列、跨版本 drift 和 pattern 稳定性纳入 `archive_auto_v1`
+- 在 dashboard 和 archive show 中展开 `archive_auto_v1` 的 drift/time-series 信号贡献，让每次自动校准的依据更容易追踪

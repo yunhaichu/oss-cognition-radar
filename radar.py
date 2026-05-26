@@ -43,12 +43,20 @@ BINDING_CONFIDENCE_SIGNAL_WEIGHTS = {
 BINDING_CONFIDENCE_KEYWORD_HIT_WEIGHT = 5
 BINDING_CONFIDENCE_KEYWORD_HIT_MAX = 15
 AUTO_CONFIDENCE_CALIBRATION = "archive_auto_v1"
-AUTO_CONFIDENCE_PATTERN_WEIGHTS = {
+AUTO_CONFIDENCE_ARCHIVE_WEIGHTS = {
     "cross_project_5plus": 12,
     "cross_project_3plus": 8,
     "cross_project_2plus": 5,
     "repeated_binding_5plus": 5,
     "repeated_binding_3plus": 3,
+    "cross_version_binding_3plus": 9,
+    "cross_version_binding_2plus": 5,
+    "cross_version_evidence_drift": -4,
+    "repo_history_3plus": 3,
+    "repo_activity_sustained": 6,
+    "repo_activity_declining": -6,
+    "release_cadence_stable": 5,
+    "release_cadence_missing": -4,
     "source_or_validation_evidence": 6,
     "configuration_or_release_evidence": 4,
     "generic_evidence": -5,
@@ -3842,6 +3850,149 @@ def archive_pattern_context(rows: list[dict]) -> dict[tuple[str, str], dict]:
     }
 
 
+def archive_binding_history_context(conn: sqlite3.Connection) -> dict[tuple[str, str, str], dict]:
+    rows = conn.execute(
+        """
+        SELECT b.repo_full_name, b.field, b.missing_layer, b.evidence_id, b.evidence_stable_id,
+               b.binding_confidence_score, r.id AS run_id, r.created_at
+        FROM evidence_acquisition_bindings b
+        JOIN runs r ON r.id = b.run_id
+        WHERE r.mode = 'deep'
+        ORDER BY b.repo_full_name, b.field, b.missing_layer, r.created_at, r.id
+        """
+    ).fetchall()
+    grouped: dict[tuple[str, str, str], list[sqlite3.Row]] = {}
+    for row in rows:
+        key = (row["repo_full_name"], row["field"] or "未知 claim", row["missing_layer"] or "unknown")
+        grouped.setdefault(key, []).append(row)
+
+    context: dict[tuple[str, str, str], dict] = {}
+    for key, group in grouped.items():
+        run_ids = {row["run_id"] for row in group}
+        stable_refs = {
+            row["evidence_stable_id"] or row["evidence_id"]
+            for row in group
+            if row["evidence_stable_id"] or row["evidence_id"]
+        }
+        created_values = [row["created_at"] for row in group if row["created_at"]]
+        parsed_dates = []
+        for value in created_values:
+            try:
+                parsed_dates.append(parse_iso_datetime(value))
+            except ValueError:
+                continue
+        history_days = 0.0
+        if len(parsed_dates) >= 2:
+            history_days = max((max(parsed_dates) - min(parsed_dates)).total_seconds() / 86400, 0.0)
+        scores = []
+        for row in group:
+            try:
+                scores.append(int(float(row["binding_confidence_score"])))
+            except (TypeError, ValueError):
+                continue
+        context[key] = {
+            "run_count": len(run_ids),
+            "binding_count": len(group),
+            "evidence_ref_count": len(stable_refs),
+            "history_days": round(history_days, 1),
+            "first_seen_at": min(created_values) if created_values else None,
+            "last_seen_at": max(created_values) if created_values else None,
+            "score_range": (max(scores) - min(scores)) if scores else None,
+        }
+    return context
+
+
+def archive_health_activity_score(health: dict) -> float:
+    return (
+        float(health.get("merged_prs_180d") or 0)
+        + float(health.get("closed_issues_180d") or 0) * 0.6
+        + float(health.get("open_prs") or 0) * 0.2
+        + float(health.get("release_count_365d_sample") or 0) * 15
+    )
+
+
+def archive_repository_time_series_context(conn: sqlite3.Connection) -> dict[str, dict]:
+    rows = conn.execute(
+        """
+        SELECT s.full_name, s.stars, s.track_score, r.id AS run_id, r.created_at, h.health_json
+        FROM repository_snapshots s
+        JOIN runs r ON r.id = s.run_id
+        LEFT JOIN repository_health_snapshots h
+          ON h.run_id = s.run_id AND h.full_name = s.full_name
+        WHERE r.mode = 'deep'
+        ORDER BY s.full_name, r.created_at, r.id
+        """
+    ).fetchall()
+    grouped: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        grouped.setdefault(row["full_name"], []).append(row)
+
+    context: dict[str, dict] = {}
+    for full_name, group in grouped.items():
+        created_values = [row["created_at"] for row in group if row["created_at"]]
+        parsed_dates = []
+        for value in created_values:
+            try:
+                parsed_dates.append(parse_iso_datetime(value))
+            except ValueError:
+                continue
+        history_days = 0.0
+        if len(parsed_dates) >= 2:
+            history_days = max((max(parsed_dates) - min(parsed_dates)).total_seconds() / 86400, 0.0)
+
+        latest = group[-1]
+        previous = group[-2] if len(group) >= 2 else None
+        latest_health = safe_json_loads(latest["health_json"], {}) if latest["health_json"] else {}
+        previous_health = safe_json_loads(previous["health_json"], {}) if previous and previous["health_json"] else {}
+        latest_activity = archive_health_activity_score(latest_health)
+        previous_activity = archive_health_activity_score(previous_health) if previous_health else None
+        activity_trend = "single_snapshot"
+        if previous_activity is not None:
+            if latest_activity >= previous_activity * 1.1:
+                activity_trend = "rising_or_sustained"
+            elif latest_activity <= previous_activity * 0.55 and previous_activity >= 20:
+                activity_trend = "declining"
+            else:
+                activity_trend = "stable"
+
+        latest_releases = latest_health.get("release_count_365d_sample")
+        previous_releases = previous_health.get("release_count_365d_sample") if previous_health else None
+        release_trend = "unknown"
+        if isinstance(latest_releases, int):
+            if latest_releases > 0 and (previous_releases is None or latest_releases >= previous_releases):
+                release_trend = "stable_or_rising"
+            elif latest_releases == 0:
+                release_trend = "missing"
+            else:
+                release_trend = "declining"
+
+        context[full_name] = {
+            "snapshot_count": len(group),
+            "history_days": round(history_days, 1),
+            "first_seen_at": min(created_values) if created_values else None,
+            "last_seen_at": max(created_values) if created_values else None,
+            "latest_activity_score": round(latest_activity, 1),
+            "previous_activity_score": round(previous_activity, 1) if previous_activity is not None else None,
+            "activity_trend": activity_trend,
+            "latest_merged_prs_180d": latest_health.get("merged_prs_180d"),
+            "latest_closed_issues_180d": latest_health.get("closed_issues_180d"),
+            "latest_release_count_365d_sample": latest_releases,
+            "previous_release_count_365d_sample": previous_releases,
+            "release_trend": release_trend,
+            "track_score_delta": (
+                round(float(latest["track_score"] or 0) - float(previous["track_score"] or 0), 1)
+                if previous
+                else None
+            ),
+            "star_delta": (
+                int((latest["stars"] or 0) - (previous["stars"] or 0))
+                if previous
+                else None
+            ),
+        }
+    return context
+
+
 def auto_confidence_signal_delta(row: dict, context: dict) -> tuple[int, list[str]]:
     score_delta = 0
     signals: list[str] = [AUTO_CONFIDENCE_CALIBRATION]
@@ -3849,40 +4000,73 @@ def auto_confidence_signal_delta(row: dict, context: dict) -> tuple[int, list[st
     binding_count = context.get("binding_count", 0)
 
     if repo_count >= 5:
-        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["cross_project_5plus"]
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["cross_project_5plus"]
         signals.append(f"cross_project_repeated:{repo_count}")
     elif repo_count >= 3:
-        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["cross_project_3plus"]
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["cross_project_3plus"]
         signals.append(f"cross_project_repeated:{repo_count}")
     elif repo_count >= 2:
-        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["cross_project_2plus"]
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["cross_project_2plus"]
         signals.append(f"cross_project_repeated:{repo_count}")
 
     if binding_count >= 5:
-        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["repeated_binding_5plus"]
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["repeated_binding_5plus"]
         signals.append(f"repeated_binding:{binding_count}")
     elif binding_count >= 3:
-        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["repeated_binding_3plus"]
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["repeated_binding_3plus"]
         signals.append(f"repeated_binding:{binding_count}")
+
+    binding_history = context.get("binding_history") or {}
+    history_run_count = binding_history.get("run_count") or 0
+    if history_run_count >= 3:
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["cross_version_binding_3plus"]
+        signals.append(f"cross_version_binding_stable:{history_run_count}")
+    elif history_run_count >= 2:
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["cross_version_binding_2plus"]
+        signals.append(f"cross_version_binding_stable:{history_run_count}")
+    evidence_ref_count = binding_history.get("evidence_ref_count") or 0
+    if history_run_count >= 2 and evidence_ref_count > 1:
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["cross_version_evidence_drift"]
+        signals.append(f"cross_version_evidence_drift:{evidence_ref_count}")
+
+    repo_time_series = context.get("repository_time_series") or {}
+    snapshot_count = repo_time_series.get("snapshot_count") or 0
+    if snapshot_count >= 3 and (repo_time_series.get("history_days") or 0) >= 7:
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["repo_history_3plus"]
+        signals.append(f"repo_history:{snapshot_count}")
+    activity_trend = repo_time_series.get("activity_trend")
+    if activity_trend in {"rising_or_sustained", "stable"} and (repo_time_series.get("latest_activity_score") or 0) >= 20:
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["repo_activity_sustained"]
+        signals.append(f"repo_activity:{activity_trend}")
+    elif activity_trend == "declining":
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["repo_activity_declining"]
+        signals.append("repo_activity:declining")
+    release_trend = repo_time_series.get("release_trend")
+    if release_trend == "stable_or_rising":
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["release_cadence_stable"]
+        signals.append("release_cadence:stable_or_rising")
+    elif release_trend == "missing" and snapshot_count >= 2:
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["release_cadence_missing"]
+        signals.append("release_cadence:missing")
 
     evidence_type = row.get("evidence_type") or "general"
     if evidence_type in {"source_entrypoint", "test_surface", "benchmark"}:
-        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["source_or_validation_evidence"]
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["source_or_validation_evidence"]
         signals.append(f"source_or_validation_evidence:{evidence_type}")
     elif evidence_type in {"configuration", "release_delta", "implementation_change"}:
-        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["configuration_or_release_evidence"]
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["configuration_or_release_evidence"]
         signals.append(f"engineering_trace_evidence:{evidence_type}")
     elif evidence_type == "general":
-        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["generic_evidence"]
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["generic_evidence"]
         signals.append("generic_evidence")
 
     polarity = row.get("polarity") or "supporting"
     if polarity in {"negative", "boundary"}:
-        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["negative_or_boundary_polarity"]
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["negative_or_boundary_polarity"]
         signals.append(f"boundary_polarity:{polarity}")
 
     if row.get("evidence_url"):
-        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["stable_artifact_url"]
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["stable_artifact_url"]
         signals.append("stable_artifact_url")
 
     heuristic = (row.get("binding_confidence") or {}).get("heuristic") or row.get("binding_confidence") or {}
@@ -3892,7 +4076,7 @@ def auto_confidence_signal_delta(row: dict, context: dict) -> tuple[int, list[st
         if str(signal) != "heuristic_v1"
     }
     if "keyword_hits" not in normalized_signals:
-        score_delta += AUTO_CONFIDENCE_PATTERN_WEIGHTS["keyword_sparse"]
+        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["keyword_sparse"]
         signals.append("keyword_sparse")
 
     return score_delta, signals
@@ -3914,7 +4098,12 @@ def auto_confidence_for_row(row: dict, context: dict) -> dict:
         "source": "auto",
         "heuristic": heuristic,
         "score_delta": score - int(heuristic_score),
-        "pattern_context": context,
+        "pattern_context": {
+            "repository_count": context.get("repository_count", 0),
+            "binding_count": context.get("binding_count", 0),
+        },
+        "binding_history_context": context.get("binding_history") or {},
+        "repository_time_series_context": context.get("repository_time_series") or {},
     }
 
 
@@ -3925,11 +4114,19 @@ def apply_archive_auto_calibration(conn: sqlite3.Connection, args: argparse.Name
         min_track_score=args.min_track_score,
     )
     context_by_key = archive_pattern_context(rows)
+    binding_history_by_key = archive_binding_history_context(conn)
+    repository_time_series_by_name = archive_repository_time_series_context(conn)
     updated: list[dict] = []
     now = utc_now().isoformat()
     for row in rows:
         key = (row.get("field") or "未知 claim", row.get("missing_layer") or "unknown")
-        auto_confidence = auto_confidence_for_row(row, context_by_key.get(key, {}))
+        history_key = (row.get("repo_full_name") or "", row.get("field") or "未知 claim", row.get("missing_layer") or "unknown")
+        combined_context = {
+            **context_by_key.get(key, {}),
+            "binding_history": binding_history_by_key.get(history_key, {}),
+            "repository_time_series": repository_time_series_by_name.get(row.get("repo_full_name") or "", {}),
+        }
+        auto_confidence = auto_confidence_for_row(row, combined_context)
         cursor = conn.execute(
             """
             UPDATE evidence_acquisition_bindings
@@ -3969,6 +4166,8 @@ def apply_archive_auto_calibration(conn: sqlite3.Connection, args: argparse.Name
                     "score_delta": auto_confidence.get("score_delta"),
                     "signals": auto_confidence.get("signals") or [],
                     "pattern_context": auto_confidence.get("pattern_context") or {},
+                    "binding_history_context": auto_confidence.get("binding_history_context") or {},
+                    "repository_time_series_context": auto_confidence.get("repository_time_series_context") or {},
                 }
             )
 
@@ -3986,7 +4185,7 @@ def apply_archive_auto_calibration(conn: sqlite3.Connection, args: argparse.Name
         "scope": "latest_deep_dossiers",
         "weights": {
             "heuristic_v1": binding_confidence_weight_snapshot(),
-            AUTO_CONFIDENCE_CALIBRATION: dict(AUTO_CONFIDENCE_PATTERN_WEIGHTS),
+            AUTO_CONFIDENCE_CALIBRATION: dict(AUTO_CONFIDENCE_ARCHIVE_WEIGHTS),
         },
         "statistics": {
             "candidate_bindings": len(rows),
@@ -3995,6 +4194,12 @@ def apply_archive_auto_calibration(conn: sqlite3.Connection, args: argparse.Name
             "mean_auto_confidence": mean_number(scores),
             "mean_score_delta": mean_number(deltas),
             "confidence_sources": top_count_items(source_counts),
+            "cross_version_stable_bindings": sum(
+                1 for item in updated if any(str(signal).startswith("cross_version_binding_stable:") for signal in item.get("signals") or [])
+            ),
+            "time_series_context_repositories": len(
+                {item.get("repo_full_name") for item in updated if (item.get("repository_time_series_context") or {}).get("snapshot_count", 0) >= 2}
+            ),
         },
         "updated": sorted(updated, key=lambda item: (-(abs(item.get("score_delta") or 0)), item.get("repo_full_name") or ""))[: max(args.limit, 1)],
         "search_index": index_status,
@@ -5555,6 +5760,8 @@ def render_archive_auto_calibrate(payload: dict) -> str:
         f"- 参与仓库数：{stats.get('repositories', 0)}",
         f"- 平均自动 confidence：{stats.get('mean_auto_confidence') if stats.get('mean_auto_confidence') is not None else '未记录'}",
         f"- 平均分数调整：{stats.get('mean_score_delta') if stats.get('mean_score_delta') is not None else '未记录'}",
+        f"- 跨版本稳定绑定数：{stats.get('cross_version_stable_bindings', 0)}",
+        f"- 带时间序列上下文仓库数：{stats.get('time_series_context_repositories', 0)}",
         f"- Search backend：{(payload.get('search_index') or {}).get('backend', 'unknown')}",
         "",
     ]
@@ -5563,11 +5770,15 @@ def render_archive_auto_calibrate(payload: dict) -> str:
         for item in payload["updated"][:12]:
             stable_ref = item.get("evidence_stable_id") or item.get("evidence_id") or "no-evidence-id"
             context = item.get("pattern_context") or {}
+            history = item.get("binding_history_context") or {}
+            time_series = item.get("repository_time_series_context") or {}
             lines.append(
                 f"- `{item.get('repo_full_name')}` {item.get('field')} / {item.get('missing_layer_label') or item.get('missing_layer')} / "
                 f"`{stable_ref}`：heuristic {item.get('heuristic_score')} -> auto {item.get('auto_score')} "
                 f"({item.get('auto_label')}, delta {item.get('score_delta')}); "
-                f"repos {context.get('repository_count', 0)}, bindings {context.get('binding_count', 0)}"
+                f"repos {context.get('repository_count', 0)}, bindings {context.get('binding_count', 0)}, "
+                f"versions {history.get('run_count', 0)}, activity {time_series.get('activity_trend', 'unknown')}, "
+                f"release {time_series.get('release_trend', 'unknown')}"
             )
         lines.append("")
     return "\n".join(lines)
