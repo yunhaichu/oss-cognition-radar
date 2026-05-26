@@ -22,6 +22,10 @@ The project has pivoted from a simple GitHub hot-project radar to an evidence-ba
 - No LLM analysis yet; claims are rule-based and should be treated as first-pass research prompts.
 - No per-category scoring yet for agent, developer tools, local-first, and protocol projects.
 
+## Release Policy
+
+Every pushed commit must have a corresponding GitHub Release. Use a commit-addressed tag such as `rYYYYMMDD-<shortsha>` so each release maps unambiguously to one commit.
+
 ## Next Local Step
 
 Add SQLite snapshots and JSON dossier export so evidence items, claims, scores, and later manual/LLM review can be preserved and compared across runs.
