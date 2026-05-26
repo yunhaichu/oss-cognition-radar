@@ -30,6 +30,7 @@ USER_AGENT = "oss-cognition-radar"
 MAX_TEXT_CHARS = 5000
 GROWTH_WINDOWS = {"1d": 1, "7d": 7, "30d": 30}
 GROWTH_MAX_AGE_DAYS = {"1d": 2, "7d": 10, "30d": 45}
+ARCHIVE_SEARCH_INDEX_VERSION = 2
 TRACK_WEIGHTS = {
     "agent": {
         "momentum": 0.25,
@@ -85,6 +86,9 @@ class Evidence:
     url: str
     quote: str
     stable_id: str = ""
+    evidence_type: str = "general"
+    polarity: str = "supporting"
+    signal_tags: list[str] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -96,6 +100,9 @@ class Claim:
     evidence_ids: list[str]
     confidence: str
     claim_id: str = ""
+    template: str = ""
+    rationale: str = ""
+    counter_evidence_ids: list[str] = dataclasses.field(default_factory=list)
 
 
 def parse_args() -> argparse.Namespace:
@@ -208,6 +215,79 @@ def days_between(iso_datetime: str, now: dt.datetime) -> float:
 def has_any(text: str, words: list[str]) -> bool:
     lowered = text.lower()
     return any(word in lowered for word in words)
+
+
+def infer_signal_tags(kind: str, title: str, quote: str) -> list[str]:
+    text = f"{kind} {title} {quote}".lower()
+    rules = {
+        "problem_frame": ["problem", "why", "goal", "build", "solve", "定位", "目标"],
+        "abstraction": ["api", "sdk", "graph", "node", "workflow", "protocol", "interface", "plugin"],
+        "boundary": ["not", "non-goal", "unsupported", "experimental", "preview", "deprecated", "archival", "no longer", "限制", "边界"],
+        "complexity": ["bug", "error", "issue", "compatibility", "migration", "concurrency", "state", "cache", "timeout"],
+        "governance": ["contributing", "code of conduct", "security", "issue template", "discussion", "roadmap"],
+        "recoverability": ["durable", "checkpoint", "resume", "recover", "interrupt", "rollback"],
+        "performance": ["fast", "performance", "latency", "memory", "benchmark"],
+        "local_control": ["local-first", "self-host", "offline", "sync", "privacy"],
+        "release_cadence": ["release", "changelog", "version", "breaking", "migration"],
+        "security": ["security", "encryption", "vulnerability", "cve"],
+    }
+    return [tag for tag, words in rules.items() if has_any(text, words)]
+
+
+def infer_evidence_type(kind: str, title: str, quote: str) -> str:
+    text = f"{title} {quote}".lower()
+    if kind == "README":
+        return "positioning"
+    if kind == "Release":
+        return "release_delta"
+    if kind == "Issue":
+        return "user_friction"
+    if kind == "Pull Request":
+        return "implementation_change"
+    if has_any(text, ["contributing", "code of conduct", "security", "issue template", "pull_request_template"]):
+        return "governance"
+    if has_any(text, ["architecture", "roadmap", "non-goal", "not ready", "experimental", "deprecated", "archival", "no longer"]):
+        return "boundary"
+    if has_any(text, ["quickstart", "getting-started", "examples", "usage"]):
+        return "usage_surface"
+    return "supporting_artifact"
+
+
+def infer_polarity(kind: str, title: str, quote: str, evidence_type: str) -> str:
+    text = f"{kind} {title} {quote}".lower()
+    if evidence_type == "boundary" or has_any(
+        text,
+        ["non-goal", "unsupported", "experimental", "preview", "deprecated", "archival", "no longer", "not ready"],
+    ):
+        return "boundary"
+    negative_terms = ["bug", "confusing", "annoying", "broken", "failed", "failure", "regression", "crash"]
+    if kind == "Issue" or any(re.search(rf"\b{re.escape(term)}\b", text) for term in negative_terms):
+        return "negative"
+    return "supporting"
+
+
+def make_evidence(
+    evidence_id: str,
+    level: int,
+    kind: str,
+    title: str,
+    url: str,
+    quote: str,
+    evidence_type: str | None = None,
+) -> Evidence:
+    resolved_type = evidence_type or infer_evidence_type(kind, title, quote)
+    tags = infer_signal_tags(kind, title, quote)
+    return Evidence(
+        evidence_id,
+        level,
+        kind,
+        title,
+        url,
+        quote,
+        evidence_type=resolved_type,
+        polarity=infer_polarity(kind, title, quote, resolved_type),
+        signal_tags=tags,
+    )
 
 
 def evidence_refs(ids: list[str]) -> str:
@@ -457,27 +537,43 @@ def build_evidence(repo: dict) -> list[Evidence]:
 
     readme, readme_url = fetch_readme(full_name)
     if readme:
-        evidence.append(Evidence("E1", 1, "README", "Project positioning and first-screen narrative", readme_url, excerpt(readme, 900)))
+        evidence.append(
+            make_evidence(
+                "E1",
+                1,
+                "README",
+                "Project positioning and first-screen narrative",
+                readme_url,
+                excerpt(readme, 900),
+                "positioning",
+            )
+        )
 
     files = fetch_tree_files(repo)
     for path in important_paths(files):
         text, url = fetch_file_text(repo, path)
         if text:
-            evidence.append(Evidence(f"E{len(evidence) + 1}", 1, "File", path, url, excerpt(text, 700)))
+            evidence.append(make_evidence(f"E{len(evidence) + 1}", 1, "File", path, url, excerpt(text, 700)))
 
     for release in fetch_releases(full_name):
         title = release.get("name") or release.get("tag_name") or "Release"
         body = release.get("body") or ""
         quote = excerpt(body, 550) or f"Published at {release.get('published_at') or 'unknown time'}."
-        evidence.append(Evidence(f"E{len(evidence) + 1}", 1, "Release", title, release.get("html_url") or "", quote))
+        evidence.append(
+            make_evidence(f"E{len(evidence) + 1}", 1, "Release", title, release.get("html_url") or "", quote)
+        )
 
     for issue in fetch_issues(full_name):
         quote = excerpt(issue.get("body") or "", 500) or f"{issue.get('comments', 0)} comments; state={issue.get('state')}."
-        evidence.append(Evidence(f"E{len(evidence) + 1}", 1, "Issue", issue.get("title") or "Issue", issue.get("html_url") or "", quote))
+        evidence.append(
+            make_evidence(f"E{len(evidence) + 1}", 1, "Issue", issue.get("title") or "Issue", issue.get("html_url") or "", quote)
+        )
 
     for pr in fetch_pull_requests(full_name):
         quote = excerpt(pr.get("body") or "", 500) or f"state={pr.get('state')}; merged_at={pr.get('merged_at')}."
-        evidence.append(Evidence(f"E{len(evidence) + 1}", 1, "Pull Request", pr.get("title") or "Pull request", pr.get("html_url") or "", quote))
+        evidence.append(
+            make_evidence(f"E{len(evidence) + 1}", 1, "Pull Request", pr.get("title") or "Pull request", pr.get("html_url") or "", quote)
+        )
 
     assign_evidence_ids(repo, evidence)
     return evidence
@@ -490,15 +586,71 @@ def assign_evidence_ids(repo: dict, evidence: list[Evidence]) -> None:
 
 def corpus(evidence: list[Evidence], repo: dict) -> str:
     parts = [repo.get("description") or "", " ".join(repo.get("topics") or [])]
-    parts.extend(item.quote for item in evidence)
+    parts.extend(" ".join([item.title, item.quote, item.evidence_type, item.polarity, " ".join(item.signal_tags)]) for item in evidence)
     return "\n".join(parts)
 
 
-def matching_evidence(evidence: list[Evidence], words: list[str], fallback: int = 1) -> list[str]:
-    matches = [item.evidence_id for item in evidence if has_any(item.quote + " " + item.title, words)]
+def matching_evidence(
+    evidence: list[Evidence],
+    words: list[str],
+    fallback: int = 1,
+    preferred_tags: list[str] | None = None,
+    polarities: set[str] | None = None,
+) -> list[str]:
+    preferred_tags = preferred_tags or []
+    polarities = polarities or {"supporting", "boundary"}
+    matches = [
+        item
+        for item in evidence
+        if item.polarity in polarities and has_any(item.quote + " " + item.title + " " + " ".join(item.signal_tags), words)
+    ]
+    matches.sort(
+        key=lambda item: (
+            0 if set(item.signal_tags) & set(preferred_tags) else 1,
+            0 if item.polarity == "supporting" else 1,
+            item.level,
+            item.evidence_id,
+        )
+    )
     if matches:
-        return matches[:4]
+        return [item.evidence_id for item in matches[:4]]
     return [item.evidence_id for item in evidence[:fallback]]
+
+
+def counter_evidence(
+    evidence: list[Evidence],
+    words: list[str] | None = None,
+    limit: int = 3,
+) -> list[str]:
+    words = words or []
+    candidates = [
+        item
+        for item in evidence
+        if item.polarity in {"negative", "boundary"}
+        and (not words or has_any(item.quote + " " + item.title + " " + " ".join(item.signal_tags), words))
+    ]
+    candidates.sort(key=lambda item: (0 if item.polarity == "boundary" else 1, item.level, item.evidence_id))
+    return [item.evidence_id for item in candidates[:limit]]
+
+
+def make_claim(
+    field: str,
+    text: str,
+    evidence_ids: list[str],
+    confidence: str,
+    template: str,
+    rationale: str,
+    counter_ids: list[str] | None = None,
+) -> Claim:
+    return Claim(
+        field,
+        text,
+        evidence_ids,
+        confidence,
+        template=template,
+        rationale=rationale,
+        counter_evidence_ids=counter_ids or [],
+    )
 
 
 def infer_domain(repo: dict, text: str) -> str:
@@ -517,20 +669,40 @@ def infer_domain(repo: dict, text: str) -> str:
 def claim_problem_frame(evidence: list[Evidence], repo: dict, text: str) -> Claim:
     if has_any(text, ["durable", "checkpoint", "interrupt", "resume", "recover"]):
         claim = "项目把表面功能问题改写为可恢复运行、状态边界和失败处理问题。"
-        ids = matching_evidence(evidence, ["durable", "checkpoint", "interrupt", "resume", "recover"])
+        ids = matching_evidence(
+            evidence,
+            ["durable", "checkpoint", "interrupt", "resume", "recover"],
+            preferred_tags=["recoverability", "complexity"],
+        )
     elif has_any(text, ["local-first", "self-host", "offline", "zero api key"]):
         claim = "项目把问题定义为用户控制权和长期可拥有性，而不只是功能可用性。"
-        ids = matching_evidence(evidence, ["local-first", "self-host", "offline", "zero api key"])
+        ids = matching_evidence(
+            evidence,
+            ["local-first", "self-host", "offline", "zero api key"],
+            preferred_tags=["local_control"],
+        )
     elif has_any(text, ["fast", "performance", "latency", "native", "zero dependencies"]):
         claim = "项目把竞争焦点放在速度、低依赖和可控部署上，用基础体验建立信任。"
-        ids = matching_evidence(evidence, ["fast", "performance", "latency", "native", "zero dependencies"])
+        ids = matching_evidence(
+            evidence,
+            ["fast", "performance", "latency", "native", "zero dependencies"],
+            preferred_tags=["performance"],
+        )
     elif has_any(text, ["agent", "workflow", "automation"]):
         claim = "项目把软件使用方式改写为可编排、可委托、可观察的工作流。"
-        ids = matching_evidence(evidence, ["agent", "workflow", "automation"])
+        ids = matching_evidence(evidence, ["agent", "workflow", "automation"], preferred_tags=["abstraction"])
     else:
         claim = "项目从一个具体痛点切入，正在验证新的默认工作方式。"
         ids = matching_evidence(evidence, [repo.get("name", "")])
-    return Claim("作者如何重新定义问题", claim, ids, "medium" if ids else "low")
+    return make_claim(
+        "作者如何重新定义问题",
+        claim,
+        ids,
+        "medium" if ids else "low",
+        "定位叙事 -> 问题重定义 -> 可迁移判断",
+        "优先使用 README/release/PR 中的定位与变更证据，避免只凭 star 或描述推断。",
+        counter_evidence(evidence, ["not", "experimental", "deprecated", "bug", "error", "confusing"]),
+    )
 
 
 def claim_key_abstractions(evidence: list[Evidence], text: str) -> Claim:
@@ -548,47 +720,107 @@ def claim_key_abstractions(evidence: list[Evidence], text: str) -> Claim:
             abstractions.append(label)
     if abstractions:
         claim = "关键抽象集中在：" + "、".join(abstractions[:4]) + "。"
-        ids = matching_evidence(evidence, [word for words in keywords.values() for word in words])
+        ids = matching_evidence(
+            evidence,
+            [word for words in keywords.values() for word in words],
+            preferred_tags=["abstraction"],
+        )
     else:
         claim = "关键抽象尚需通过 examples 和核心 API 文件确认。"
-        ids = matching_evidence(evidence, ["api", "example", "quickstart"])
-    return Claim("关键抽象", claim, ids, "medium" if abstractions else "low")
+        ids = matching_evidence(evidence, ["api", "example", "quickstart"], preferred_tags=["abstraction"])
+    return make_claim(
+        "关键抽象",
+        claim,
+        ids,
+        "medium" if abstractions else "low",
+        "词汇/接口反复出现 -> 抽象候选 -> 需要实现层复核",
+        "只把公开文档和变更记录中反复出现的名词视为抽象候选，不把营销词直接当架构事实。",
+        counter_evidence(evidence, ["deprecated", "no longer", "confusing", "boilerplate", "complex"]),
+    )
 
 
 def claim_boundaries(evidence: list[Evidence], text: str) -> Claim:
     if has_any(text, ["not a generic", "intentionally narrow", "focused", "low-level", "you don't need"]):
         claim = "项目主动声明边界，倾向用清晰分层换取可理解性和长期演进能力。"
-        ids = matching_evidence(evidence, ["not a generic", "intentionally narrow", "focused", "low-level", "you don't need"])
+        ids = matching_evidence(
+            evidence,
+            ["not a generic", "intentionally narrow", "focused", "low-level", "you don't need"],
+            preferred_tags=["boundary"],
+            polarities={"supporting", "boundary"},
+        )
     elif has_any(text, ["experimental", "not ready for production", "preview"]):
         claim = "项目把实验状态显式写出，用透明边界降低误用风险。"
-        ids = matching_evidence(evidence, ["experimental", "not ready for production", "preview"])
+        ids = matching_evidence(
+            evidence,
+            ["experimental", "not ready for production", "preview"],
+            preferred_tags=["boundary"],
+            polarities={"boundary"},
+        )
     else:
         claim = "项目边界目前主要从 README 和 issue 侧面推断，后续需要抓取架构文档和 PR 讨论补强。"
-        ids = matching_evidence(evidence, ["readme", "docs", "issue"])
-    return Claim("架构边界", claim, ids, "medium" if ids else "low")
+        ids = matching_evidence(evidence, ["readme", "docs", "issue"], preferred_tags=["boundary"])
+    return make_claim(
+        "架构边界",
+        claim,
+        ids,
+        "medium" if ids else "low",
+        "显式非目标/限制 -> 边界判断 -> 误用风险",
+        "边界类 claim 优先引用 polarity=boundary 的证据；没有显式边界时降低置信度。",
+        counter_evidence(evidence, ["experimental", "unsupported", "not ready", "deprecated", "no longer"]),
+    )
 
 
 def claim_complexity(evidence: list[Evidence], text: str) -> Claim:
     if has_any(text, ["bug", "error", "issue", "checkpoint", "interrupt", "self-hosted", "compatibility"]):
         claim = "复杂度主要暴露在失败语义、兼容性、部署环境和状态一致性上，不能只看 README 的顺滑叙事。"
-        ids = matching_evidence(evidence, ["bug", "error", "checkpoint", "interrupt", "self-hosted", "compatibility"])
+        ids = matching_evidence(
+            evidence,
+            ["bug", "error", "checkpoint", "interrupt", "self-hosted", "compatibility"],
+            preferred_tags=["complexity", "recoverability"],
+            polarities={"supporting", "negative", "boundary"},
+        )
     elif has_any(text, ["performance", "latency", "memory", "concurrency"]):
         claim = "复杂度集中在性能、资源使用和并发边界，适合继续精读 benchmark 与实现模块。"
-        ids = matching_evidence(evidence, ["performance", "latency", "memory", "concurrency"])
+        ids = matching_evidence(
+            evidence,
+            ["performance", "latency", "memory", "concurrency"],
+            preferred_tags=["performance", "complexity"],
+            polarities={"supporting", "negative", "boundary"},
+        )
     else:
         claim = "复杂度藏处尚不明确，需要进一步抓取高评论 issue、最近 PR 和核心目录。"
-        ids = matching_evidence(evidence, ["issue", "pull request"])
-    return Claim("复杂度藏处", claim, ids, "medium" if ids else "low")
+        ids = matching_evidence(evidence, ["issue", "pull request"], preferred_tags=["complexity"])
+    return make_claim(
+        "复杂度藏处",
+        claim,
+        ids,
+        "medium" if ids else "low",
+        "缺陷/PR/发布变更 -> 复杂度暴露点 -> 后续精读方向",
+        "复杂度 claim 必须把 issue、bug、兼容性或实现变更作为一等证据，而不是只引用 README。",
+        counter_evidence(evidence, ["bug", "error", "confusing", "compatibility", "deprecated"]),
+    )
 
 
 def claim_governance(evidence: list[Evidence], text: str) -> Claim:
     if has_any(text, ["contributing", "code of conduct", "security", "issue template", "forum", "discussion"]):
         claim = "治理上倾向把贡献、支持、缺陷和安全问题分流，降低维护者认知负担。"
-        ids = matching_evidence(evidence, ["contributing", "code of conduct", "security", "issue template", "forum", "discussion"])
+        ids = matching_evidence(
+            evidence,
+            ["contributing", "code of conduct", "security", "issue template", "forum", "discussion"],
+            preferred_tags=["governance", "security"],
+        )
     else:
         claim = "治理证据不足；需要检查 CONTRIBUTING、issue 模板、讨论区和响应时间。"
-        ids = matching_evidence(evidence, ["contributing", "issue"])
-    return Claim("治理模式", claim, ids, "medium" if ids else "low")
+        ids = matching_evidence(evidence, ["contributing", "issue"], preferred_tags=["governance"])
+    return make_claim(
+        "治理模式",
+        claim,
+        ids,
+        "medium" if ids else "low",
+        "贡献入口/模板/安全流程 -> 治理结构 -> 维护者认知负担",
+        "治理 claim 优先引用 CONTRIBUTING、模板、安全文件和 issue 分流证据。",
+        counter_evidence(evidence, ["bug", "confusing", "discussion", "support"]),
+    )
 
 
 def fake_star_risk(repo: dict) -> str:
@@ -757,8 +989,14 @@ def claim_to_dict(claim: Claim, evidence_map: dict[str, Evidence] | None = None)
             for evidence_id in claim.evidence_ids
             if evidence_id in evidence_map
         ]
+        data["counter_evidence_stable_ids"] = [
+            evidence_map[evidence_id].stable_id
+            for evidence_id in claim.counter_evidence_ids
+            if evidence_id in evidence_map
+        ]
     else:
         data["evidence_stable_ids"] = []
+        data["counter_evidence_stable_ids"] = []
     return data
 
 
@@ -847,6 +1085,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             title TEXT NOT NULL,
             url TEXT,
             quote TEXT NOT NULL,
+            evidence_type TEXT,
+            polarity TEXT,
+            signal_tags_json TEXT,
             PRIMARY KEY (run_id, repo_full_name, evidence_id),
             FOREIGN KEY (run_id) REFERENCES runs(id)
         );
@@ -859,6 +1100,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             text TEXT NOT NULL,
             evidence_ids_json TEXT NOT NULL,
             evidence_stable_ids_json TEXT,
+            counter_evidence_ids_json TEXT,
+            counter_evidence_stable_ids_json TEXT,
+            template TEXT,
+            rationale TEXT,
             confidence TEXT NOT NULL,
             PRIMARY KEY (run_id, repo_full_name, field),
             FOREIGN KEY (run_id) REFERENCES runs(id)
@@ -874,8 +1119,15 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
     ensure_column(conn, "evidence_items", "stable_id", "TEXT")
+    ensure_column(conn, "evidence_items", "evidence_type", "TEXT")
+    ensure_column(conn, "evidence_items", "polarity", "TEXT")
+    ensure_column(conn, "evidence_items", "signal_tags_json", "TEXT")
     ensure_column(conn, "claims", "claim_id", "TEXT")
     ensure_column(conn, "claims", "evidence_stable_ids_json", "TEXT")
+    ensure_column(conn, "claims", "counter_evidence_ids_json", "TEXT")
+    ensure_column(conn, "claims", "counter_evidence_stable_ids_json", "TEXT")
+    ensure_column(conn, "claims", "template", "TEXT")
+    ensure_column(conn, "claims", "rationale", "TEXT")
     ensure_column(conn, "repository_snapshots", "project_track", "TEXT")
     ensure_column(conn, "repository_snapshots", "track_score", "REAL")
     ensure_column(conn, "repository_snapshots", "track_score_json", "TEXT")
@@ -891,10 +1143,12 @@ def ensure_archive_search_schema(conn: sqlite3.Connection) -> tuple[bool, str | 
             source_snapshot_count INTEGER NOT NULL,
             source_claim_count INTEGER NOT NULL,
             source_evidence_count INTEGER NOT NULL,
-            indexed_documents INTEGER NOT NULL
+            indexed_documents INTEGER NOT NULL,
+            index_version INTEGER NOT NULL DEFAULT 1
         )
         """
     )
+    ensure_column(conn, "archive_search_meta", "index_version", "INTEGER NOT NULL DEFAULT 1")
     try:
         conn.execute(
             """
@@ -928,7 +1182,7 @@ def archive_source_counts(conn: sqlite3.Connection) -> dict:
 def archive_search_index_current(conn: sqlite3.Connection, counts: dict) -> bool:
     row = conn.execute(
         """
-        SELECT source_run_count, source_snapshot_count, source_claim_count, source_evidence_count
+        SELECT source_run_count, source_snapshot_count, source_claim_count, source_evidence_count, index_version
         FROM archive_search_meta
         WHERE id = 1
         """
@@ -940,6 +1194,7 @@ def archive_search_index_current(conn: sqlite3.Connection, counts: dict) -> bool
         and row[1] == counts["source_snapshot_count"]
         and row[2] == counts["source_claim_count"]
         and row[3] == counts["source_evidence_count"]
+        and row[4] == ARCHIVE_SEARCH_INDEX_VERSION
     )
 
 
@@ -960,6 +1215,7 @@ def rebuild_archive_search_index(conn: sqlite3.Connection) -> dict:
             "rebuilt": False,
             "rebuilt_at": row[0] if row else None,
             "indexed_documents": row[1] if row else 0,
+            "index_version": ARCHIVE_SEARCH_INDEX_VERSION,
             **counts,
         }
 
@@ -1008,42 +1264,53 @@ def rebuild_archive_search_index(conn: sqlite3.Connection) -> dict:
     claim_rows = conn.execute(
         """
         SELECT c.run_id, c.repo_full_name, COALESCE(c.claim_id, c.field), c.field,
-               c.text, c.confidence, s.project_track, s.track_score
+               c.text, c.confidence, c.template, c.rationale, s.project_track, s.track_score
         FROM claims c
         LEFT JOIN repository_snapshots s
           ON s.run_id = c.run_id AND s.full_name = c.repo_full_name
         """
     ).fetchall()
     for row in claim_rows:
-        run_id, full_name, source_id, field, text, confidence, track, track_score = row
+        run_id, full_name, source_id, field, text, confidence, template, rationale, track, track_score = row
         conn.execute(
             """
             INSERT INTO archive_search_fts (
                 repo_full_name, run_id, source_type, source_id, title, body, track, track_score
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (full_name, run_id, "claim", source_id, field, f"{text} {confidence}", track, track_score),
+            (full_name, run_id, "claim", source_id, field, f"{text} {confidence} {template or ''} {rationale or ''}", track, track_score),
         )
         indexed_documents += 1
 
     evidence_rows = conn.execute(
         """
         SELECT e.run_id, e.repo_full_name, COALESCE(e.stable_id, e.evidence_id), e.kind,
-               e.title, e.quote, s.project_track, s.track_score
+               e.title, e.quote, e.evidence_type, e.polarity, e.signal_tags_json,
+               s.project_track, s.track_score
         FROM evidence_items e
         LEFT JOIN repository_snapshots s
           ON s.run_id = e.run_id AND s.full_name = e.repo_full_name
         """
     ).fetchall()
     for row in evidence_rows:
-        run_id, full_name, source_id, kind, title, quote, track, track_score = row
+        run_id, full_name, source_id, kind, title, quote, evidence_type, polarity, tags_json, track, track_score = row
+        tags = " ".join(safe_json_loads(tags_json, []))
         conn.execute(
             """
             INSERT INTO archive_search_fts (
                 repo_full_name, run_id, source_type, source_id, title, body, track, track_score
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (full_name, run_id, "evidence", source_id, f"{kind} - {title}", quote, track, track_score),
+            (
+                full_name,
+                run_id,
+                "evidence",
+                source_id,
+                f"{kind} - {title}",
+                f"{quote} {evidence_type or ''} {polarity or ''} {tags}",
+                track,
+                track_score,
+            ),
         )
         indexed_documents += 1
 
@@ -1052,8 +1319,8 @@ def rebuild_archive_search_index(conn: sqlite3.Connection) -> dict:
         """
         INSERT OR REPLACE INTO archive_search_meta (
             id, rebuilt_at, source_run_count, source_snapshot_count,
-            source_claim_count, source_evidence_count, indexed_documents
-        ) VALUES (1, ?, ?, ?, ?, ?, ?)
+            source_claim_count, source_evidence_count, indexed_documents, index_version
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             rebuilt_at,
@@ -1062,6 +1329,7 @@ def rebuild_archive_search_index(conn: sqlite3.Connection) -> dict:
             counts["source_claim_count"],
             counts["source_evidence_count"],
             indexed_documents,
+            ARCHIVE_SEARCH_INDEX_VERSION,
         ),
     )
     return {
@@ -1071,6 +1339,7 @@ def rebuild_archive_search_index(conn: sqlite3.Connection) -> dict:
         "rebuilt": True,
         "rebuilt_at": rebuilt_at,
         "indexed_documents": indexed_documents,
+        "index_version": ARCHIVE_SEARCH_INDEX_VERSION,
         **counts,
     }
 
@@ -1225,8 +1494,9 @@ def persist_deep_snapshot(db_path: str, payload: dict) -> int:
             conn.execute(
                 """
                 INSERT INTO evidence_items (
-                    run_id, repo_full_name, evidence_id, stable_id, level, kind, title, url, quote
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    run_id, repo_full_name, evidence_id, stable_id, level, kind, title, url, quote,
+                    evidence_type, polarity, signal_tags_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -1238,14 +1508,19 @@ def persist_deep_snapshot(db_path: str, payload: dict) -> int:
                     item["title"],
                     item["url"],
                     item["quote"],
+                    item.get("evidence_type"),
+                    item.get("polarity"),
+                    json.dumps(item.get("signal_tags") or [], ensure_ascii=False),
                 ),
             )
         for item in payload["claims"]:
             conn.execute(
                 """
                 INSERT INTO claims (
-                    run_id, repo_full_name, claim_id, field, text, evidence_ids_json, evidence_stable_ids_json, confidence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    run_id, repo_full_name, claim_id, field, text, evidence_ids_json,
+                    evidence_stable_ids_json, counter_evidence_ids_json,
+                    counter_evidence_stable_ids_json, template, rationale, confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -1255,6 +1530,10 @@ def persist_deep_snapshot(db_path: str, payload: dict) -> int:
                     item["text"],
                     json.dumps(item["evidence_ids"], ensure_ascii=False),
                     json.dumps(item.get("evidence_stable_ids") or [], ensure_ascii=False),
+                    json.dumps(item.get("counter_evidence_ids") or [], ensure_ascii=False),
+                    json.dumps(item.get("counter_evidence_stable_ids") or [], ensure_ascii=False),
+                    item.get("template"),
+                    item.get("rationale"),
                     item["confidence"],
                 ),
             )
@@ -1616,7 +1895,9 @@ def load_archive_health(conn: sqlite3.Connection, run_id: int, full_name: str) -
 def query_archive_claims(conn: sqlite3.Connection, run_id: int, full_name: str) -> list[dict]:
     rows = conn.execute(
         """
-        SELECT claim_id, field, text, evidence_ids_json, evidence_stable_ids_json, confidence
+        SELECT claim_id, field, text, evidence_ids_json, evidence_stable_ids_json,
+               counter_evidence_ids_json, counter_evidence_stable_ids_json,
+               template, rationale, confidence
         FROM claims
         WHERE run_id = ? AND repo_full_name = ?
         ORDER BY rowid
@@ -1630,6 +1911,10 @@ def query_archive_claims(conn: sqlite3.Connection, run_id: int, full_name: str) 
             "text": row["text"],
             "evidence_ids": safe_json_loads(row["evidence_ids_json"], []),
             "evidence_stable_ids": safe_json_loads(row["evidence_stable_ids_json"], []),
+            "counter_evidence_ids": safe_json_loads(row["counter_evidence_ids_json"], []),
+            "counter_evidence_stable_ids": safe_json_loads(row["counter_evidence_stable_ids_json"], []),
+            "template": row["template"],
+            "rationale": row["rationale"],
             "confidence": row["confidence"],
         }
         for row in rows
@@ -1639,7 +1924,8 @@ def query_archive_claims(conn: sqlite3.Connection, run_id: int, full_name: str) 
 def query_archive_evidence(conn: sqlite3.Connection, run_id: int, full_name: str) -> list[dict]:
     rows = conn.execute(
         """
-        SELECT evidence_id, stable_id, level, kind, title, url, quote
+        SELECT evidence_id, stable_id, level, kind, title, url, quote,
+               evidence_type, polarity, signal_tags_json
         FROM evidence_items
         WHERE run_id = ? AND repo_full_name = ?
         ORDER BY evidence_id
@@ -1655,6 +1941,9 @@ def query_archive_evidence(conn: sqlite3.Connection, run_id: int, full_name: str
             "title": row["title"],
             "url": row["url"],
             "quote": row["quote"],
+            "evidence_type": row["evidence_type"] or "general",
+            "polarity": row["polarity"] or "supporting",
+            "signal_tags": safe_json_loads(row["signal_tags_json"], []),
         }
         for row in rows
     ]
@@ -1671,7 +1960,7 @@ def query_archive_claim_matches(
         fts_query = fts_query_from_user(query)
         rows = conn.execute(
             """
-            SELECT c.run_id, c.claim_id, c.field, c.text, c.confidence,
+            SELECT c.run_id, c.claim_id, c.field, c.text, c.template, c.rationale, c.confidence,
                    archive_search_fts.rank AS relevance_rank
             FROM archive_search_fts
             JOIN claims c
@@ -1692,6 +1981,8 @@ def query_archive_claim_matches(
                 "claim_id": row["claim_id"],
                 "field": row["field"],
                 "text": row["text"],
+                "template": row["template"],
+                "rationale": row["rationale"],
                 "confidence": row["confidence"],
                 "relevance": {"backend": "fts5", "score": round(max(0.0, -float(row["relevance_rank"] or 0.0)), 6)},
             }
@@ -1701,7 +1992,7 @@ def query_archive_claim_matches(
     like = f"%{query.lower()}%"
     rows = conn.execute(
         """
-        SELECT run_id, claim_id, field, text, confidence
+        SELECT run_id, claim_id, field, text, template, rationale, confidence
         FROM claims
         WHERE repo_full_name = ?
         AND LOWER(COALESCE(field, '') || ' ' || COALESCE(text, '')) LIKE ?
@@ -1716,6 +2007,8 @@ def query_archive_claim_matches(
             "claim_id": row["claim_id"],
             "field": row["field"],
             "text": row["text"],
+            "template": row["template"],
+            "rationale": row["rationale"],
             "confidence": row["confidence"],
             "relevance": {"backend": "like", "score": None},
         }
@@ -1735,6 +2028,7 @@ def query_archive_evidence_matches(
         rows = conn.execute(
             """
             SELECT e.run_id, e.evidence_id, e.stable_id, e.kind, e.title, e.url, e.quote,
+                   e.evidence_type, e.polarity, e.signal_tags_json,
                    archive_search_fts.rank AS relevance_rank
             FROM archive_search_fts
             JOIN evidence_items e
@@ -1758,6 +2052,9 @@ def query_archive_evidence_matches(
                 "title": row["title"],
                 "url": row["url"],
                 "quote": row["quote"],
+                "evidence_type": row["evidence_type"] or "general",
+                "polarity": row["polarity"] or "supporting",
+                "signal_tags": safe_json_loads(row["signal_tags_json"], []),
                 "relevance": {"backend": "fts5", "score": round(max(0.0, -float(row["relevance_rank"] or 0.0)), 6)},
             }
             for row in rows
@@ -1766,7 +2063,8 @@ def query_archive_evidence_matches(
     like = f"%{query.lower()}%"
     rows = conn.execute(
         """
-        SELECT run_id, evidence_id, stable_id, kind, title, url, quote
+        SELECT run_id, evidence_id, stable_id, kind, title, url, quote,
+               evidence_type, polarity, signal_tags_json
         FROM evidence_items
         WHERE repo_full_name = ?
         AND LOWER(COALESCE(kind, '') || ' ' || COALESCE(title, '') || ' ' || COALESCE(quote, '')) LIKE ?
@@ -1784,6 +2082,9 @@ def query_archive_evidence_matches(
             "title": row["title"],
             "url": row["url"],
             "quote": row["quote"],
+            "evidence_type": row["evidence_type"] or "general",
+            "polarity": row["polarity"] or "supporting",
+            "signal_tags": safe_json_loads(row["signal_tags_json"], []),
             "relevance": {"backend": "like", "score": None},
         }
         for row in rows
@@ -2367,8 +2668,15 @@ def render_archive_dashboard(payload: dict) -> str:
         repo.description,
         repo.language,
         (repo.topics || []).join(" "),
-        ...(dossier.claims || []).flatMap((item) => [item.field, item.text]),
-        ...(dossier.evidence || []).flatMap((item) => [item.kind, item.title, item.quote]),
+        ...(dossier.claims || []).flatMap((item) => [item.field, item.text, item.template, item.rationale]),
+        ...(dossier.evidence || []).flatMap((item) => [
+          item.kind,
+          item.title,
+          item.quote,
+          item.evidence_type,
+          item.polarity,
+          (item.signal_tags || []).join(" "),
+        ]),
       ];
       return parts.filter(Boolean).join(" ").toLowerCase();
     }
@@ -2381,8 +2689,8 @@ def render_archive_dashboard(payload: dict) -> str:
         { weight: 8, text: repo.full_name },
         { weight: 5, text: repo.description },
         { weight: 3, text: (repo.topics || []).join(" ") },
-        { weight: 3, text: (dossier.claims || []).map((item) => `${item.field} ${item.text}`).join(" ") },
-        { weight: 2, text: (dossier.evidence || []).map((item) => `${item.kind} ${item.title} ${item.quote}`).join(" ") },
+        { weight: 3, text: (dossier.claims || []).map((item) => `${item.field} ${item.text} ${item.template || ""} ${item.rationale || ""}`).join(" ") },
+        { weight: 2, text: (dossier.evidence || []).map((item) => `${item.kind} ${item.title} ${item.quote} ${item.evidence_type || ""} ${item.polarity || ""} ${(item.signal_tags || []).join(" ")}`).join(" ") },
       ];
       return sources.reduce((score, source) => {
         const text = String(source.text || "").toLowerCase();
@@ -2518,6 +2826,10 @@ def render_archive_dashboard(payload: dict) -> str:
         <article class="item">
           <h3>${escapeHtml(claim.field)} <span class="subtle">${escapeHtml(claim.confidence || "")}</span></h3>
           <p>${escapeHtml(claim.text)}</p>
+          <div class="chips">
+            ${claim.template ? `<span class="chip">${escapeHtml(claim.template)}</span>` : ""}
+            ${(claim.counter_evidence_ids || []).length ? `<span class="chip risk-mid">Boundary ${escapeHtml(claim.counter_evidence_ids.length)}</span>` : ""}
+          </div>
           <div class="subtle">${escapeHtml(claim.claim_id || "")}</div>
         </article>
       `).join("");
@@ -2525,6 +2837,11 @@ def render_archive_dashboard(payload: dict) -> str:
         <article class="item">
           <h3>${escapeHtml(item.kind)} - ${escapeHtml(item.title)}</h3>
           <p>${escapeHtml(compact(item.quote, 360))}</p>
+          <div class="chips">
+            <span class="chip">${escapeHtml(item.evidence_type || "general")}</span>
+            <span class="chip ${item.polarity === "negative" || item.polarity === "boundary" ? "risk-mid" : ""}">${escapeHtml(item.polarity || "supporting")}</span>
+            ${(item.signal_tags || []).slice(0, 3).map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`).join("")}
+          </div>
           <div class="subtle">${escapeHtml(item.stable_id || item.evidence_id || "")}</div>
         </article>
       `).join("");
@@ -2741,6 +3058,12 @@ def render_archive_show(payload: dict) -> str:
     for claim in payload.get("claims", []):
         stable_refs = claim.get("evidence_stable_ids") or []
         refs = ", ".join(f"`{item}`" for item in stable_refs) if stable_refs else evidence_refs(claim.get("evidence_ids") or [])
+        counter_refs = claim.get("counter_evidence_stable_ids") or []
+        counter_text = (
+            ", ".join(f"`{item}`" for item in counter_refs)
+            if counter_refs
+            else evidence_refs(claim.get("counter_evidence_ids") or [])
+        )
         lines.extend(
             [
                 f"### {claim['field']}",
@@ -2748,7 +3071,10 @@ def render_archive_show(payload: dict) -> str:
                 claim["text"],
                 "",
                 f"- Claim ID：`{claim.get('claim_id') or '无'}`",
+                f"- 模板：{claim.get('template') or '无'}",
+                f"- 推断依据：{claim.get('rationale') or '无'}",
                 f"- 证据：{refs}",
+                f"- 边界/反向证据：{counter_text}",
                 f"- 置信度：{claim['confidence']}",
                 "",
             ]
@@ -2763,6 +3089,8 @@ def render_archive_show(payload: dict) -> str:
                 f"### {item['evidence_id']}. {item['kind']} - {item['title']}",
                 "",
                 f"- Stable ID：`{item.get('stable_id') or '无'}`",
+                f"- 类型 / 极性：{item.get('evidence_type') or 'general'} / {item.get('polarity') or 'supporting'}",
+                f"- 信号标签：{', '.join(item.get('signal_tags') or []) or '无'}",
                 f"- 证据层级：L{item['level']}",
                 f"- 链接：{item.get('url') or '无'}",
                 f"- 摘录：{textwrap.fill(item.get('quote') or '无摘录。', width=88)}",
@@ -2879,23 +3207,37 @@ def render_track_score(summary: dict) -> list[str]:
 def build_claims(repo: dict, evidence: list[Evidence]) -> list[Claim]:
     text = corpus(evidence, repo)
     claims = [
-        Claim("领域", infer_domain(repo, text), matching_evidence(evidence, ["agent", "cli", "local-first", "protocol"]), "medium"),
+        make_claim(
+            "领域",
+            infer_domain(repo, text),
+            matching_evidence(evidence, ["agent", "cli", "local-first", "protocol"]),
+            "medium",
+            "主题/README/证据标签 -> 领域归类",
+            "领域只作为阅读入口，不等于项目价值判断。",
+            counter_evidence(evidence, ["deprecated", "no longer", "experimental"]),
+        ),
         claim_problem_frame(evidence, repo, text),
         claim_key_abstractions(evidence, text),
         claim_boundaries(evidence, text),
         claim_complexity(evidence, text),
         claim_governance(evidence, text),
-        Claim(
+        make_claim(
             "可复用思想",
             "把公开工程工件拆成问题重定义、关键抽象、边界声明、复杂度藏处和治理方式，再把这些模式迁移到自己的设计评审中。",
             [item.evidence_id for item in evidence[:3]],
             "medium",
+            "多类证据 -> 方法抽取 -> 迁移边界",
+            "只迁移可观察的工程方法，不迁移项目热度、生态位或品牌势能。",
+            counter_evidence(evidence, ["bug", "experimental", "deprecated", "no longer"]),
         ),
-        Claim(
+        make_claim(
             "不可复制条件",
             "热度、生态位、品牌、发布时间窗口和既有社区势能不可直接复制；可迁移的是方法，不是势能本身。",
             [item.evidence_id for item in evidence[:3]],
             "medium",
+            "势能来源 -> 不可复制条件 -> 防止错误模仿",
+            "把负面/边界证据显式列出，避免把热门项目包装成无条件最佳实践。",
+            counter_evidence(evidence, ["bug", "confusing", "unsupported", "deprecated", "experimental"]),
         ),
     ]
     for claim in claims:
@@ -2913,6 +3255,8 @@ def render_evidence_table(evidence: list[Evidence]) -> list[str]:
                 f"**{item.evidence_id}. {item.kind} - {item.title}**",
                 "",
                 f"- Stable ID：`{item.stable_id}`",
+                f"- 类型 / 极性：{item.evidence_type} / {item.polarity}",
+                f"- 信号标签：{', '.join(item.signal_tags) or '无'}",
                 f"- 证据层级：L{item.level}",
                 f"- 链接：{item.url or '无'}",
                 f"- 摘录：{textwrap.fill(item.quote or '无摘录。', width=88)}",
@@ -2965,7 +3309,10 @@ def render_deep_report(repo: dict, summary: dict, evidence: list[Evidence], clai
                 claim.text,
                 "",
                 f"- Claim ID：`{claim.claim_id}`",
+                f"- 模板：{claim.template or '无'}",
+                f"- 推断依据：{claim.rationale or '无'}",
                 f"- 证据：{evidence_refs(claim.evidence_ids)}",
+                f"- 边界/反向证据：{evidence_refs(claim.counter_evidence_ids)}",
                 f"- 置信度：{claim.confidence}",
                 "",
             ]

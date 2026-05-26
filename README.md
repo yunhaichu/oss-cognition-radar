@@ -139,6 +139,8 @@ export GITHUB_TOKEN=ghp_xxx
 - 可复用思想
 - 不可复制条件
 - claim / evidence stable IDs
+- claim 模板、推断依据、边界/反向证据
+- evidence type、polarity、signal tags
 - repository health
 - track score
 - fake-star 风险与复核建议
@@ -155,6 +157,13 @@ JSON 输出会包含：
 - `dossier_id`
 - `claim_id`
 - `evidence_stable_ids`
+- `counter_evidence_ids`
+- `counter_evidence_stable_ids`
+- `template`
+- `rationale`
+- `evidence_type`
+- `polarity`
+- `signal_tags`
 - `track_score`
 
 SQLite 当前会保存：
@@ -180,6 +189,14 @@ SQLite 当前会保存：
 
 `track_score` 会先把项目归入 `agent`、`developer_tools`、`local_first`、`protocol` 或 `general`，再使用不同权重合成 `momentum`、`collaboration`、`release`、`governance`、`evidence`、`ecosystem` 六类信号。发现模式还没有深度 evidence，因此 evidence 信号会偏低；深度分析后会更适合作为档案评分。
 
+深度 dossier 会把 evidence 标成更细的类型和极性：
+
+- `evidence_type`：例如 `positioning`、`governance`、`boundary`、`release_delta`、`user_friction`、`implementation_change`
+- `polarity`：`supporting`、`boundary`、`negative`
+- `signal_tags`：例如 `abstraction`、`complexity`、`recoverability`、`governance`、`performance`
+
+claim 现在会记录 `template` 和 `rationale`，并把边界/反向证据放到 `counter_evidence_ids`。这让报告更像可审查的研究笔记，而不是单向总结。
+
 ## 方法原则
 
 1. **证据优先**
@@ -196,4 +213,4 @@ SQLite 当前会保存：
 
 ## 下一步
 
-- 提升 claim/evidence 抽取质量：引入更细的证据类型、claim 模板和负面/边界证据，减少 dossier 里的启发式噪声
+- 扩展证据采集面：补充核心源码入口、测试、benchmark 和配置文件，让 claim 能被实现层证据复核
