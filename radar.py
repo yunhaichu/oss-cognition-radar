@@ -12,6 +12,7 @@ import argparse
 import base64
 import dataclasses
 import datetime as dt
+import hashlib
 import json
 import math
 import os
@@ -41,6 +42,7 @@ class Evidence:
     title: str
     url: str
     quote: str
+    stable_id: str = ""
 
 
 @dataclasses.dataclass
@@ -51,6 +53,7 @@ class Claim:
     text: str
     evidence_ids: list[str]
     confidence: str
+    claim_id: str = ""
 
 
 def parse_args() -> argparse.Namespace:
@@ -158,6 +161,17 @@ def utc_now() -> dt.datetime:
 
 def parse_iso_datetime(value: str) -> dt.datetime:
     return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug or "item"
+
+
+def stable_id(prefix: str, *parts: str) -> str:
+    raw = "::".join(part or "" for part in parts)
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}_{digest}"
 
 
 def search_repositories(days: int, min_stars: int, topic: str | None, language: str | None, limit: int) -> list[dict]:
@@ -287,6 +301,58 @@ def fetch_pull_requests(full_name: str) -> list[dict]:
     return data.get("items", [])
 
 
+def search_issue_count(query: str) -> int | None:
+    data = github_get_optional("/search/issues", {"q": query, "per_page": 1})
+    if not isinstance(data, dict):
+        return None
+    return data.get("total_count")
+
+
+def fetch_contributors(full_name: str) -> list[dict]:
+    data = github_get_optional(f"/repos/{full_name}/contributors", {"per_page": 100})
+    return data if isinstance(data, list) else []
+
+
+def fetch_repository_health(repo: dict, releases: list[dict] | None = None) -> dict:
+    full_name = repo["full_name"]
+    now = utc_now()
+    since_180 = (now - dt.timedelta(days=180)).date().isoformat()
+    since_365 = (now - dt.timedelta(days=365)).date().isoformat()
+    releases = releases if releases is not None else fetch_releases(full_name)
+    release_dates = [
+        release.get("published_at")
+        for release in releases
+        if release.get("published_at") and release.get("published_at") >= f"{since_365}T00:00:00Z"
+    ]
+    contributors = fetch_contributors(full_name)
+    top_contributors = [
+        {
+            "login": item.get("login"),
+            "contributions": item.get("contributions", 0),
+            "html_url": item.get("html_url"),
+        }
+        for item in contributors[:10]
+    ]
+
+    merged_prs_180d = search_issue_count(f"repo:{full_name} is:pr is:merged merged:>={since_180}")
+    closed_issues_180d = search_issue_count(f"repo:{full_name} is:issue is:closed closed:>={since_180}")
+    open_prs = search_issue_count(f"repo:{full_name} is:pr is:open")
+
+    return {
+        "window_days": 180,
+        "merged_prs_180d": merged_prs_180d,
+        "closed_issues_180d": closed_issues_180d,
+        "open_prs": open_prs,
+        "release_count_365d_sample": len(release_dates),
+        "latest_release_at": release_dates[0] if release_dates else None,
+        "top_contributor_count_sample": len(contributors),
+        "top_contributors": top_contributors,
+        "has_license": bool(repo.get("license")),
+        "has_homepage": bool(repo.get("homepage")),
+        "pushed_within_30d": (now - parse_iso_datetime(repo["pushed_at"])).days <= 30,
+    }
+
+
 def build_evidence(repo: dict) -> list[Evidence]:
     evidence: list[Evidence] = []
     full_name = repo["full_name"]
@@ -315,7 +381,13 @@ def build_evidence(repo: dict) -> list[Evidence]:
         quote = excerpt(pr.get("body") or "", 500) or f"state={pr.get('state')}; merged_at={pr.get('merged_at')}."
         evidence.append(Evidence(f"E{len(evidence) + 1}", 1, "Pull Request", pr.get("title") or "Pull request", pr.get("html_url") or "", quote))
 
+    assign_evidence_ids(repo, evidence)
     return evidence
+
+
+def assign_evidence_ids(repo: dict, evidence: list[Evidence]) -> None:
+    for item in evidence:
+        item.stable_id = stable_id("ev", repo["full_name"], item.kind, item.url or item.title)
 
 
 def corpus(evidence: list[Evidence], repo: dict) -> str:
@@ -435,13 +507,16 @@ def fake_star_risk(repo: dict) -> str:
     return "低/中：当前元数据未显示明显异常，但 star 仍只能作为兴趣信号。"
 
 
-def repo_summary(repo: dict, now: dt.datetime) -> dict:
+def repo_summary(repo: dict, now: dt.datetime, include_health: bool = True) -> dict:
     age_days = days_between(repo["created_at"], now)
     stars = repo.get("stargazers_count", 0)
     license_info = repo.get("license") or {}
+    full_name = repo.get("full_name")
     return {
+        "dossier_id": stable_id("dossier", full_name or ""),
+        "repository_slug": slugify(full_name or repo.get("name") or ""),
         "id": repo.get("id"),
-        "full_name": repo.get("full_name"),
+        "full_name": full_name,
         "name": repo.get("name"),
         "owner": (repo.get("owner") or {}).get("login"),
         "html_url": repo.get("html_url"),
@@ -462,6 +537,7 @@ def repo_summary(repo: dict, now: dt.datetime) -> dict:
         "score": repo.get("_score", score_repo(repo, now)),
         "stars_per_day": stars / age_days,
         "fake_star_risk": fake_star_risk(repo),
+        "health": fetch_repository_health(repo) if include_health else {},
     }
 
 
@@ -469,19 +545,30 @@ def evidence_to_dict(evidence: Evidence) -> dict:
     return dataclasses.asdict(evidence)
 
 
-def claim_to_dict(claim: Claim) -> dict:
-    return dataclasses.asdict(claim)
+def claim_to_dict(claim: Claim, evidence_map: dict[str, Evidence] | None = None) -> dict:
+    data = dataclasses.asdict(claim)
+    if evidence_map:
+        data["evidence_stable_ids"] = [
+            evidence_map[evidence_id].stable_id
+            for evidence_id in claim.evidence_ids
+            if evidence_id in evidence_map
+        ]
+    else:
+        data["evidence_stable_ids"] = []
+    return data
 
 
 def build_deep_payload(repo: dict, evidence: list[Evidence], claims: list[Claim], run_at: dt.datetime) -> dict:
     summary = repo_summary(repo, run_at)
+    evidence_map = {item.evidence_id: item for item in evidence}
     return {
         "schema_version": 1,
         "mode": "deep",
         "generated_at": run_at.isoformat(),
+        "dossier_id": stable_id("dossier", repo["full_name"]),
         "method_boundary": "Only public GitHub engineering artifacts are used to infer observable, reviewable, transferable cognition/design/governance patterns.",
         "repository": summary,
-        "claims": [claim_to_dict(item) for item in claims],
+        "claims": [claim_to_dict(item, evidence_map) for item in claims],
         "evidence": [evidence_to_dict(item) for item in evidence],
     }
 
@@ -500,6 +587,12 @@ def build_discovery_payload(repo_summaries: list[dict], args: argparse.Namespace
         },
         "repositories": repo_summaries,
     }
+
+
+def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -541,6 +634,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             run_id INTEGER NOT NULL,
             repo_full_name TEXT NOT NULL,
             evidence_id TEXT NOT NULL,
+            stable_id TEXT,
             level INTEGER NOT NULL,
             kind TEXT NOT NULL,
             title TEXT NOT NULL,
@@ -553,15 +647,28 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS claims (
             run_id INTEGER NOT NULL,
             repo_full_name TEXT NOT NULL,
+            claim_id TEXT,
             field TEXT NOT NULL,
             text TEXT NOT NULL,
             evidence_ids_json TEXT NOT NULL,
+            evidence_stable_ids_json TEXT,
             confidence TEXT NOT NULL,
             PRIMARY KEY (run_id, repo_full_name, field),
             FOREIGN KEY (run_id) REFERENCES runs(id)
         );
+
+        CREATE TABLE IF NOT EXISTS repository_health_snapshots (
+            run_id INTEGER NOT NULL,
+            full_name TEXT NOT NULL,
+            health_json TEXT NOT NULL,
+            PRIMARY KEY (run_id, full_name),
+            FOREIGN KEY (run_id) REFERENCES runs(id)
+        );
         """
     )
+    ensure_column(conn, "evidence_items", "stable_id", "TEXT")
+    ensure_column(conn, "claims", "claim_id", "TEXT")
+    ensure_column(conn, "claims", "evidence_stable_ids_json", "TEXT")
 
 
 def empty_star_growth() -> dict:
@@ -663,6 +770,21 @@ def insert_repo_snapshot(conn: sqlite3.Connection, run_id: int, summary: dict) -
     )
 
 
+def insert_health_snapshot(conn: sqlite3.Connection, run_id: int, summary: dict) -> None:
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO repository_health_snapshots (
+            run_id, full_name, health_json
+        ) VALUES (?, ?, ?)
+        """,
+        (
+            run_id,
+            summary["full_name"],
+            json.dumps(summary.get("health") or {}, ensure_ascii=False),
+        ),
+    )
+
+
 def persist_deep_snapshot(db_path: str, payload: dict) -> int:
     path = pathlib.Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -679,17 +801,19 @@ def persist_deep_snapshot(db_path: str, payload: dict) -> int:
         )
         run_id = int(cursor.lastrowid)
         insert_repo_snapshot(conn, run_id, payload["repository"])
+        insert_health_snapshot(conn, run_id, payload["repository"])
         for item in payload["evidence"]:
             conn.execute(
                 """
                 INSERT INTO evidence_items (
-                    run_id, repo_full_name, evidence_id, level, kind, title, url, quote
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    run_id, repo_full_name, evidence_id, stable_id, level, kind, title, url, quote
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
                     payload["repository"]["full_name"],
                     item["evidence_id"],
+                    item.get("stable_id"),
                     item["level"],
                     item["kind"],
                     item["title"],
@@ -701,15 +825,17 @@ def persist_deep_snapshot(db_path: str, payload: dict) -> int:
             conn.execute(
                 """
                 INSERT INTO claims (
-                    run_id, repo_full_name, field, text, evidence_ids_json, confidence
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    run_id, repo_full_name, claim_id, field, text, evidence_ids_json, evidence_stable_ids_json, confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
                     payload["repository"]["full_name"],
+                    item.get("claim_id"),
                     item["field"],
                     item["text"],
                     json.dumps(item["evidence_ids"], ensure_ascii=False),
+                    json.dumps(item.get("evidence_stable_ids") or [], ensure_ascii=False),
                     item["confidence"],
                 ),
             )
@@ -734,6 +860,7 @@ def persist_discovery_snapshot(db_path: str, payload: dict) -> int:
         run_id = int(cursor.lastrowid)
         for summary in payload["repositories"]:
             insert_repo_snapshot(conn, run_id, summary)
+            insert_health_snapshot(conn, run_id, summary)
         conn.commit()
         return run_id
 
@@ -754,9 +881,33 @@ def render_star_growth(summary: dict) -> list[str]:
     return lines
 
 
+def render_repository_health(summary: dict) -> list[str]:
+    health = summary.get("health") or {}
+    if not health:
+        return ["- Repository health: unavailable"]
+    lines = [
+        "- Repository health:",
+        f"  - merged PRs / 180d: {health.get('merged_prs_180d', 'unknown')}",
+        f"  - closed issues / 180d: {health.get('closed_issues_180d', 'unknown')}",
+        f"  - open PRs: {health.get('open_prs', 'unknown')}",
+        f"  - releases in latest API sample / 365d: {health.get('release_count_365d_sample', 0)}",
+        f"  - latest release: {health.get('latest_release_at') or 'unknown'}",
+        f"  - contributor sample size: {health.get('top_contributor_count_sample', 0)}",
+    ]
+    contributors = health.get("top_contributors") or []
+    if contributors:
+        top = ", ".join(
+            f"{item.get('login')}({item.get('contributions', 0)})"
+            for item in contributors[:5]
+            if item.get("login")
+        )
+        lines.append(f"  - top contributors sample: {top}")
+    return lines
+
+
 def build_claims(repo: dict, evidence: list[Evidence]) -> list[Claim]:
     text = corpus(evidence, repo)
-    return [
+    claims = [
         Claim("领域", infer_domain(repo, text), matching_evidence(evidence, ["agent", "cli", "local-first", "protocol"]), "medium"),
         claim_problem_frame(evidence, repo, text),
         claim_key_abstractions(evidence, text),
@@ -776,6 +927,9 @@ def build_claims(repo: dict, evidence: list[Evidence]) -> list[Claim]:
             "medium",
         ),
     ]
+    for claim in claims:
+        claim.claim_id = stable_id("claim", repo["full_name"], claim.field)
+    return claims
 
 
 def render_evidence_table(evidence: list[Evidence]) -> list[str]:
@@ -787,6 +941,7 @@ def render_evidence_table(evidence: list[Evidence]) -> list[str]:
             [
                 f"**{item.evidence_id}. {item.kind} - {item.title}**",
                 "",
+                f"- Stable ID：`{item.stable_id}`",
                 f"- 证据层级：L{item.level}",
                 f"- 链接：{item.url or '无'}",
                 f"- 摘录：{textwrap.fill(item.quote or '无摘录。', width=88)}",
@@ -813,10 +968,12 @@ def render_deep_report(repo: dict, summary: dict, evidence: list[Evidence], clai
         f"- 创建时间：{summary['created_at']}",
         f"- 最近推送：{summary['pushed_at']}",
         f"- Star/day：{summary['stars_per_day']:.1f}",
+        f"- Dossier ID：{summary['dossier_id']}",
         f"- Topics：{topics}",
         "",
     ]
     lines.extend(render_star_growth(summary))
+    lines.extend(render_repository_health(summary))
     lines.extend(
         [
             "",
@@ -835,6 +992,7 @@ def render_deep_report(repo: dict, summary: dict, evidence: list[Evidence], clai
                 "",
                 claim.text,
                 "",
+                f"- Claim ID：`{claim.claim_id}`",
                 f"- 证据：{evidence_refs(claim.evidence_ids)}",
                 f"- 置信度：{claim.confidence}",
                 "",
@@ -887,12 +1045,14 @@ def render_discovery_report(repo_summaries: list[dict], args: argparse.Namespace
                 f"- Forks：{summary['forks']}",
                 f"- Open issues：{summary['open_issues']}",
                 f"- Star/day：{summary['stars_per_day']:.1f}",
+                f"- Dossier ID：{summary['dossier_id']}",
                 f"- Radar score：{summary['score']:.1f}",
                 f"- Fake-star 风险：{summary['fake_star_risk']}",
                 f"- Topics：{topics}",
             ]
         )
         lines.extend(render_star_growth(summary))
+        lines.extend(render_repository_health(summary))
         lines.append("")
     return "\n".join(lines)
 

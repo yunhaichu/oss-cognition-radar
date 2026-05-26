@@ -69,6 +69,8 @@ export GITHUB_TOKEN=ghp_xxx
 - 项目基础信息
 - star/day 近似增长信号
 - 基于 SQLite 历史快照的 1d / 7d / 30d star 增长
+- Dossier ID
+- repository health：180 天 merged PR / closed issue、open PR、release cadence 样本、contributors 样本
 - fork、issue、topic 等基础指标
 - 初步 fake-star 风险提示
 - 深度分析命令提示
@@ -85,6 +87,8 @@ export GITHUB_TOKEN=ghp_xxx
 - 治理模式
 - 可复用思想
 - 不可复制条件
+- claim / evidence stable IDs
+- repository health
 - fake-star 风险与复核建议
 - 可追溯证据链
 
@@ -95,15 +99,22 @@ JSON 输出会包含：
 - `evidence`
 - `query` 或 `method_boundary`
 - `star_growth`
+- `repository.health`
+- `dossier_id`
+- `claim_id`
+- `evidence_stable_ids`
 
 SQLite 当前会保存：
 
 - `runs`
 - `repository_snapshots`
+- `repository_health_snapshots`
 - `evidence_items`
 - `claims`
 
 `star_growth` 只有在数据库里存在对应窗口附近的历史快照时才会显示真实增量；否则会标记为 `insufficient history`。当前匹配窗口为：1d 使用 1–2 天前快照，7d 使用 7–10 天前快照，30d 使用 30–45 天前快照。这避免把几分钟前的重复运行或过旧快照误当作 1 天增长。
+
+`repository.health` 是第一版健康度信号，包含 GitHub Search/API 可稳定获取的样本字段。`release_count_365d_sample` 和 `top_contributor_count_sample` 是 API 返回样本，不应当被当成完整全量统计。
 
 ## 方法原则
 
@@ -121,6 +132,5 @@ SQLite 当前会保存：
 
 ## 下一步
 
-- 抓取高评论 issue、最近合并 PR、release cadence、contributors
 - 为不同项目类型建立分轨评分：agent、developer tools、local-first、protocol
 - 基于 JSON dossier 做仪表盘或知识库
