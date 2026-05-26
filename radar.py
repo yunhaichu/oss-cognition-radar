@@ -114,6 +114,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--archive-search", metavar="TEXT", help="Search archived repositories, claims, and evidence.")
     parser.add_argument("--archive-show", metavar="OWNER/REPO", help="Show the latest archived dossier for one repository.")
     parser.add_argument(
+        "--archive-dashboard",
+        nargs="?",
+        const="reports/archive-dashboard.html",
+        metavar="PATH",
+        help="Generate a standalone HTML dashboard from the SQLite archive.",
+    )
+    parser.add_argument(
         "--archive-track",
         choices=sorted(TRACK_WEIGHTS),
         help="Archive mode: filter repositories by project track.",
@@ -1447,6 +1454,725 @@ def archive_show_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> 
     return payload
 
 
+def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
+    repositories = query_latest_archive_snapshots(
+        conn,
+        args.limit,
+        track=args.archive_track,
+        min_track_score=args.min_track_score,
+    )
+    dossiers = {}
+    for summary in repositories:
+        dossier = query_archive_show(conn, summary["full_name"]) or {}
+        dossiers[summary["full_name"]] = {
+            "claims": dossier.get("claims") or [],
+            "evidence": dossier.get("evidence") or [],
+            "dossier_run_id": ((dossier.get("repository") or {}).get("run_id")),
+            "dossier_run_created_at": ((dossier.get("repository") or {}).get("run_created_at")),
+            "dossier_run_mode": ((dossier.get("repository") or {}).get("run_mode")),
+        }
+
+    scores = [
+        (summary.get("track_score") or {}).get("score")
+        for summary in repositories
+        if isinstance((summary.get("track_score") or {}).get("score"), (int, float))
+    ]
+    tracks: dict[str, int] = {}
+    for summary in repositories:
+        track = (summary.get("track_score") or {}).get("track") or "unknown"
+        tracks[track] = tracks.get(track, 0) + 1
+
+    return {
+        "schema_version": 1,
+        "mode": "archive_dashboard",
+        "generated_at": utc_now().isoformat(),
+        "db": args.db,
+        "filters": archive_filters_payload(args),
+        "statistics": {
+            "repositories": len(repositories),
+            "deep_dossiers": sum(1 for item in dossiers.values() if item["claims"] or item["evidence"]),
+            "claims": sum(len(item["claims"]) for item in dossiers.values()),
+            "evidence": sum(len(item["evidence"]) for item in dossiers.values()),
+            "average_track_score": round(sum(scores) / len(scores), 1) if scores else None,
+            "tracks": tracks,
+        },
+        "repositories": repositories,
+        "dossiers": dossiers,
+    }
+
+
+def render_archive_dashboard(payload: dict) -> str:
+    data_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+    return """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OSS Cognition Radar</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --ink: #151a1f;
+      --muted: #65717f;
+      --line: #d8dee6;
+      --teal: #006b5b;
+      --teal-soft: #dcefeb;
+      --blue: #3451b2;
+      --amber: #b66a00;
+      --red: #b42318;
+      --green: #1d6f42;
+      --shadow: 0 1px 2px rgba(16, 24, 40, .08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px 24px 12px;
+      border-bottom: 1px solid var(--line);
+      background: #ffffff;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.2;
+      font-weight: 700;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+      overflow-wrap: anywhere;
+    }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) 180px 220px 92px;
+      gap: 10px;
+      padding: 12px 24px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+
+    input, select, button {
+      height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+    }
+
+    input, select { padding: 0 10px; min-width: 0; }
+
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    button:hover { border-color: var(--teal); color: var(--teal); }
+
+    .range {
+      display: grid;
+      grid-template-columns: 1fr 44px;
+      align-items: center;
+      gap: 8px;
+      height: 36px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+    }
+
+    .range input {
+      height: auto;
+      padding: 0;
+      border: 0;
+      accent-color: var(--teal);
+    }
+
+    .range output {
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      padding: 14px 24px 0;
+    }
+
+    .stat {
+      min-height: 70px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .stat-label {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .stat-value {
+      margin-top: 4px;
+      font-size: 24px;
+      font-weight: 700;
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: minmax(320px, 430px) minmax(0, 1fr);
+      gap: 14px;
+      padding: 14px 24px 24px;
+      min-height: 0;
+    }
+
+    .list, .detail {
+      min-height: 0;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .list-head, .detail-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 48px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+
+    .section-title {
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .count {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .repo-list {
+      max-height: calc(100vh - 250px);
+      overflow: auto;
+    }
+
+    .repo-row {
+      width: 100%;
+      height: auto;
+      min-height: 104px;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      padding: 12px 14px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      border-radius: 0;
+      background: #fff;
+      text-align: left;
+    }
+
+    .repo-row:hover, .repo-row.active { background: var(--teal-soft); color: var(--ink); }
+
+    .repo-name {
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+
+    .repo-desc {
+      min-height: 20px;
+      color: var(--muted);
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      min-height: 22px;
+      padding: 2px 7px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .chip.track { color: var(--teal); border-color: #98ccc2; }
+    .chip.risk-high { color: var(--red); border-color: #f2b8b5; }
+    .chip.risk-mid { color: var(--amber); border-color: #e7bd78; }
+
+    .score-line {
+      display: grid;
+      grid-template-columns: 58px 1fr 42px;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .bar {
+      height: 7px;
+      border-radius: 999px;
+      background: #edf0f3;
+      overflow: hidden;
+    }
+
+    .bar > span {
+      display: block;
+      height: 100%;
+      width: 0;
+      background: linear-gradient(90deg, var(--teal), var(--green));
+    }
+
+    .detail-body {
+      max-height: calc(100vh - 250px);
+      overflow: auto;
+      padding: 16px;
+    }
+
+    .detail-title {
+      margin: 0 0 6px;
+      font-size: 22px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+
+    .detail-desc {
+      margin: 0 0 14px;
+      color: var(--muted);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin: 14px 0;
+    }
+
+    .metric {
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfd;
+    }
+
+    .metric b {
+      display: block;
+      margin-top: 2px;
+      font-size: 16px;
+    }
+
+    .claims, .evidence {
+      display: grid;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .item {
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+    }
+
+    .item h3 {
+      margin: 0 0 8px;
+      font-size: 14px;
+      line-height: 1.3;
+    }
+
+    .item p {
+      margin: 0;
+      color: #2d3640;
+      overflow-wrap: anywhere;
+    }
+
+    .subtle {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .empty {
+      padding: 24px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    @media (max-width: 980px) {
+      .toolbar { grid-template-columns: 1fr 1fr; }
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      main { grid-template-columns: 1fr; }
+      .repo-list, .detail-body { max-height: none; }
+    }
+
+    @media (max-width: 620px) {
+      header { align-items: flex-start; flex-direction: column; padding: 14px; }
+      .meta { text-align: left; }
+      .toolbar { grid-template-columns: 1fr; padding: 10px 14px; }
+      .stats { grid-template-columns: 1fr; padding: 10px 14px 0; }
+      main { padding: 10px 14px 18px; }
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <h1>OSS Cognition Radar</h1>
+      <div class="meta">
+        <div id="dbMeta"></div>
+        <div id="timeMeta"></div>
+      </div>
+    </header>
+
+    <section class="toolbar" aria-label="Archive filters">
+      <input id="searchInput" type="search" placeholder="Search repositories, claims, evidence" autocomplete="off">
+      <select id="trackSelect" aria-label="Track"></select>
+      <label class="range" for="scoreRange">
+        <input id="scoreRange" type="range" min="0" max="100" step="1" value="0">
+        <output id="scoreOutput">0</output>
+      </label>
+      <button id="resetButton" type="button">Reset</button>
+    </section>
+
+    <section class="stats" id="stats"></section>
+
+    <main>
+      <section class="list">
+        <div class="list-head">
+          <div class="section-title">Repositories</div>
+          <div class="count" id="resultCount"></div>
+        </div>
+        <div class="repo-list" id="repoList"></div>
+      </section>
+
+      <section class="detail">
+        <div class="detail-head">
+          <div class="section-title">Dossier</div>
+          <a id="githubLink" href="#" target="_blank" rel="noreferrer">GitHub</a>
+        </div>
+        <div class="detail-body" id="detailBody"></div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const DATA = __DATA__;
+    const state = { query: "", track: "all", minScore: 0, selected: null };
+    const repos = DATA.repositories || [];
+    const dossiers = DATA.dossiers || {};
+
+    const searchInput = document.getElementById("searchInput");
+    const trackSelect = document.getElementById("trackSelect");
+    const scoreRange = document.getElementById("scoreRange");
+    const scoreOutput = document.getElementById("scoreOutput");
+    const resetButton = document.getElementById("resetButton");
+    const repoList = document.getElementById("repoList");
+    const detailBody = document.getElementById("detailBody");
+    const resultCount = document.getElementById("resultCount");
+    const stats = document.getElementById("stats");
+    const githubLink = document.getElementById("githubLink");
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function compact(value, limit = 220) {
+      const text = String(value ?? "").replace(/\\s+/g, " ").trim();
+      if (text.length <= limit) return text;
+      return text.slice(0, Math.max(0, limit - 3)).trimEnd() + "...";
+    }
+
+    function trackOf(repo) {
+      return repo.track_score?.track || "unknown";
+    }
+
+    function scoreOf(repo) {
+      const score = repo.track_score?.score;
+      return Number.isFinite(score) ? score : 0;
+    }
+
+    function dossierOf(repo) {
+      return dossiers[repo.full_name] || { claims: [], evidence: [] };
+    }
+
+    function corpusOf(repo) {
+      const dossier = dossierOf(repo);
+      const parts = [
+        repo.full_name,
+        repo.description,
+        repo.language,
+        (repo.topics || []).join(" "),
+        ...(dossier.claims || []).flatMap((item) => [item.field, item.text]),
+        ...(dossier.evidence || []).flatMap((item) => [item.kind, item.title, item.quote]),
+      ];
+      return parts.filter(Boolean).join(" ").toLowerCase();
+    }
+
+    function filteredRepos() {
+      const query = state.query.trim().toLowerCase();
+      return repos.filter((repo) => {
+        if (state.track !== "all" && trackOf(repo) !== state.track) return false;
+        if (scoreOf(repo) < state.minScore) return false;
+        if (query && !corpusOf(repo).includes(query)) return false;
+        return true;
+      });
+    }
+
+    function renderTrackOptions() {
+      const tracks = Array.from(new Set(repos.map(trackOf))).sort();
+      trackSelect.innerHTML = [
+        '<option value="all">All tracks</option>',
+        ...tracks.map((track) => `<option value="${escapeHtml(track)}">${escapeHtml(track)}</option>`),
+      ].join("");
+    }
+
+    function renderStats(items) {
+      const deepCount = items.filter((repo) => {
+        const dossier = dossierOf(repo);
+        return (dossier.claims || []).length || (dossier.evidence || []).length;
+      }).length;
+      const claimCount = items.reduce((sum, repo) => sum + (dossierOf(repo).claims || []).length, 0);
+      const evidenceCount = items.reduce((sum, repo) => sum + (dossierOf(repo).evidence || []).length, 0);
+      const average = items.length
+        ? items.reduce((sum, repo) => sum + scoreOf(repo), 0) / items.length
+        : 0;
+      const topTrack = Object.entries(
+        items.reduce((acc, repo) => {
+          const track = trackOf(repo);
+          acc[track] = (acc[track] || 0) + 1;
+          return acc;
+        }, {})
+      ).sort((a, b) => b[1] - a[1])[0];
+
+      const blocks = [
+        ["Repositories", items.length],
+        ["Deep dossiers", deepCount],
+        ["Claims", claimCount],
+        ["Evidence", evidenceCount],
+        ["Avg score", average ? average.toFixed(1) : "0.0"],
+      ];
+      stats.innerHTML = blocks.map(([label, value]) => `
+        <div class="stat">
+          <div class="stat-label">${escapeHtml(label)}</div>
+          <div class="stat-value">${escapeHtml(value)}</div>
+          <div class="subtle">${label === "Repositories" && topTrack ? escapeHtml(topTrack[0] + ": " + topTrack[1]) : "&nbsp;"}</div>
+        </div>
+      `).join("");
+    }
+
+    function riskClass(repo) {
+      const risk = repo.fake_star_risk || "";
+      if (risk.startsWith("高")) return "risk-high";
+      if (risk.startsWith("中")) return "risk-mid";
+      return "";
+    }
+
+    function renderList(items) {
+      resultCount.textContent = `${items.length} / ${repos.length}`;
+      if (!items.length) {
+        repoList.innerHTML = '<div class="empty">No matching repositories.</div>';
+        githubLink.removeAttribute("href");
+        detailBody.innerHTML = '<div class="empty">No dossier selected.</div>';
+        return;
+      }
+      if (!state.selected || !items.some((repo) => repo.full_name === state.selected)) {
+        state.selected = items[0].full_name;
+      }
+      repoList.innerHTML = items.map((repo) => {
+        const active = repo.full_name === state.selected ? " active" : "";
+        const score = scoreOf(repo);
+        return `
+          <button class="repo-row${active}" type="button" data-repo="${escapeHtml(repo.full_name)}">
+            <div class="repo-name">${escapeHtml(repo.full_name)}</div>
+            <div class="repo-desc">${escapeHtml(repo.description || "No description.")}</div>
+            <div class="chips">
+              <span class="chip track">${escapeHtml(trackOf(repo))}</span>
+              <span class="chip">${escapeHtml(repo.language || "Unknown")}</span>
+              <span class="chip ${riskClass(repo)}">${escapeHtml((repo.fake_star_risk || "unknown").split("：")[0])}</span>
+            </div>
+            <div class="score-line">
+              <span>Score</span>
+              <span class="bar"><span style="width: ${Math.max(0, Math.min(100, score))}%"></span></span>
+              <span>${score.toFixed(1)}</span>
+            </div>
+          </button>
+        `;
+      }).join("");
+      repoList.querySelectorAll(".repo-row").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.selected = button.dataset.repo;
+          render();
+        });
+      });
+      renderDetail(items.find((repo) => repo.full_name === state.selected));
+    }
+
+    function metric(label, value) {
+      return `<div class="metric"><span class="subtle">${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>`;
+    }
+
+    function renderDetail(repo) {
+      if (!repo) {
+        githubLink.removeAttribute("href");
+        detailBody.innerHTML = '<div class="empty">No dossier selected.</div>';
+        return;
+      }
+      githubLink.href = repo.html_url || "#";
+      const dossier = dossierOf(repo);
+      const health = repo.health || {};
+      const signals = repo.track_score?.signals || {};
+      const signalChips = Object.entries(signals).map(([name, value]) =>
+        `<span class="chip">${escapeHtml(name)} ${escapeHtml(value)}</span>`
+      ).join("");
+      const claims = (dossier.claims || []).map((claim) => `
+        <article class="item">
+          <h3>${escapeHtml(claim.field)} <span class="subtle">${escapeHtml(claim.confidence || "")}</span></h3>
+          <p>${escapeHtml(claim.text)}</p>
+          <div class="subtle">${escapeHtml(claim.claim_id || "")}</div>
+        </article>
+      `).join("");
+      const evidence = (dossier.evidence || []).slice(0, 12).map((item) => `
+        <article class="item">
+          <h3>${escapeHtml(item.kind)} - ${escapeHtml(item.title)}</h3>
+          <p>${escapeHtml(compact(item.quote, 360))}</p>
+          <div class="subtle">${escapeHtml(item.stable_id || item.evidence_id || "")}</div>
+        </article>
+      `).join("");
+
+      detailBody.innerHTML = `
+        <h2 class="detail-title">${escapeHtml(repo.full_name)}</h2>
+        <p class="detail-desc">${escapeHtml(repo.description || "No description.")}</p>
+        <div class="chips">
+          <span class="chip track">${escapeHtml(trackOf(repo))}</span>
+          <span class="chip">${escapeHtml(repo.language || "Unknown")}</span>
+          <span class="chip">${escapeHtml(repo.license || "No license")}</span>
+          <span class="chip ${riskClass(repo)}">${escapeHtml(repo.fake_star_risk || "Risk unknown")}</span>
+        </div>
+        <div class="grid">
+          ${metric("Stars", repo.stars ?? 0)}
+          ${metric("Forks", repo.forks ?? 0)}
+          ${metric("Open issues", repo.open_issues ?? 0)}
+          ${metric("Track score", scoreOf(repo).toFixed(1))}
+          ${metric("Merged PRs 180d", health.merged_prs_180d ?? "unknown")}
+          ${metric("Closed issues 180d", health.closed_issues_180d ?? "unknown")}
+          ${metric("Releases 365d", health.release_count_365d_sample ?? 0)}
+          ${metric("Contributors", health.top_contributor_count_sample ?? 0)}
+        </div>
+        <div class="chips">${signalChips}</div>
+        <section class="claims">
+          <div class="section-title">Claims</div>
+          ${claims || '<div class="empty">No deep claims archived.</div>'}
+        </section>
+        <section class="evidence">
+          <div class="section-title">Evidence</div>
+          ${evidence || '<div class="empty">No evidence archived.</div>'}
+        </section>
+      `;
+    }
+
+    function render() {
+      scoreOutput.value = state.minScore;
+      const items = filteredRepos();
+      renderStats(items);
+      renderList(items);
+    }
+
+    document.getElementById("dbMeta").textContent = DATA.db || "";
+    document.getElementById("timeMeta").textContent = DATA.generated_at || "";
+    renderTrackOptions();
+
+    searchInput.addEventListener("input", () => {
+      state.query = searchInput.value;
+      render();
+    });
+    trackSelect.addEventListener("change", () => {
+      state.track = trackSelect.value;
+      render();
+    });
+    scoreRange.addEventListener("input", () => {
+      state.minScore = Number(scoreRange.value) || 0;
+      render();
+    });
+    resetButton.addEventListener("click", () => {
+      state.query = "";
+      state.track = "all";
+      state.minScore = 0;
+      state.selected = null;
+      searchInput.value = "";
+      trackSelect.value = "all";
+      scoreRange.value = "0";
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>
+""".replace("__DATA__", data_json)
+
+
+def write_dashboard(path: str, payload: dict) -> None:
+    output = pathlib.Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(render_archive_dashboard(payload), encoding="utf-8")
+    print(f"Wrote {output}.")
+
+
 def archive_score_text(summary: dict) -> str:
     score = summary.get("track_score") or {}
     track = score.get("track") or "unknown"
@@ -1612,9 +2338,12 @@ def handle_archive(args: argparse.Namespace) -> None:
         bool(args.archive_list),
         args.archive_search is not None,
         args.archive_show is not None,
+        args.archive_dashboard is not None,
     ]
     if sum(modes) != 1:
-        raise SystemExit("Choose exactly one archive mode: --archive-list, --archive-search, or --archive-show.")
+        raise SystemExit(
+            "Choose exactly one archive mode: --archive-list, --archive-search, --archive-show, or --archive-dashboard."
+        )
     if args.archive_search is not None and not args.archive_search.strip():
         raise SystemExit("--archive-search requires non-empty text.")
 
@@ -1632,9 +2361,15 @@ def handle_archive(args: argparse.Namespace) -> None:
             elif args.archive_search is not None:
                 payload = archive_search_payload(conn, args)
                 markdown = render_archive_search(payload)
-            else:
+            elif args.archive_show is not None:
                 payload = archive_show_payload(conn, args)
                 markdown = render_archive_show(payload)
+            else:
+                payload = archive_dashboard_payload(conn, args)
+                write_dashboard(args.archive_dashboard, payload)
+                if args.json_output:
+                    write_json(args.json_output, payload)
+                return
     finally:
         conn.close()
     emit_archive_result(markdown, payload, args)
@@ -1865,7 +2600,12 @@ def main() -> None:
     args = parse_args()
     run_at = utc_now()
 
-    if args.archive_list or args.archive_search is not None or args.archive_show is not None:
+    if (
+        args.archive_list
+        or args.archive_search is not None
+        or args.archive_show is not None
+        or args.archive_dashboard is not None
+    ):
         handle_archive(args)
         return
 

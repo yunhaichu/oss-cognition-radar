@@ -86,6 +86,24 @@ python3 radar.py \
 python3 radar.py --archive-list --archive-track agent --min-track-score 50
 ```
 
+生成本地浏览器 dashboard：
+
+```bash
+python3 radar.py \
+  --archive-dashboard reports/archive-dashboard.html \
+  --db data/radar.sqlite \
+  --limit 200
+```
+
+也可以同时导出 dashboard 使用的 JSON：
+
+```bash
+python3 radar.py \
+  --archive-dashboard \
+  --db data/radar.sqlite \
+  --json-output reports/archive-dashboard.json
+```
+
 如果设置了 `GITHUB_TOKEN`，API 限额会更高：
 
 ```bash
@@ -150,6 +168,7 @@ SQLite 当前会保存：
 - `--archive-list`：按最新快照列出已归档项目，支持 track 和最低 track score 过滤
 - `--archive-search TEXT`：搜索 repository 元数据、claims 和 evidence 文本
 - `--archive-show owner/name`：优先展示最新 deep dossier，没有 deep 快照时回退到最新 discovery 快照
+- `--archive-dashboard [PATH]`：生成一个可直接打开的静态 HTML dashboard，包含搜索、track 过滤、最低分过滤、项目详情、claims 和 evidence 摘要
 
 `star_growth` 只有在数据库里存在对应窗口附近的历史快照时才会显示真实增量；否则会标记为 `insufficient history`。当前匹配窗口为：1d 使用 1–2 天前快照，7d 使用 7–10 天前快照，30d 使用 30–45 天前快照。这避免把几分钟前的重复运行或过旧快照误当作 1 天增长。
 
@@ -173,4 +192,4 @@ SQLite 当前会保存：
 
 ## 下一步
 
-- 在 SQLite 归档查询基础上做浏览器 dashboard / 知识库视图
+- 为 archive search 增加 SQLite FTS 索引，并把 dashboard 的结果排序从简单包含匹配升级为可解释的 relevance score

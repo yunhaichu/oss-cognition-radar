@@ -8,7 +8,7 @@ Build OSS Cognition Radar: a lightweight tool that studies popular open-source r
 
 The project has pivoted from a simple GitHub hot-project radar to an evidence-backed project dossier generator. Discovery mode still finds candidate repositories; deep mode analyzes one repository through README, docs/examples files, releases, issues, PRs, and governance artifacts. Runs can now be persisted, compared across time, linked through stable dossier/evidence/claim IDs, and scored by project track.
 
-The first archive surface now exists as local SQLite CLI queries. It is not a UI yet, but it lets the project move from one-off reports toward a searchable dossier archive.
+The archive surface now exists in two forms: local SQLite CLI queries and a standalone HTML dashboard export. Together they move the project from one-off reports toward a searchable dossier archive and browser-based knowledge surface.
 
 ## Implemented
 
@@ -21,6 +21,7 @@ The first archive surface now exists as local SQLite CLI queries. It is not a UI
 - Repository health: captures 180d merged PR / closed issue counts, open PRs, release sample cadence, and top contributor samples.
 - Track scoring: classifies projects as agent, developer tools, local-first, protocol, or general, then applies track-specific weights across momentum, collaboration, release, governance, evidence, and ecosystem signals.
 - Archive queries: `--archive-list`, `--archive-search TEXT`, and `--archive-show owner/name` query persisted SQLite snapshots locally, with track and minimum track score filters plus optional Markdown/JSON export.
+- Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
 
@@ -32,6 +33,7 @@ The first archive surface now exists as local SQLite CLI queries. It is not a UI
 - Repository health release/contributor fields are first-pass API samples, not complete longitudinal analytics.
 - Track classification is heuristic and should be refined with manually reviewed samples.
 - Archive search uses SQLite `LIKE` over stored metadata/claims/evidence; it is not full-text indexed yet.
+- Dashboard search is currently client-side substring matching over exported JSON, not ranked retrieval.
 
 ## Release Policy
 
@@ -39,4 +41,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add a browser dashboard / knowledge base view on top of the SQLite archive, or introduce FTS indexes before the UI if search quality becomes the bottleneck.
+Add SQLite FTS indexes and ranked archive search so CLI search and dashboard filtering can share a more explainable relevance model.
