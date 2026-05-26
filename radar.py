@@ -28,9 +28,52 @@ import urllib.request
 API_ROOT = "https://api.github.com"
 USER_AGENT = "oss-cognition-radar"
 MAX_TEXT_CHARS = 5000
+MAX_IMPLEMENTATION_FILE_SIZE = 120_000
 GROWTH_WINDOWS = {"1d": 1, "7d": 7, "30d": 30}
 GROWTH_MAX_AGE_DAYS = {"1d": 2, "7d": 10, "30d": 45}
 ARCHIVE_SEARCH_INDEX_VERSION = 2
+SOURCE_EXTENSIONS = {
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".go",
+    ".rs",
+    ".java",
+    ".kt",
+    ".swift",
+    ".rb",
+    ".php",
+    ".cs",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".h",
+    ".hpp",
+}
+CONFIG_FILENAMES = {
+    "package.json",
+    "pyproject.toml",
+    "cargo.toml",
+    "go.mod",
+    "pom.xml",
+    "build.gradle",
+    "gradle.properties",
+    "requirements.txt",
+    "setup.py",
+    "tsconfig.json",
+    "vite.config.ts",
+    "vite.config.js",
+    "next.config.js",
+    "dockerfile",
+    "docker-compose.yml",
+    "compose.yml",
+    "makefile",
+    ".pre-commit-config.yaml",
+    ".github/workflows/ci.yml",
+    ".github/workflows/test.yml",
+}
 TRACK_WEIGHTS = {
     "agent": {
         "momentum": 0.25,
@@ -230,6 +273,9 @@ def infer_signal_tags(kind: str, title: str, quote: str) -> list[str]:
         "local_control": ["local-first", "self-host", "offline", "sync", "privacy"],
         "release_cadence": ["release", "changelog", "version", "breaking", "migration"],
         "security": ["security", "encryption", "vulnerability", "cve"],
+        "implementation": ["class ", "def ", "function ", "interface ", "struct ", "impl ", "module ", "export "],
+        "test_strategy": ["test", "spec", "assert", "fixture", "mock", "snapshot", "pytest", "describe("],
+        "configuration": ["dependencies", "scripts", "workspace", "tool.", "lint", "build", "ci", "workflow"],
     }
     return [tag for tag, words in rules.items() if has_any(text, words)]
 
@@ -244,6 +290,14 @@ def infer_evidence_type(kind: str, title: str, quote: str) -> str:
         return "user_friction"
     if kind == "Pull Request":
         return "implementation_change"
+    if kind == "Source":
+        return "source_entrypoint"
+    if kind == "Test":
+        return "test_surface"
+    if kind == "Benchmark":
+        return "benchmark"
+    if kind == "Config":
+        return "configuration"
     if has_any(text, ["contributing", "code of conduct", "security", "issue template", "pull_request_template"]):
         return "governance"
     if has_any(text, ["architecture", "roadmap", "non-goal", "not ready", "experimental", "deprecated", "archival", "no longer"]):
@@ -447,6 +501,143 @@ def important_paths(files: list[dict]) -> list[str]:
     return candidates[:8]
 
 
+def path_parts(path: str) -> list[str]:
+    return [part.lower() for part in path.split("/") if part]
+
+
+def source_extension(path: str) -> str:
+    return pathlib.PurePosixPath(path).suffix.lower()
+
+
+def is_generated_or_vendor_path(path: str) -> bool:
+    lowered = path.lower()
+    parts = set(path_parts(path))
+    if parts & {"node_modules", "vendor", "dist", "build", "target", ".next", "coverage", "__pycache__"}:
+        return True
+    return any(
+        marker in lowered
+        for marker in [
+            ".min.js",
+            ".bundle.js",
+            "generated",
+            "snapshot",
+            "fixtures/",
+            "testdata/",
+            "golden/",
+        ]
+    )
+
+
+def classify_implementation_path(path: str) -> str | None:
+    lowered = path.lower()
+    name = lowered.rsplit("/", 1)[-1]
+    parts = set(path_parts(path))
+    suffix = source_extension(path)
+    if is_generated_or_vendor_path(path):
+        return None
+    if (
+        "benchmark" in parts
+        or "benchmarks" in parts
+        or "benches" in parts
+        or name.startswith(("bench_", "benchmark_"))
+        or name.endswith(("_bench.py", "_benchmark.py", "_bench_test.go"))
+    ):
+        return "benchmark"
+    if (
+        "test" in parts
+        or "tests" in parts
+        or "__tests__" in parts
+        or name.startswith(("test_", "spec_"))
+        or name.endswith(("_test.go", ".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx", "_test.py"))
+    ):
+        return "test_surface"
+    if lowered in CONFIG_FILENAMES or name in CONFIG_FILENAMES:
+        return "configuration"
+    if suffix in SOURCE_EXTENSIONS:
+        return "source_entrypoint"
+    return None
+
+
+def implementation_path_score(path: str, evidence_type: str, repo: dict) -> tuple[int, int, str]:
+    lowered = path.lower()
+    name = lowered.rsplit("/", 1)[-1]
+    stem = pathlib.PurePosixPath(name).stem
+    parts = path_parts(path)
+    repo_name = (repo.get("name") or "").lower().replace("-", "_")
+    score = 0
+
+    if evidence_type == "configuration":
+        score += 80
+        if name in {"pyproject.toml", "package.json", "cargo.toml", "go.mod"}:
+            score += 20
+        if lowered.startswith(".github/workflows/"):
+            score += 8
+    elif evidence_type == "benchmark":
+        score += 70
+        if "benchmark" in lowered:
+            score += 15
+    elif evidence_type == "test_surface":
+        score += 60
+        if name.startswith("test_") or name.endswith(("_test.py", "_test.go")):
+            score += 12
+    else:
+        score += 50
+        if name in {"index.ts", "index.js", "main.py", "main.go", "lib.rs", "mod.rs", "__init__.py"}:
+            score += 28
+        if stem in {"api", "client", "server", "core", "graph", "runtime", "engine", "state", "model"}:
+            score += 20
+        if parts and parts[0] in {"src", "lib", "libs", "pkg", "packages", "crates", "internal", "cmd"}:
+            score += 16
+        if repo_name and repo_name in lowered.replace("-", "_"):
+            score += 10
+        if "example" in parts or "examples" in parts:
+            score -= 18
+
+    depth_penalty = min(len(parts), 10)
+    return (-score, depth_penalty, lowered)
+
+
+def implementation_paths(files: list[dict], repo: dict) -> list[tuple[str, str]]:
+    buckets: dict[str, list[tuple[tuple[int, int, str], str]]] = {
+        "source_entrypoint": [],
+        "test_surface": [],
+        "benchmark": [],
+        "configuration": [],
+    }
+    limits = {
+        "source_entrypoint": 5,
+        "test_surface": 4,
+        "benchmark": 3,
+        "configuration": 4,
+    }
+    for item in files:
+        path = item.get("path") or ""
+        if not path:
+            continue
+        size = item.get("size") or 0
+        if size and size > MAX_IMPLEMENTATION_FILE_SIZE:
+            continue
+        evidence_type = classify_implementation_path(path)
+        if not evidence_type:
+            continue
+        buckets[evidence_type].append((implementation_path_score(path, evidence_type, repo), path))
+
+    selected: list[tuple[str, str]] = []
+    for evidence_type in ("source_entrypoint", "test_surface", "benchmark", "configuration"):
+        ranked = sorted(buckets[evidence_type], key=lambda item: item[0])
+        selected.extend((path, evidence_type) for _, path in ranked[: limits[evidence_type]])
+    return selected
+
+
+def implementation_kind(evidence_type: str) -> str:
+    return {
+        "source_entrypoint": "Source",
+        "test_surface": "Test",
+        "benchmark": "Benchmark",
+        "configuration": "Config",
+    }.get(evidence_type, "File")
+
+
 def fetch_file_text(repo: dict, path: str) -> tuple[str, str]:
     data = github_get_optional(f"/repos/{repo['full_name']}/contents/{urllib.parse.quote(path)}")
     if not isinstance(data, dict):
@@ -550,10 +741,29 @@ def build_evidence(repo: dict) -> list[Evidence]:
         )
 
     files = fetch_tree_files(repo)
-    for path in important_paths(files):
+    selected_doc_paths = important_paths(files)
+    selected_doc_path_set = set(selected_doc_paths)
+    for path in selected_doc_paths:
         text, url = fetch_file_text(repo, path)
         if text:
             evidence.append(make_evidence(f"E{len(evidence) + 1}", 1, "File", path, url, excerpt(text, 700)))
+
+    for path, evidence_type in implementation_paths(files, repo):
+        if path in selected_doc_path_set:
+            continue
+        text, url = fetch_file_text(repo, path)
+        if text:
+            evidence.append(
+                make_evidence(
+                    f"E{len(evidence) + 1}",
+                    1,
+                    implementation_kind(evidence_type),
+                    path,
+                    url,
+                    excerpt(text, 700),
+                    evidence_type,
+                )
+            )
 
     for release in fetch_releases(full_name):
         title = release.get("name") or release.get("tag_name") or "Release"
@@ -820,6 +1030,45 @@ def claim_governance(evidence: list[Evidence], text: str) -> Claim:
         "贡献入口/模板/安全流程 -> 治理结构 -> 维护者认知负担",
         "治理 claim 优先引用 CONTRIBUTING、模板、安全文件和 issue 分流证据。",
         counter_evidence(evidence, ["bug", "confusing", "discussion", "support"]),
+    )
+
+
+def claim_implementation_layer(evidence: list[Evidence]) -> Claim:
+    implementation_types = {"source_entrypoint", "test_surface", "benchmark", "configuration"}
+    selected = [item for item in evidence if item.evidence_type in implementation_types]
+    selected.sort(
+        key=lambda item: (
+            {
+                "source_entrypoint": 0,
+                "test_surface": 1,
+                "benchmark": 2,
+                "configuration": 3,
+            }.get(item.evidence_type, 9),
+            item.evidence_id,
+        )
+    )
+    ids = [item.evidence_id for item in selected[:5]]
+    types = {item.evidence_type for item in selected}
+    if {"source_entrypoint", "test_surface"} <= types:
+        claim = "项目的认知模式可以继续从源码入口和测试面复核，避免只停留在 README、issue 和 release 叙事。"
+        confidence = "medium"
+    elif "source_entrypoint" in types:
+        claim = "项目已经抓到源码入口证据，但测试/benchmark 证据不足，后续复核仍偏实现阅读。"
+        confidence = "medium"
+    elif selected:
+        claim = "项目已有部分实现层证据，但不足以稳定支撑架构判断，需要扩展源码和测试采样。"
+        confidence = "low"
+    else:
+        claim = "本次未抓到实现层证据；当前 dossier 仍主要依赖文档、issue、PR 和 release。"
+        confidence = "low"
+    return make_claim(
+        "实现层复核线索",
+        claim,
+        ids,
+        confidence,
+        "源码/测试/benchmark/config -> claim 可复核性",
+        "实现层证据用于校验前面的抽象、复杂度和治理判断，降低纯文本叙事带来的偏差。",
+        counter_evidence(evidence, ["deprecated", "no longer", "experimental", "bug", "failed"]),
     )
 
 
@@ -3220,6 +3469,7 @@ def build_claims(repo: dict, evidence: list[Evidence]) -> list[Claim]:
         claim_key_abstractions(evidence, text),
         claim_boundaries(evidence, text),
         claim_complexity(evidence, text),
+        claim_implementation_layer(evidence),
         claim_governance(evidence, text),
         make_claim(
             "可复用思想",

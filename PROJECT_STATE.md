@@ -19,6 +19,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Star growth: reports real 1d/7d/30d star deltas when enough historical SQLite snapshots exist.
 - Stable IDs: adds dossier IDs, claim IDs, evidence stable IDs, and claim-to-evidence stable references for JSON/search use.
 - Evidence quality fields: deep evidence now carries `evidence_type`, `polarity`, and `signal_tags`; claims carry `template`, `rationale`, `counter_evidence_ids`, and counter-evidence stable references.
+- Implementation-layer evidence: deep mode now samples source entrypoints, tests, benchmarks, and configuration files from the Git tree, then emits an `实现层复核线索` claim so high-level judgments can be checked against code artifacts.
 - Repository health: captures 180d merged PR / closed issue counts, open PRs, release sample cadence, and top contributor samples.
 - Track scoring: classifies projects as agent, developer tools, local-first, protocol, or general, then applies track-specific weights across momentum, collaboration, release, governance, evidence, and ecosystem signals.
 - Archive queries: `--archive-list`, `--archive-search TEXT`, and `--archive-show owner/name` query persisted SQLite snapshots locally, with track and minimum track score filters plus optional Markdown/JSON export.
@@ -32,6 +33,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Evidence extraction is heuristic and limited to a small number of files, releases, issues, and PRs.
 - No LLM analysis yet; claims are rule-based and should be treated as first-pass research prompts.
 - Evidence type/polarity classification is rule-based and can still misclassify domain-specific wording.
+- Implementation-layer file selection is heuristic and may miss the true core module in unusual repository layouts.
 - Star growth depends on repeated snapshots; fresh databases correctly show insufficient history.
 - Repository health release/contributor fields are first-pass API samples, not complete longitudinal analytics.
 - Track classification is heuristic and should be refined with manually reviewed samples.
@@ -43,4 +45,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Expand evidence collection into implementation-layer artifacts such as core source entrypoints, tests, benchmarks, and configuration files so claims can be checked against code, not only docs/issues/releases.
+Add claim support coverage so each claim can show whether it is backed only by narrative artifacts or also by source, tests, benchmarks, and configuration evidence.

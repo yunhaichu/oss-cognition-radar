@@ -135,6 +135,7 @@ export GITHUB_TOKEN=ghp_xxx
 - 关键抽象
 - 架构边界
 - 复杂度藏处
+- 实现层复核线索
 - 治理模式
 - 可复用思想
 - 不可复制条件
@@ -191,11 +192,18 @@ SQLite 当前会保存：
 
 深度 dossier 会把 evidence 标成更细的类型和极性：
 
-- `evidence_type`：例如 `positioning`、`governance`、`boundary`、`release_delta`、`user_friction`、`implementation_change`
+- `evidence_type`：例如 `positioning`、`governance`、`boundary`、`source_entrypoint`、`test_surface`、`benchmark`、`configuration`、`release_delta`、`user_friction`、`implementation_change`
 - `polarity`：`supporting`、`boundary`、`negative`
-- `signal_tags`：例如 `abstraction`、`complexity`、`recoverability`、`governance`、`performance`
+- `signal_tags`：例如 `abstraction`、`complexity`、`recoverability`、`governance`、`performance`、`implementation`、`test_strategy`、`configuration`
 
 claim 现在会记录 `template` 和 `rationale`，并把边界/反向证据放到 `counter_evidence_ids`。这让报告更像可审查的研究笔记，而不是单向总结。
+
+实现层证据会从 Git tree 中限量抽取：
+
+- 核心源码入口：`src`、`lib`、`packages`、`pkg`、`crates` 等目录中的主要源码文件
+- 测试面：`tests`、`__tests__`、`*_test.*`、`*.spec.*` 等
+- benchmark：`benchmark`、`benchmarks`、`bench` 等
+- 配置面：`pyproject.toml`、`package.json`、`Cargo.toml`、`go.mod`、CI/workflow 等
 
 ## 方法原则
 
@@ -213,4 +221,4 @@ claim 现在会记录 `template` 和 `rationale`，并把边界/反向证据放�
 
 ## 下一步
 
-- 扩展证据采集面：补充核心源码入口、测试、benchmark 和配置文件，让 claim 能被实现层证据复核
+- 基于实现层证据给 claim 增加 support coverage：区分只有叙事支撑、已有源码支撑、已有测试/benchmark 支撑的判断
