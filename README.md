@@ -76,6 +76,11 @@ python3 radar.py --archive-show langchain-ai/langgraph --db data/radar.sqlite
 
 ```bash
 python3 radar.py --archive-patterns --db data/radar.sqlite --limit 20
+
+python3 radar.py --archive-patterns \
+  --db data/radar.sqlite \
+  --archive-signal-group drift \
+  --limit 20
 ```
 
 自动校准 archive 中的 acquisition binding confidence。该步骤不需要人工标注，会根据跨项目重复性、同仓库跨版本稳定性、release/issue/PR 时间序列、证据类型、证据极性、稳定链接和关键词稀疏度等归档信号生成 `archive_auto_v1` confidence：
@@ -206,6 +211,7 @@ SQLite 当前会保存：
 - `--archive-search TEXT`：用 SQLite FTS5 搜索 repository 元数据、claims、claim gaps、evidence acquisition bindings 和 evidence 文本，并返回 relevance 信息
 - `--archive-show owner/name`：优先展示最新 deep dossier，没有 deep 快照时回退到最新 discovery 快照
 - `--archive-patterns`：聚合最新 deep dossiers 中的 evidence acquisition bindings，按 claim 字段和缺口证据层输出跨项目重复模式、例子仓库和 evidence
+- `--archive-signal-group GROUP`：仅用于 `--archive-patterns` / `--archive-dashboard`，按自动 confidence signal group 过滤，例如 `time_series`、`drift`、`pattern`、`evidence`
 - `--archive-auto-calibrate`：不依赖人工标注，按 archive 内部信号自动重算 acquisition binding confidence，并重建 archive search index
 - `--archive-dashboard [PATH]`：生成一个可直接打开的静态 HTML dashboard，包含搜索、track 过滤、confidence source 过滤、最低分过滤、跨项目 patterns、项目详情、claims、claim gaps、evidence acquisition bindings 和 evidence 摘要
 
@@ -247,6 +253,8 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 自动校准不会删除原始 heuristic 分数。应用校准后，归档读取会把 `archive_auto_v1` 作为有效 confidence，同时保留 `heuristic` 子字段，方便比较自动归档信号和原始规则信号。
 
+`--archive-patterns` 的 `pattern_score` 现在会同时考虑重复度、平均绑定可靠度和 `signal_breakdown` 的结构分。含有 `time_series`、`drift`、`pattern`、`evidence` 等自动信号的模式会在 JSON、Markdown 和 dashboard 中暴露 `signal_group_score`、`signal_groups` 和 `signal_labels`，并可用 `--archive-signal-group` 或 dashboard 的 Signal group 过滤器筛选。
+
 实现层证据会从 Git tree 中限量抽取：
 
 - 核心源码入口：`src`、`lib`、`packages`、`pkg`、`crates` 等目录中的主要源码文件
@@ -270,4 +278,4 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 ## 下一步
 
-- 用 `signal_breakdown` 继续强化 archive patterns 的可靠度排序和过滤，让跨项目设计模式不仅按重复次数排序，也按自动证据结构排序
+- 基于 signal-ranked archive patterns 生成跨项目认知模式摘要，让系统自动解释“哪些设计动作在强证据结构中反复出现”

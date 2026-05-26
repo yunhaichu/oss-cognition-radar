@@ -28,6 +28,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Binding confidence: acquisition bindings now carry a heuristic `binding_confidence` score/label/calibration/signals field, persisted in SQLite and surfaced in archive show/search, patterns, and dashboard views.
 - Automatic confidence calibration: `--archive-auto-calibrate` recalculates binding confidence from archive-only signals such as cross-project repetition, same-repository cross-version stability/drift, release/issue/PR activity trends, evidence type, polarity, stable URLs, and keyword sparsity, while preserving the original heuristic score.
 - Confidence signal breakdowns: binding confidence now carries a derived `signal_breakdown` grouped into time-series, cross-version drift, archive pattern, evidence quality, and calibration buckets; archive show and dashboard detail views surface those buckets without any reviewer input.
+- Signal-ranked archive patterns: `--archive-patterns` now scores and sorts patterns from repetition, average binding confidence, and automatic signal group structure; `--archive-signal-group` and dashboard Signal group filtering can isolate time-series, drift, pattern, or evidence-backed repair moves.
 - Dashboard patterns: the static dashboard now includes a cross-project patterns band with repeated claim-gap repair moves and average binding confidence.
 - Repository health: captures 180d merged PR / closed issue counts, open PRs, release sample cadence, and top contributor samples.
 - Track scoring: classifies projects as agent, developer tools, local-first, protocol, or general, then applies track-specific weights across momentum, collaboration, release, governance, evidence, and ecosystem signals.
@@ -45,7 +46,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Implementation-layer file selection is heuristic and may miss the true core module in unusual repository layouts.
 - Support coverage reflects evidence linked to each claim; targeted bindings can now add missing-layer evidence, but those bindings are still heuristic and can over-associate broad artifacts.
 - Binding confidence calibration is fully automatic and rule-based; `archive_auto_v1` now includes first-pass longitudinal stability/drift signal breakdowns but still has no learned model.
-- Cross-project pattern grouping is currently deterministic and shallow; it groups exact claim fields and evidence layers, not semantic variants across differently named claims.
+- Cross-project pattern grouping is currently deterministic and shallow; signal-ranked sorting improves evidence structure awareness, but grouping still uses exact claim fields and evidence layers rather than semantic variants across differently named claims.
 - Star growth depends on repeated snapshots; fresh databases correctly show insufficient history.
 - Repository health release/contributor fields are first-pass API samples, not complete longitudinal analytics.
 - Track classification is heuristic and should be refined with stronger automatic repository behavior signals.
@@ -57,4 +58,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Use `signal_breakdown` to strengthen archive pattern ranking/filtering so repeated claim-gap repair moves can be sorted by automatic evidence structure, not just repetition count.
+Generate automatic summaries from signal-ranked archive patterns so repeated design and cognition moves can be explained from strong evidence structures without reviewer input.

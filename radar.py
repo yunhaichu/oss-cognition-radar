@@ -64,6 +64,23 @@ AUTO_CONFIDENCE_ARCHIVE_WEIGHTS = {
     "stable_artifact_url": 3,
     "keyword_sparse": -4,
 }
+CONFIDENCE_SIGNAL_GROUPS = [
+    ("time_series", "Time series"),
+    ("drift", "Version drift"),
+    ("pattern", "Archive pattern"),
+    ("evidence", "Evidence quality"),
+    ("calibration", "Calibration"),
+    ("other", "Other"),
+]
+CONFIDENCE_SIGNAL_GROUP_CHOICES = [group for group, _label in CONFIDENCE_SIGNAL_GROUPS]
+PATTERN_SIGNAL_GROUP_WEIGHTS = {
+    "time_series": 10,
+    "drift": 10,
+    "pattern": 5,
+    "evidence": 5,
+    "calibration": 0,
+    "other": 0,
+}
 SOURCE_EXTENSIONS = {
     ".py",
     ".ts",
@@ -219,6 +236,11 @@ def parse_args() -> argparse.Namespace:
         help="Archive mode: filter repositories by project track.",
     )
     parser.add_argument("--min-track-score", type=float, default=0.0, help="Archive mode: minimum track score.")
+    parser.add_argument(
+        "--archive-signal-group",
+        choices=CONFIDENCE_SIGNAL_GROUP_CHOICES,
+        help="Archive patterns/dashboard mode: filter acquisition patterns by automatic confidence signal group.",
+    )
     parser.add_argument("--archive-output", help="Archive mode: optional Markdown output path. Defaults to stdout.")
     return parser.parse_args()
 
@@ -1048,16 +1070,6 @@ def normalized_binding_signal(signal: str) -> str:
     return signal
 
 
-CONFIDENCE_SIGNAL_GROUPS = [
-    ("time_series", "Time series"),
-    ("drift", "Version drift"),
-    ("pattern", "Archive pattern"),
-    ("evidence", "Evidence quality"),
-    ("calibration", "Calibration"),
-    ("other", "Other"),
-]
-
-
 def confidence_signal_group(signal: str) -> str:
     if signal.startswith(("repo_activity:", "repo_history:", "release_cadence:")):
         return "time_series"
@@ -1143,6 +1155,35 @@ def confidence_signal_breakdown(signals: list | tuple | None) -> list[dict]:
             }
         )
     return [buckets[group] for group, _label in CONFIDENCE_SIGNAL_GROUPS if buckets[group]["signals"]]
+
+
+def confidence_signal_group_names(confidence: dict | None) -> list[str]:
+    if not confidence:
+        return []
+    breakdown = confidence.get("signal_breakdown") or confidence_signal_breakdown(confidence.get("signals") or [])
+    names = []
+    for group in breakdown:
+        name = str(group.get("group") or "")
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def confidence_signal_group_score(confidence: dict | None) -> int:
+    return sum(PATTERN_SIGNAL_GROUP_WEIGHTS.get(group, 0) for group in confidence_signal_group_names(confidence))
+
+
+def confidence_signal_labels(confidence: dict | None) -> list[str]:
+    if not confidence:
+        return []
+    breakdown = confidence.get("signal_breakdown") or confidence_signal_breakdown(confidence.get("signals") or [])
+    labels = []
+    for group in breakdown:
+        for signal in group.get("signals") or []:
+            label = str(signal.get("label") or signal.get("raw") or "")
+            if label and label not in labels:
+                labels.append(label)
+    return labels
 
 
 def binding_confidence_weight_snapshot() -> dict:
@@ -3859,6 +3900,16 @@ def top_count_items(counts: dict[str, int], limit: int = 8) -> list[dict]:
     ]
 
 
+def aggregate_pattern_count_items(patterns: list[dict], key: str, limit: int = 8) -> list[dict]:
+    counts: dict[str, int] = {}
+    for pattern in patterns:
+        for item in pattern.get(key) or []:
+            value = item.get("value")
+            if value:
+                counts[value] = counts.get(value, 0) + int(item.get("count") or 0)
+    return top_count_items(counts, limit=limit)
+
+
 def query_archive_pattern_bindings(
     conn: sqlite3.Connection,
     track: str | None = None,
@@ -3927,6 +3978,16 @@ def query_archive_pattern_bindings(
             "signal_tags": safe_json_loads(row["signal_tags_json"], []),
         }
         for row in rows
+    ]
+
+
+def filter_archive_pattern_rows_by_signal_group(rows: list[dict], signal_group: str | None) -> list[dict]:
+    if not signal_group:
+        return rows
+    return [
+        row
+        for row in rows
+        if signal_group in confidence_signal_group_names(row.get("binding_confidence") or {})
     ]
 
 
@@ -4338,6 +4399,9 @@ def build_archive_acquisition_patterns(rows: list[dict], limit: int) -> list[dic
                 "_confidence_scores": [],
                 "_confidence_label_counts": {},
                 "_confidence_source_counts": {},
+                "_signal_group_counts": {},
+                "_signal_label_counts": {},
+                "_signal_group_scores": [],
                 "examples": [],
             },
         )
@@ -4352,6 +4416,11 @@ def build_archive_acquisition_patterns(rows: list[dict], limit: int) -> list[dic
             pattern["_confidence_scores"].append(confidence["score"])
         count_value(pattern["_confidence_label_counts"], confidence.get("label"))
         count_value(pattern["_confidence_source_counts"], confidence.get("source") or "heuristic")
+        pattern["_signal_group_scores"].append(confidence_signal_group_score(confidence))
+        for group in confidence_signal_group_names(confidence):
+            count_value(pattern["_signal_group_counts"], group)
+        for label in confidence_signal_labels(confidence):
+            count_value(pattern["_signal_label_counts"], label)
         for keyword in row.get("keywords") or []:
             count_value(pattern["_keyword_counts"], keyword)
 
@@ -4389,17 +4458,26 @@ def build_archive_acquisition_patterns(rows: list[dict], limit: int) -> list[dic
         )
         repo_count = len(repositories)
         binding_count = pattern["binding_count"]
+        signal_group_scores = pattern.pop("_signal_group_scores")
+        signal_group_score = mean_number(signal_group_scores) or 0
+        repeat_score = min(48, repo_count * 14 + binding_count * 4)
+        confidence_score = min(22, round((average_confidence or 0) * 0.22))
         pattern.update(
             {
                 "repository_count": repo_count,
                 "repositories": repositories[:12],
                 "repeat_status": "cross_project" if repo_count >= 2 else "single_project",
-                "pattern_score": min(100, repo_count * 18 + binding_count * 6),
+                "repeat_score": repeat_score,
+                "confidence_score": confidence_score,
+                "signal_group_score": signal_group_score,
+                "pattern_score": min(100, int(round(repeat_score + confidence_score + signal_group_score))),
                 "average_binding_confidence": average_confidence,
                 "minimum_binding_confidence": min(confidence_scores) if confidence_scores else None,
                 "reliability_status": binding_confidence_label(average_confidence or 0),
                 "confidence_labels": top_count_items(pattern.pop("_confidence_label_counts")),
                 "confidence_sources": top_count_items(pattern.pop("_confidence_source_counts")),
+                "signal_groups": top_count_items(pattern.pop("_signal_group_counts")),
+                "signal_labels": top_count_items(pattern.pop("_signal_label_counts"), limit=10),
                 "tracks": top_count_items(pattern.pop("_track_counts")),
                 "evidence_types": top_count_items(pattern.pop("_evidence_type_counts")),
                 "evidence_kinds": top_count_items(pattern.pop("_evidence_kind_counts")),
@@ -4411,10 +4489,11 @@ def build_archive_acquisition_patterns(rows: list[dict], limit: int) -> list[dic
 
     patterns.sort(
         key=lambda item: (
+            -item["pattern_score"],
+            -(item.get("signal_group_score") or 0),
+            -(item.get("average_binding_confidence") or 0),
             -item["repository_count"],
             -item["binding_count"],
-            -(item.get("average_binding_confidence") or 0),
-            -item["pattern_score"],
             item["field"],
             item["missing_layer"],
         )
@@ -4437,6 +4516,7 @@ def archive_filters_payload(args: argparse.Namespace) -> dict:
         "limit": args.limit,
         "track": args.archive_track,
         "min_track_score": args.min_track_score,
+        "signal_group": getattr(args, "archive_signal_group", None),
     }
 
 
@@ -4495,11 +4575,13 @@ def archive_show_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> 
 
 
 def archive_patterns_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
+    signal_group = getattr(args, "archive_signal_group", None)
     rows = query_archive_pattern_bindings(
         conn,
         track=args.archive_track,
         min_track_score=args.min_track_score,
     )
+    rows = filter_archive_pattern_rows_by_signal_group(rows, signal_group)
     patterns = build_archive_acquisition_patterns(rows, args.limit)
     repositories = sorted({row.get("repo_full_name") for row in rows if row.get("repo_full_name")})
     pattern_confidences = [
@@ -4520,19 +4602,33 @@ def archive_patterns_payload(conn: sqlite3.Connection, args: argparse.Namespace)
             "repositories": len(repositories),
             "cross_project_patterns": sum(1 for item in patterns if item.get("repository_count", 0) >= 2),
             "average_pattern_confidence": round(sum(pattern_confidences) / len(pattern_confidences), 1) if pattern_confidences else None,
+            "average_pattern_signal_score": mean_number(
+                [item.get("signal_group_score") for item in patterns if isinstance(item.get("signal_group_score"), (int, float))]
+            ),
+            "signal_groups": aggregate_pattern_count_items(patterns, "signal_groups"),
         },
         "patterns": patterns,
     }
 
 
 def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
+    signal_group = getattr(args, "archive_signal_group", None)
     index_status = rebuild_archive_search_index(conn)
+    pattern_rows = query_archive_pattern_bindings(
+        conn,
+        track=args.archive_track,
+        min_track_score=args.min_track_score,
+    )
+    pattern_rows = filter_archive_pattern_rows_by_signal_group(pattern_rows, signal_group)
+    signal_group_repositories = {row.get("repo_full_name") for row in pattern_rows if row.get("repo_full_name")}
     repositories = query_latest_archive_snapshots(
         conn,
         args.limit,
         track=args.archive_track,
         min_track_score=args.min_track_score,
     )
+    if signal_group:
+        repositories = [summary for summary in repositories if summary.get("full_name") in signal_group_repositories]
     dossiers = {}
     for summary in repositories:
         dossier = query_archive_show(conn, summary["full_name"]) or {}
@@ -4546,11 +4642,6 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
             "dossier_run_mode": ((dossier.get("repository") or {}).get("run_mode")),
         }
 
-    pattern_rows = query_archive_pattern_bindings(
-        conn,
-        track=args.archive_track,
-        min_track_score=args.min_track_score,
-    )
     patterns = build_archive_acquisition_patterns(pattern_rows, args.limit)
     scores = [
         (summary.get("track_score") or {}).get("score")
@@ -4588,6 +4679,10 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
             "acquisition_patterns": len(patterns),
             "cross_project_patterns": sum(1 for item in patterns if item.get("repository_count", 0) >= 2),
             "average_pattern_confidence": round(sum(pattern_confidences) / len(pattern_confidences), 1) if pattern_confidences else None,
+            "average_pattern_signal_score": mean_number(
+                [item.get("signal_group_score") for item in patterns if isinstance(item.get("signal_group_score"), (int, float))]
+            ),
+            "signal_groups": aggregate_pattern_count_items(patterns, "signal_groups"),
             "average_track_score": round(sum(scores) / len(scores), 1) if scores else None,
             "confidence_sources": top_count_items(confidence_sources),
             "tracks": tracks,
@@ -4668,7 +4763,7 @@ def render_archive_dashboard(payload: dict) -> str:
 
     .toolbar {
       display: grid;
-      grid-template-columns: minmax(220px, 1fr) 180px 170px 220px 92px;
+      grid-template-columns: minmax(220px, 1fr) 150px 160px 170px 220px 92px;
       gap: 10px;
       padding: 12px 24px;
       border-bottom: 1px solid var(--line);
@@ -5011,6 +5106,7 @@ def render_archive_dashboard(payload: dict) -> str:
       <input id="searchInput" type="search" placeholder="Search repositories, patterns, claims, gaps, bindings, evidence" autocomplete="off">
       <select id="trackSelect" aria-label="Track"></select>
       <select id="confidenceSourceSelect" aria-label="Confidence source"></select>
+      <select id="signalGroupSelect" aria-label="Signal group"></select>
       <label class="range" for="scoreRange">
         <input id="scoreRange" type="range" min="0" max="100" step="1" value="0">
         <output id="scoreOutput">0</output>
@@ -5042,7 +5138,7 @@ def render_archive_dashboard(payload: dict) -> str:
 
   <script>
     const DATA = __DATA__;
-    const state = { query: "", track: "all", confidenceSource: "all", minScore: 0, selected: null };
+    const state = { query: "", track: "all", confidenceSource: "all", signalGroup: DATA.filters?.signal_group || "all", minScore: 0, selected: null };
     const repos = DATA.repositories || [];
     const dossiers = DATA.dossiers || {};
     const patterns = DATA.patterns || [];
@@ -5050,6 +5146,7 @@ def render_archive_dashboard(payload: dict) -> str:
     const searchInput = document.getElementById("searchInput");
     const trackSelect = document.getElementById("trackSelect");
     const confidenceSourceSelect = document.getElementById("confidenceSourceSelect");
+    const signalGroupSelect = document.getElementById("signalGroupSelect");
     const scoreRange = document.getElementById("scoreRange");
     const scoreOutput = document.getElementById("scoreOutput");
     const resetButton = document.getElementById("resetButton");
@@ -5150,12 +5247,21 @@ def render_archive_dashboard(payload: dict) -> str:
       ].filter(Boolean).join(" ");
     }
 
+    function confidenceHasSignalGroup(confidence, group) {
+      if (group === "all") return true;
+      return confidenceSignalBreakdown(confidence).some((item) => item.group === group);
+    }
+
     function dossierOf(repo) {
       return dossiers[repo.full_name] || { claims: [], claim_gap_report: [], evidence_acquisition: {}, evidence: [] };
     }
 
     function bindingMatchesConfidenceSource(binding) {
       return state.confidenceSource === "all" || confidenceSource(binding?.binding_confidence) === state.confidenceSource;
+    }
+
+    function bindingMatchesSignalGroup(binding) {
+      return confidenceHasSignalGroup(binding?.binding_confidence, state.signalGroup);
     }
 
     function repoMatchesConfidenceSource(repo) {
@@ -5166,9 +5272,22 @@ def render_archive_dashboard(payload: dict) -> str:
       return [...acquisitionBindings, ...evidenceBindings].some(bindingMatchesConfidenceSource);
     }
 
+    function repoMatchesSignalGroup(repo) {
+      if (state.signalGroup === "all") return true;
+      const dossier = dossierOf(repo);
+      const acquisitionBindings = (dossier.evidence_acquisition || {}).bindings || [];
+      const evidenceBindings = (dossier.evidence || []).flatMap((item) => item.acquisition_bindings || []);
+      return [...acquisitionBindings, ...evidenceBindings].some(bindingMatchesSignalGroup);
+    }
+
     function patternMatchesConfidenceSource(pattern) {
       if (state.confidenceSource === "all") return true;
       return (pattern.confidence_sources || []).some((item) => item.value === state.confidenceSource);
+    }
+
+    function patternMatchesSignalGroup(pattern) {
+      if (state.signalGroup === "all") return true;
+      return (pattern.signal_groups || []).some((item) => item.value === state.signalGroup);
     }
 
     function patternCorpus(pattern) {
@@ -5178,12 +5297,18 @@ def render_archive_dashboard(payload: dict) -> str:
         pattern.missing_layer_label,
         pattern.repeat_status,
         pattern.reliability_status,
+        pattern.pattern_score,
+        pattern.signal_group_score,
+        pattern.repeat_score,
+        pattern.confidence_score,
         (pattern.repositories || []).join(" "),
         ...(pattern.keywords || []).map((item) => item.value),
         ...(pattern.evidence_types || []).map((item) => item.value),
         ...(pattern.evidence_kinds || []).map((item) => item.value),
         ...(pattern.confidence_labels || []).map((item) => item.value),
         ...(pattern.confidence_sources || []).map((item) => item.value),
+        ...(pattern.signal_groups || []).map((item) => item.value),
+        ...(pattern.signal_labels || []).map((item) => item.value),
         ...(pattern.examples || []).flatMap((item) => [
           item.repo_full_name,
           item.evidence_title,
@@ -5315,6 +5440,7 @@ def render_archive_dashboard(payload: dict) -> str:
       const items = repos.filter((repo) => {
         if (state.track !== "all" && trackOf(repo) !== state.track) return false;
         if (!repoMatchesConfidenceSource(repo)) return false;
+        if (!repoMatchesSignalGroup(repo)) return false;
         if (scoreOf(repo) < state.minScore) return false;
         if (query && !corpusOf(repo).includes(query)) return false;
         return true;
@@ -5354,6 +5480,29 @@ def render_archive_dashboard(payload: dict) -> str:
       ].join("");
     }
 
+    function renderSignalGroupOptions() {
+      const groups = Array.from(new Set([
+        ...(DATA.statistics?.signal_groups || []).map((item) => item.value),
+        ...patterns.flatMap((pattern) => (pattern.signal_groups || []).map((item) => item.value)),
+        ...repos.flatMap((repo) => {
+          const dossier = dossierOf(repo);
+          const bindings = [
+            ...((dossier.evidence_acquisition || {}).bindings || []),
+            ...((dossier.evidence || []).flatMap((item) => item.acquisition_bindings || [])),
+          ];
+          return bindings.flatMap((binding) =>
+            confidenceSignalBreakdown(binding.binding_confidence).map((item) => item.group)
+          );
+        }),
+      ].filter(Boolean))).sort();
+      signalGroupSelect.innerHTML = [
+        '<option value="all">All signal groups</option>',
+        ...groups.map((group) => `<option value="${escapeHtml(group)}">${escapeHtml(group)}</option>`),
+      ].join("");
+      signalGroupSelect.value = groups.includes(state.signalGroup) ? state.signalGroup : "all";
+      state.signalGroup = signalGroupSelect.value;
+    }
+
     function renderStats(items) {
       const deepCount = items.filter((repo) => {
         const dossier = dossierOf(repo);
@@ -5362,7 +5511,7 @@ def render_archive_dashboard(payload: dict) -> str:
       const claimCount = items.reduce((sum, repo) => sum + (dossierOf(repo).claims || []).length, 0);
       const gapCount = items.reduce((sum, repo) => sum + (dossierOf(repo).claim_gap_report || []).length, 0);
       const bindingCount = items.reduce((sum, repo) => sum + ((dossierOf(repo).evidence_acquisition || {}).binding_count || 0), 0);
-      const patternCount = patterns.length;
+      const patternCount = filteredPatterns().length;
       const evidenceCount = items.reduce((sum, repo) => sum + (dossierOf(repo).evidence || []).length, 0);
       const average = items.length
         ? items.reduce((sum, repo) => sum + scoreOf(repo), 0) / items.length
@@ -5404,6 +5553,7 @@ def render_archive_dashboard(payload: dict) -> str:
       const query = state.query.trim().toLowerCase();
       return patterns.filter((pattern) => {
         if (!patternMatchesConfidenceSource(pattern)) return false;
+        if (!patternMatchesSignalGroup(pattern)) return false;
         if (query && !patternCorpus(pattern).includes(query)) return false;
         return true;
       });
@@ -5416,9 +5566,11 @@ def render_archive_dashboard(payload: dict) -> str:
         return;
       }
       const averageConfidence = DATA.statistics?.average_pattern_confidence;
+      const averageSignal = DATA.statistics?.average_pattern_signal_score;
       const cards = items.map((pattern) => {
         const topKeyword = (pattern.keywords || [])[0]?.value;
         const topEvidenceType = (pattern.evidence_types || [])[0]?.value;
+        const topSignalGroups = (pattern.signal_groups || []).slice(0, 6);
         const confidence = {
           label: pattern.reliability_status,
           score: pattern.average_binding_confidence,
@@ -5431,10 +5583,12 @@ def render_archive_dashboard(payload: dict) -> str:
               <span class="chip">Repos ${escapeHtml(pattern.repository_count || 0)}</span>
               <span class="chip">Bindings ${escapeHtml(pattern.binding_count || 0)}</span>
               <span class="chip ${confidenceClass(confidence)}">Confidence ${escapeHtml(confidenceText(confidence))}</span>
+              <span class="chip">Signal score ${escapeHtml(pattern.signal_group_score ?? 0)}</span>
               ${(pattern.confidence_sources || []).slice(0, 2).map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
             </div>
             <p class="subtle">${escapeHtml(compact((pattern.repositories || []).join(", "), 120))}</p>
             <div class="chips">
+              ${topSignalGroups.map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
               ${topEvidenceType ? `<span class="chip">${escapeHtml(topEvidenceType)}</span>` : ""}
               ${topKeyword ? `<span class="chip">${escapeHtml(topKeyword)}</span>` : ""}
               <span class="chip">Score ${escapeHtml(pattern.pattern_score ?? 0)}</span>
@@ -5445,7 +5599,7 @@ def render_archive_dashboard(payload: dict) -> str:
       patternsPanel.innerHTML = `
         <div class="patterns-head">
           <div class="section-title">Cross-project Patterns</div>
-          <div class="count">${escapeHtml(items.length)} / ${escapeHtml(patterns.length)}${averageConfidence ? " · avg confidence " + escapeHtml(averageConfidence) : ""}</div>
+          <div class="count">${escapeHtml(items.length)} / ${escapeHtml(patterns.length)}${averageConfidence ? " · avg confidence " + escapeHtml(averageConfidence) : ""}${averageSignal ? " · avg signal " + escapeHtml(averageSignal) : ""}</div>
         </div>
         <div class="patterns-grid">${cards || '<div class="empty">No matching patterns.</div>'}</div>
       `;
@@ -5513,7 +5667,7 @@ def render_archive_dashboard(payload: dict) -> str:
       const dossier = dossierOf(repo);
       const acquisition = dossier.evidence_acquisition || {};
       const bindings = acquisition.bindings || [];
-      const displayedBindings = bindings.filter(bindingMatchesConfidenceSource);
+      const displayedBindings = bindings.filter((binding) => bindingMatchesConfidenceSource(binding) && bindingMatchesSignalGroup(binding));
       const health = repo.health || {};
       const signals = repo.track_score?.signals || {};
       const signalChips = Object.entries(signals).map(([name, value]) =>
@@ -5563,10 +5717,13 @@ def render_archive_dashboard(payload: dict) -> str:
         </article>
       `).join("");
       const evidence = (dossier.evidence || [])
-        .filter((item) => state.confidenceSource === "all" || (item.acquisition_bindings || []).some(bindingMatchesConfidenceSource))
+        .filter((item) => {
+          if (state.confidenceSource === "all" && state.signalGroup === "all") return true;
+          return (item.acquisition_bindings || []).some((binding) => bindingMatchesConfidenceSource(binding) && bindingMatchesSignalGroup(binding));
+        })
         .slice(0, 12)
         .map((item) => {
-        const itemBindings = (item.acquisition_bindings || []).filter(bindingMatchesConfidenceSource);
+        const itemBindings = (item.acquisition_bindings || []).filter((binding) => bindingMatchesConfidenceSource(binding) && bindingMatchesSignalGroup(binding));
         const bindingChips = itemBindings.slice(0, 3).map((binding) =>
           `<span class="chip support">补强 ${escapeHtml(binding.field || "claim")} / ${escapeHtml(binding.missing_layer_label || binding.missing_layer || "gap")}</span><span class="chip ${confidenceClass(binding.binding_confidence)}">${escapeHtml(confidenceText(binding.binding_confidence))}</span><span class="chip">${escapeHtml(confidenceSourceText(binding.binding_confidence))}</span>${confidenceSignalChips(binding.binding_confidence, 2, 1)}`
         ).join("");
@@ -5625,9 +5782,10 @@ def render_archive_dashboard(payload: dict) -> str:
               <span class="chip">Added ${escapeHtml(acquisition.added_total || 0)}</span>
               ${Number.isFinite(Number(acquisition.average_binding_confidence)) ? `<span class="chip">Avg confidence ${escapeHtml(acquisition.average_binding_confidence)}</span>` : ""}
               ${state.confidenceSource !== "all" ? `<span class="chip">${escapeHtml(state.confidenceSource)}</span>` : ""}
+              ${state.signalGroup !== "all" ? `<span class="chip">${escapeHtml(state.signalGroup)}</span>` : ""}
             </div>
             ${acquisitionCards}
-          ` : '<div class="empty">No acquisition bindings for this confidence source.</div>'}
+          ` : '<div class="empty">No acquisition bindings for these filters.</div>'}
         </section>
         <section class="evidence">
           <div class="section-title">Evidence</div>
@@ -5648,6 +5806,7 @@ def render_archive_dashboard(payload: dict) -> str:
     document.getElementById("timeMeta").textContent = DATA.generated_at || "";
     renderTrackOptions();
     renderConfidenceSourceOptions();
+    renderSignalGroupOptions();
 
     searchInput.addEventListener("input", () => {
       state.query = searchInput.value;
@@ -5662,6 +5821,11 @@ def render_archive_dashboard(payload: dict) -> str:
       state.selected = null;
       render();
     });
+    signalGroupSelect.addEventListener("change", () => {
+      state.signalGroup = signalGroupSelect.value;
+      state.selected = null;
+      render();
+    });
     scoreRange.addEventListener("input", () => {
       state.minScore = Number(scoreRange.value) || 0;
       render();
@@ -5670,11 +5834,13 @@ def render_archive_dashboard(payload: dict) -> str:
       state.query = "";
       state.track = "all";
       state.confidenceSource = "all";
+      state.signalGroup = "all";
       state.minScore = 0;
       state.selected = null;
       searchInput.value = "";
       trackSelect.value = "all";
       confidenceSourceSelect.value = "all";
+      signalGroupSelect.value = "all";
       scoreRange.value = "0";
       render();
     });
@@ -5860,11 +6026,14 @@ def render_archive_patterns(payload: dict) -> str:
         f"- 数据范围：{payload.get('scope') or 'latest_deep_dossiers'}",
         f"- Track 过滤：{payload['filters'].get('track') or '无'}",
         f"- 最低 track score：{payload['filters'].get('min_track_score') or 0}",
+        f"- Signal group 过滤：{payload['filters'].get('signal_group') or '无'}",
         f"- 参与绑定数：{stats.get('bindings', 0)}",
         f"- 参与仓库数：{stats.get('repositories', 0)}",
         f"- 模式数：{stats.get('patterns', 0)}",
         f"- 跨项目重复模式：{stats.get('cross_project_patterns', 0)}",
         f"- 平均模式可靠度：{stats.get('average_pattern_confidence') if stats.get('average_pattern_confidence') is not None else '未记录'}",
+        f"- 平均信号结构分：{stats.get('average_pattern_signal_score') if stats.get('average_pattern_signal_score') is not None else '未记录'}",
+        f"- Signal groups：{count_items_text(stats.get('signal_groups') or [])}",
         "",
     ]
     if not payload.get("patterns"):
@@ -5880,10 +6049,13 @@ def render_archive_patterns(payload: dict) -> str:
                 f"- 状态：{pattern.get('repeat_status')}",
                 f"- 仓库数 / 绑定数：{pattern.get('repository_count', 0)} / {pattern.get('binding_count', 0)}",
                 f"- Pattern score：{pattern.get('pattern_score', 0)}/100",
+                f"- Repeat / confidence / signal score：{pattern.get('repeat_score', 0)} / {pattern.get('confidence_score', 0)} / {pattern.get('signal_group_score', 0)}",
                 f"- 平均绑定可靠度：{pattern.get('average_binding_confidence') if pattern.get('average_binding_confidence') is not None else '未记录'}（{pattern.get('reliability_status') or 'unknown'}）",
                 f"- 最低绑定可靠度：{pattern.get('minimum_binding_confidence') if pattern.get('minimum_binding_confidence') is not None else '未记录'}",
                 f"- Confidence labels：{count_items_text(pattern.get('confidence_labels') or [])}",
                 f"- Confidence sources：{count_items_text(pattern.get('confidence_sources') or [])}",
+                f"- Signal groups：{count_items_text(pattern.get('signal_groups') or [])}",
+                f"- Signal labels：{count_items_text(pattern.get('signal_labels') or [], limit=10)}",
                 f"- Tracks：{count_items_text(pattern.get('tracks') or [])}",
                 f"- Evidence types：{count_items_text(pattern.get('evidence_types') or [])}",
                 f"- Evidence kinds：{count_items_text(pattern.get('evidence_kinds') or [])}",
@@ -5909,6 +6081,7 @@ def render_archive_patterns(payload: dict) -> str:
                         f"{example.get('track_score') if example.get('track_score') is not None else 'unknown'}): "
                         f"{title or 'Evidence'}；可靠度：{confidence.get('label') or 'unknown'} "
                         f"{confidence.get('score') if confidence.get('score') is not None else 'unknown'}；"
+                        f"信号：{confidence_signal_breakdown_text(confidence, group_limit=3, signal_limit=2)}；"
                         f"关键词：{keywords}；原因：{one_line(example.get('reason'))}",
                     ]
                 )
@@ -6059,6 +6232,9 @@ def handle_archive(args: argparse.Namespace) -> None:
         )
     if args.archive_search is not None and not args.archive_search.strip():
         raise SystemExit("--archive-search requires non-empty text.")
+    signal_group = getattr(args, "archive_signal_group", None)
+    if signal_group and not (args.archive_patterns or args.archive_dashboard is not None):
+        raise SystemExit("--archive-signal-group is only supported with --archive-patterns or --archive-dashboard.")
 
     conn = connect_archive_db(args.db)
     if conn is None:
