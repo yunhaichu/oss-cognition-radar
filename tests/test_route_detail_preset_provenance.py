@@ -347,6 +347,16 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertIn("- Source selector fixture filter\uff1a\u65e0", lines)
         self.assertIn("- Source selector filters\uff1a\u65e0", lines)
 
+    def test_preset_export_markdown_uses_source_fixture_status_fallback_when_filters_empty(self):
+        markdown = radar.render_archive_route_detail_preset_exports(
+            preset_exports_payload({"source_fixture_status_filter": "ready"})
+        )
+        lines = markdown.splitlines()
+
+        self.assertIn("- Source fixture status filter\uff1aready", lines)
+        self.assertIn("- Source selector fixture filter\uff1aready", lines)
+        self.assertIn("- Source selector filters\uff1a\u65e0", lines)
+
     def test_missing_fixture_id_reports_available_fixture_ids(self):
         with self.assertRaises(SystemExit) as raised:
             radar.route_detail_preset_bundle_from_payload(

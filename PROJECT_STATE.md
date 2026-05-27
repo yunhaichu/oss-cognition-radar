@@ -82,6 +82,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Dashboard single-fixture conflicting path Markdown coverage: `tests/test_route_detail_preset_provenance.py` verifies dashboard-downloaded conflicting path filters remain visible in preset export Markdown provenance even when preset selectors override them for execution.
 - Fixture-driven conflicting path Markdown coverage: `tests/test_route_detail_preset_provenance.py` verifies selector fixture source path filters remain visible in preset export Markdown provenance even when preset selectors override them for execution.
 - Empty source selector filter Markdown coverage: `tests/test_route_detail_preset_provenance.py` verifies preset export Markdown renders empty source selector filters and fixture filters as explicit empty provenance instead of dropping the fields.
+- Source fixture status fallback Markdown coverage: `tests/test_route_detail_preset_provenance.py` verifies preset export Markdown uses `source_fixture_status_filter` as the selector fixture filter fallback when source selector filters are empty.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -106,4 +107,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add preset export Markdown source fixture status fallback coverage when selector filters are empty.
+Add preset export Markdown missing fixture count fallback coverage.
