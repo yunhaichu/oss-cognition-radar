@@ -364,6 +364,13 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertIn("- Source fixture count\uff1aunknown / unfiltered unknown", lines)
         self.assertIn("- Source fixture matching expected\uff1aunknown / unfiltered unknown", lines)
 
+    def test_preset_export_markdown_renders_empty_fixture_status_counts(self):
+        markdown = radar.render_archive_route_detail_preset_exports(preset_exports_payload({}))
+        lines = markdown.splitlines()
+
+        self.assertIn("- Source fixture status counts\uff1a\u65e0", lines)
+        self.assertIn("- Source all fixture status counts\uff1a\u65e0", lines)
+
     def test_missing_fixture_id_reports_available_fixture_ids(self):
         with self.assertRaises(SystemExit) as raised:
             radar.route_detail_preset_bundle_from_payload(
