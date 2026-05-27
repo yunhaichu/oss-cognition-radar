@@ -393,6 +393,21 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
                 self.assertIn("- Source selector fixture filter\uff1a\u65e0", lines)
                 self.assertIn("- Source selector filters\uff1a\u65e0", lines)
 
+    def test_preset_export_markdown_renders_malformed_source_schema_and_fixture_identity_as_fallbacks(self):
+        payload = preset_exports_payload({})
+        payload["source_preset_path"] = {"bad": "path"}
+        payload["source_bundle_schema"] = ["bad_schema"]
+        payload["source_fixture_id"] = {"bad": "fixture"}
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Preset source\uff1a\u65e0", lines)
+        self.assertIn("- Source schema\uff1aunknown", lines)
+        self.assertIn("- Source fixture\uff1a\u65e0", lines)
+        self.assertFalse(any("{'bad': 'path'}" in line for line in lines))
+        self.assertFalse(any("['bad_schema']" in line for line in lines))
+        self.assertFalse(any("{'bad': 'fixture'}" in line for line in lines))
+
     def test_preset_export_markdown_filters_malformed_source_selector_filter_entries(self):
         payload = preset_exports_payload({})
         payload["source_selector_filters"] = {
