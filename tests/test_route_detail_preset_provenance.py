@@ -645,6 +645,17 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             }
         ])
 
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        self.assertIn("Source selector filters", markdown)
+        self.assertIn("validation_fixture_status=ready", markdown)
+        self.assertIn("confidence_source=auto", markdown)
+        self.assertIn("signal_group=pattern", markdown)
+        self.assertIn("track=developer_tools", markdown)
+        self.assertIn("min_score=64", markdown)
+        self.assertIn("path_move=source_move::Should not win", markdown)
+        self.assertIn("path_route=source_route::should_not_win", markdown)
+        self.assertIn("path_repo=source/repo", markdown)
+
     def test_dashboard_single_fixture_source_filters_are_carried_into_preset_args(self):
         source_filters = {
             "fixture_validation_status": "ready",
