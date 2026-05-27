@@ -66,7 +66,7 @@ python3 radar.py --archive-list --db data/radar.sqlite --limit 20
 python3 radar.py --archive-search durable --db data/radar.sqlite --limit 10
 ```
 
-`--archive-search` 会按需维护 SQLite FTS5 搜索索引，并输出 relevance backend、score、命中的文档数量和 source types。索引覆盖 repository、claims、claim gaps 和 evidence；若运行环境不支持 FTS5，或 FTS5 对中文片段没有命中，会自动回退到原来的 `LIKE` 搜索。
+`--archive-search` 会按需维护 SQLite FTS5 搜索索引，并输出 relevance backend、score、命中的文档数量和 source types。索引覆盖 repository、claims、claim gaps、evidence acquisition bindings、evidence 和 Repository Cognition Profile；若运行环境不支持 FTS5，或 FTS5 对中文片段没有命中，会自动回退到 `LIKE` 搜索。
 
 ```bash
 python3 radar.py --archive-show langchain-ai/langgraph --db data/radar.sqlite
@@ -208,7 +208,7 @@ SQLite 当前会保存：
 归档模式会基于这些表提供五类本地查询：
 
 - `--archive-list`：按最新快照列出已归档项目，支持 track 和最低 track score 过滤
-- `--archive-search TEXT`：用 SQLite FTS5 搜索 repository 元数据、claims、claim gaps、evidence acquisition bindings 和 evidence 文本，并返回 relevance 信息
+- `--archive-search TEXT`：用 SQLite FTS5 搜索 repository 元数据、claims、claim gaps、evidence acquisition bindings、evidence 和 Repository Cognition Profile 文本，并返回 relevance 信息
 - `--archive-show owner/name`：优先展示最新 deep dossier，没有 deep 快照时回退到最新 discovery 快照；存在跨项目语义模式时会同时显示该仓库的 Repository Cognition Profile
 - `--archive-patterns`：聚合最新 deep dossiers 中的 evidence acquisition bindings，按 claim 字段和缺口证据层输出跨项目重复模式、例子仓库和 evidence
 - `--archive-signal-group GROUP`：仅用于 `--archive-patterns` / `--archive-dashboard`，按自动 confidence signal group 过滤，例如 `time_series`、`drift`、`pattern`、`evidence`
@@ -259,7 +259,7 @@ patterns 现在会先做 `semantic_v1` 归并：claim 字段会归一到问题�
 
 `--archive-patterns` 还会从 signal-ranked semantic patterns 自动派生 `cognition_summaries`。每条摘要包含稳定 `summary_id`、认知动作类别、可迁移规则、证据依据、自动复核动作、置信度、原始字段/证据层分布和支撑 patterns，用于把“哪些 claim-gap 修补模式反复出现”提升为“哪些可观察设计/认知动作反复出现”。该摘要完全来自 archive evidence 和自动信号。
 
-系统还会从 `semantic_v1` patterns 自动派生 `repository_cognition_profiles`。每个仓库画像会显示该项目最强体现的跨项目设计动作、证据族、原始 claim 字段/证据层分布、支撑 semantic patterns 和 evidence examples；`--archive-show` 和 dashboard 的仓库详情页会直接展示 Repository Cognition Profile，并把画像内容纳入 dashboard 搜索。
+系统还会从 `semantic_v1` patterns 自动派生 `repository_cognition_profiles`。每个仓库画像会显示该项目最强体现的跨项目设计动作、证据族、原始 claim 字段/证据层分布、支撑 semantic patterns 和 evidence examples；`--archive-show` 和 dashboard 的仓库详情页会直接展示 Repository Cognition Profile，`--archive-search` 和 dashboard 搜索也会纳入画像内容。
 
 实现层证据会从 Git tree 中限量抽取：
 
@@ -284,4 +284,4 @@ patterns 现在会先做 `semantic_v1` 归并：claim 字段会归一到问题�
 
 ## 下一步
 
-- 把 Repository Cognition Profile 接入 CLI archive search，让搜索设计动作、证据族或 semantic pattern 时也能直接命中相关仓库
+- 为 Repository Cognition Profile 增加 profile-to-claim/evidence 的可解释路径，让搜索命中画像后能继续展开到具体 claim gap 和证据链

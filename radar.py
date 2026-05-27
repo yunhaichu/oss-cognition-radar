@@ -31,7 +31,7 @@ MAX_TEXT_CHARS = 5000
 MAX_IMPLEMENTATION_FILE_SIZE = 120_000
 GROWTH_WINDOWS = {"1d": 1, "7d": 7, "30d": 30}
 GROWTH_MAX_AGE_DAYS = {"1d": 2, "7d": 10, "30d": 45}
-ARCHIVE_SEARCH_INDEX_VERSION = 9
+ARCHIVE_SEARCH_INDEX_VERSION = 10
 BINDING_CONFIDENCE_BASE = 35
 BINDING_CONFIDENCE_SIGNAL_WEIGHTS = {
     "requested_missing_layer": 22,
@@ -2850,6 +2850,45 @@ def rebuild_archive_search_index(conn: sqlite3.Connection) -> dict:
         )
         indexed_documents += 1
 
+    profile_rows = query_archive_pattern_bindings(conn)
+    profile_patterns = build_archive_acquisition_patterns(profile_rows, max(len(profile_rows), 1)) if profile_rows else []
+    profile_meta_by_repo: dict[str, dict] = {}
+    for row in profile_rows:
+        repo_name = row.get("repo_full_name")
+        if not repo_name or repo_name in profile_meta_by_repo:
+            continue
+        profile_meta_by_repo[repo_name] = {
+            "run_id": row.get("run_id"),
+            "track": row.get("track"),
+            "track_score": row.get("track_score"),
+        }
+    profile_index_items = (
+        build_repository_cognition_profiles(profile_patterns, profile_rows, max(len(profile_rows), 1))
+        if profile_patterns
+        else []
+    )
+    for profile in profile_index_items:
+        repo_name = profile.get("repo_full_name")
+        meta = profile_meta_by_repo.get(repo_name or "", {})
+        conn.execute(
+            """
+            INSERT INTO archive_search_fts (
+                repo_full_name, run_id, source_type, source_id, title, body, track, track_score
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                repo_name,
+                meta.get("run_id"),
+                "repository_cognition_profile",
+                profile.get("profile_id"),
+                f"Repository Cognition Profile - {repo_name}",
+                repository_cognition_profile_search_text(profile),
+                meta.get("track"),
+                meta.get("track_score"),
+            ),
+        )
+        indexed_documents += 1
+
     rebuilt_at = utc_now().isoformat()
     conn.execute(
         """
@@ -3425,6 +3464,7 @@ def query_archive_search_fts(
                     "source_types": source_types,
                     "query": fts_query,
                 },
+                "matched_profiles": query_archive_profile_matches(conn, summary["full_name"], query, backend="fts5"),
                 "matched_claims": query_archive_claim_matches(conn, summary["full_name"], query, backend="fts5"),
                 "matched_gaps": query_archive_gap_matches(conn, summary["full_name"], query, backend="fts5"),
                 "matched_bindings": query_archive_binding_matches(conn, summary["full_name"], query, backend="fts5"),
@@ -3512,10 +3552,28 @@ def query_archive_search_like(
             max(limit, 1),
         ),
     ).fetchall()
+    profile_rows = query_archive_pattern_bindings(
+        conn,
+        track=track,
+        min_track_score=min_track_score,
+    )
+    profile_patterns = build_archive_acquisition_patterns(profile_rows, max(len(profile_rows), limit, 1)) if profile_rows else []
+    profile_matches_by_repo: dict[str, dict] = {}
+    if profile_patterns:
+        for profile in build_repository_cognition_profiles(profile_patterns, profile_rows, max(len(profile_rows), limit, 1)):
+            if query.lower() in repository_cognition_profile_search_text(profile).lower():
+                profile_matches_by_repo[profile["repo_full_name"]] = repository_cognition_profile_match_payload(
+                    profile,
+                    {"backend": "like", "score": None, "source_id": profile.get("profile_id")},
+                )
+
     entries = []
+    seen_repositories: set[str] = set()
     for row in rows:
         summary = row_to_archive_summary(row)
         summary["health"] = load_archive_health(conn, summary["run_id"], summary["full_name"])
+        profile_match = profile_matches_by_repo.get(summary["full_name"])
+        source_types = ["repository_cognition_profile"] if profile_match else []
         entries.append(
             {
                 "repository": summary,
@@ -3523,10 +3581,40 @@ def query_archive_search_like(
                     "backend": "like",
                     "score": None,
                     "rank": None,
-                    "matched_documents": None,
-                    "source_types": [],
+                    "matched_documents": 1 if profile_match else None,
+                    "source_types": source_types,
                     "query": query,
                 },
+                "matched_profiles": [profile_match] if profile_match else [],
+                "matched_claims": query_archive_claim_matches(conn, summary["full_name"], query),
+                "matched_gaps": query_archive_gap_matches(conn, summary["full_name"], query),
+                "matched_bindings": query_archive_binding_matches(conn, summary["full_name"], query),
+                "matched_evidence": query_archive_evidence_matches(conn, summary["full_name"], query),
+            }
+        )
+        seen_repositories.add(summary["full_name"])
+
+    for repo_name, profile_match in profile_matches_by_repo.items():
+        if len(entries) >= max(limit, 1):
+            break
+        if repo_name in seen_repositories:
+            continue
+        dossier = query_archive_show(conn, repo_name) or {}
+        summary = dossier.get("repository")
+        if not summary:
+            continue
+        entries.append(
+            {
+                "repository": summary,
+                "relevance": {
+                    "backend": "like",
+                    "score": None,
+                    "rank": None,
+                    "matched_documents": 1,
+                    "source_types": ["repository_cognition_profile"],
+                    "query": query,
+                },
+                "matched_profiles": [profile_match],
                 "matched_claims": query_archive_claim_matches(conn, summary["full_name"], query),
                 "matched_gaps": query_archive_gap_matches(conn, summary["full_name"], query),
                 "matched_bindings": query_archive_binding_matches(conn, summary["full_name"], query),
@@ -4048,6 +4136,54 @@ def query_archive_binding_matches(
             "relevance": {"backend": "like", "score": None},
         }
         for row in rows
+    ]
+
+
+def query_archive_profile_matches(
+    conn: sqlite3.Connection,
+    full_name: str,
+    query: str,
+    limit: int = 1,
+    backend: str = "like",
+) -> list[dict]:
+    profile, _context = build_archive_show_repository_cognition_profile(conn, full_name, limit)
+    if not profile:
+        return []
+
+    if backend == "fts5":
+        fts_query = fts_query_from_user(query)
+        rows = conn.execute(
+            """
+            SELECT source_id, title, archive_search_fts.rank AS relevance_rank
+            FROM archive_search_fts
+            WHERE archive_search_fts MATCH ?
+              AND repo_full_name = ?
+              AND source_type = 'repository_cognition_profile'
+            ORDER BY rank ASC
+            LIMIT ?
+            """,
+            (fts_query, full_name, limit),
+        ).fetchall()
+        return [
+            repository_cognition_profile_match_payload(
+                profile,
+                {
+                    "backend": "fts5",
+                    "score": round(max(0.0, -float(row["relevance_rank"] or 0.0)), 6),
+                    "source_id": row["source_id"],
+                    "title": row["title"],
+                },
+            )
+            for row in rows
+        ]
+
+    if query.lower() not in repository_cognition_profile_search_text(profile).lower():
+        return []
+    return [
+        repository_cognition_profile_match_payload(
+            profile,
+            {"backend": "like", "score": None, "source_id": profile.get("profile_id")},
+        )
     ]
 
 
@@ -5178,6 +5314,71 @@ def build_repository_cognition_profiles(patterns: list[dict], rows: list[dict], 
         )
     )
     return profiles[: max(limit, 1)]
+
+
+def search_text_from_value(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return " ".join(search_text_from_value(item) for item in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(search_text_from_value(item) for item in value)
+    return str(value)
+
+
+def repository_cognition_profile_search_text(profile: dict) -> str:
+    parts = [
+        "repository_cognition_profile",
+        "Repository Cognition Profile",
+        "design moves",
+        "strongest design moves",
+        "evidence families",
+        "semantic patterns",
+        profile.get("profile_id"),
+        profile.get("repo_full_name"),
+        profile.get("schema_version"),
+        profile.get("confidence"),
+        profile.get("score"),
+        profile.get("summary"),
+        profile.get("evidence_basis"),
+        "move_counts",
+        search_text_from_value(profile.get("move_counts") or []),
+        "strongest_moves",
+        search_text_from_value(profile.get("strongest_moves") or []),
+        "evidence_families",
+        search_text_from_value(profile.get("evidence_families") or []),
+        "raw_fields",
+        search_text_from_value(profile.get("raw_fields") or []),
+        "raw_layers",
+        search_text_from_value(profile.get("raw_layers") or []),
+        "evidence_types",
+        search_text_from_value(profile.get("evidence_types") or []),
+        "signal_groups",
+        search_text_from_value(profile.get("signal_groups") or []),
+        "supporting_patterns",
+        search_text_from_value(profile.get("supporting_patterns") or []),
+    ]
+    return " ".join(str(part or "") for part in parts)
+
+
+def repository_cognition_profile_match_payload(profile: dict, relevance: dict) -> dict:
+    return {
+        "profile_id": profile.get("profile_id"),
+        "repo_full_name": profile.get("repo_full_name"),
+        "schema_version": profile.get("schema_version"),
+        "score": profile.get("score"),
+        "confidence": profile.get("confidence"),
+        "summary": profile.get("summary"),
+        "evidence_basis": profile.get("evidence_basis"),
+        "pattern_count": profile.get("pattern_count"),
+        "binding_count": profile.get("binding_count"),
+        "strongest_moves": (profile.get("strongest_moves") or [])[:3],
+        "evidence_families": profile.get("evidence_families") or [],
+        "raw_fields": profile.get("raw_fields") or [],
+        "raw_layers": profile.get("raw_layers") or [],
+        "supporting_patterns": (profile.get("supporting_patterns") or [])[:3],
+        "relevance": relevance,
+    }
 
 
 def build_archive_show_repository_cognition_profile(conn: sqlite3.Connection, full_name: str, limit: int) -> tuple[dict | None, dict]:
@@ -6876,6 +7077,24 @@ def render_archive_search(payload: dict) -> str:
         )
         lines.extend(render_archive_repo_brief(summary, payload["db"]))
         lines.append("")
+        if entry.get("matched_profiles"):
+            lines.extend(["### Matched repository cognition profiles", ""])
+            for profile in entry["matched_profiles"]:
+                moves = "、".join(
+                    item.get("label") or item.get("category") or ""
+                    for item in (profile.get("strongest_moves") or [])[:3]
+                    if item.get("label") or item.get("category")
+                ) or "无"
+                families = count_items_text(profile.get("evidence_families") or [], limit=4)
+                lines.extend(
+                    [
+                        f"- `{profile.get('profile_id') or 'no-profile-id'}` "
+                        f"{profile.get('confidence') or 'unknown'} {profile.get('score') if profile.get('score') is not None else 'unknown'}/100: "
+                        f"{one_line(profile.get('summary'))}",
+                        f"  设计动作：{moves}；证据族：{families}",
+                    ]
+                )
+            lines.append("")
         if entry["matched_claims"]:
             lines.extend(["### Matched claims", ""])
             for claim in entry["matched_claims"]:

@@ -38,6 +38,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Track scoring: classifies projects as agent, developer tools, local-first, protocol, or general, then applies track-specific weights across momentum, collaboration, release, governance, evidence, and ecosystem signals.
 - Archive queries: `--archive-list`, `--archive-search TEXT`, and `--archive-show owner/name` query persisted SQLite snapshots locally, with track and minimum track score filters plus optional Markdown/JSON export.
 - FTS archive search: `--archive-search TEXT` now maintains a derived SQLite FTS5 index over repository metadata, claims, and evidence; it returns relevance backend, score, matched document count, and matched source types, with a LIKE fallback if FTS5 is unavailable or misses Chinese substrings.
+- Profile-aware archive search: CLI `--archive-search` now indexes and renders Repository Cognition Profile content, so design moves, evidence families, raw fields/layers, and supporting semantic pattern terms can directly retrieve related repositories through FTS5 or LIKE fallback.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -54,7 +55,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Star growth depends on repeated snapshots; fresh databases correctly show insufficient history.
 - Repository health release/contributor fields are first-pass API samples, not complete longitudinal analytics.
 - Track classification is heuristic and should be refined with stronger automatic repository behavior signals.
-- Dashboard search is currently client-side weighted matching over exported JSON; CLI archive search uses SQLite FTS5 ranking.
+- Dashboard search is currently client-side weighted matching over exported JSON; CLI archive search uses SQLite FTS5 ranking plus profile-aware LIKE fallback.
 
 ## Release Policy
 
@@ -62,4 +63,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Attach Repository Cognition Profile content to CLI archive search so design moves, evidence families, and semantic pattern terms can directly retrieve related repositories.
+Add profile-to-claim/evidence explanation paths so a Repository Cognition Profile search hit can expand directly into the supporting claim gaps and evidence chain.
