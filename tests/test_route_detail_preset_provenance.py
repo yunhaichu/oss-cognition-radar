@@ -658,6 +658,16 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertNotIn("- ... 0 more preset statuses in JSON", lines)
         self.assertNotIn("- ... 1 more preset statuses in JSON", lines)
 
+    def test_preset_export_markdown_renders_empty_validation_preset_status_list_without_rows(self):
+        payload = preset_exports_payload({})
+        payload["preset_validation"]["preset_statuses"] = []
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("## Preset Validation", lines)
+        self.assertEqual([line for line in lines if line.startswith("- `")], [])
+        self.assertFalse(any("more preset statuses in JSON" in line for line in lines))
+
     def test_preset_export_markdown_renders_repository_evidence_count_consistency(self):
         payload = preset_exports_payload({})
         payload["summary"]["repository_count"] = 2
