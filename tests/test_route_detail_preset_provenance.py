@@ -441,6 +441,49 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_preserves_explicit_zero_validation_counts(self):
+        payload = preset_exports_payload({})
+        payload["summary"] = {}
+        payload["preset_validation"] = {
+            "schema_version": "route_detail_preset_validation_v1",
+            "status": "ready",
+            "source_bundle_preset_count": 0,
+            "selected_preset_count": 0,
+            "ready_preset_count": 0,
+            "unmatched_preset_count": 0,
+            "expected_route_count": 0,
+            "expected_example_count": 0,
+            "duplicate_preset_ids": [],
+            "preset_statuses": [],
+        }
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "routes": [
+                        {
+                            "repositories": ["owner/repo"],
+                            "examples": [
+                                {"evidence_stable_id": "ev_repo"},
+                                {"evidence_id": "ev_second"},
+                            ],
+                        }
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Source presets\uff1a0", lines)
+        self.assertIn("- Selected / ready / unmatched\uff1a0 / 0 / 0", lines)
+        self.assertIn("- Selected preset count consistency\uff1a0 / summary 1 / matches summary False", lines)
+        self.assertIn("- Expected route / example\uff1a0 / 0", lines)
+        self.assertIn(
+            "- Expected route/example consistency\uff1aroute 0 / summary 1 / matches summary False; example 0 / summary 2 / matches summary False",
+            lines,
+        )
+
     def test_preset_export_markdown_renders_repository_evidence_count_consistency(self):
         payload = preset_exports_payload({})
         payload["summary"]["repository_count"] = 2
