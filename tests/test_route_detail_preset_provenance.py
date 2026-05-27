@@ -739,6 +739,42 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_preserves_explicit_zero_route_level_counts(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "routes": [
+                        {
+                            "route_id": "validation::tests",
+                            "repository_count": 0,
+                            "example_count": 0,
+                            "unique_evidence_count": 0,
+                            "path_count": 5,
+                            "repositories": ["owner/repo", "owner/second"],
+                            "examples": [
+                                {"evidence_stable_id": "ev_repo"},
+                                {"evidence_id": "ev_second"},
+                            ],
+                        }
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn(
+            "  - Repository count consistency\uff1arepository 2 / route 0 / matches route False",
+            lines,
+        )
+        self.assertIn("  - Paths / high / avg\uff1a5 / 0 / unknown", lines)
+        self.assertIn(
+            "  - Evidence/example count consistency\uff1aexample 2 / route 0 / matches route False; evidence 2 / route 0 / matches route False",
+            lines,
+        )
+
     def test_preset_export_markdown_uses_export_summary_count_fallbacks_when_counts_missing(self):
         payload = preset_exports_payload({})
         payload["exports"] = [
