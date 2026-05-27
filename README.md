@@ -259,6 +259,8 @@ patterns 现在会先做 `semantic_v1` 归并：claim 字段会归一到问题�
 
 `--archive-patterns` 还会从 signal-ranked semantic patterns 自动派生 `cognition_summaries`。每条摘要包含稳定 `summary_id`、认知动作类别、可迁移规则、证据依据、自动复核动作、置信度、原始字段/证据层分布和支撑 patterns，用于把“哪些 claim-gap 修补模式反复出现”提升为“哪些可观察设计/认知动作反复出现”。该摘要完全来自 archive evidence 和自动信号。
 
+系统还会从 `semantic_v1` patterns 自动派生 `repository_cognition_profiles`。每个仓库画像会显示该项目最强体现的跨项目设计动作、证据族、原始 claim 字段/证据层分布、支撑 semantic patterns 和 evidence examples；dashboard 的仓库详情页会直接展示 Repository Cognition Profile，并把画像内容纳入搜索。
+
 实现层证据会从 Git tree 中限量抽取：
 
 - 核心源码入口：`src`、`lib`、`packages`、`pkg`、`crates` 等目录中的主要源码文件
@@ -282,4 +284,4 @@ patterns 现在会先做 `semantic_v1` 归并：claim 字段会归一到问题�
 
 ## 下一步
 
-- 基于 `semantic_v1` patterns 生成单仓库认知画像，说明每个项目最强体现了哪些跨项目设计动作
+- 把单仓库认知画像接入 `--archive-show`，让单项目 Markdown 档案也能显示其跨项目设计动作画像

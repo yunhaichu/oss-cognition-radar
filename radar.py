@@ -4979,6 +4979,207 @@ def build_archive_cognition_summaries(patterns: list[dict], limit: int) -> list[
     return summaries[: max(limit, 1)]
 
 
+def repository_cognition_profile_confidence(score: int, pattern_count: int) -> str:
+    if score >= 82 and pattern_count >= 2:
+        return "high"
+    if score >= 62:
+        return "medium"
+    return "low"
+
+
+def repository_cognition_profile_score(contribution_scores: list[int | float], pattern_count: int, binding_count: int, move_count: int) -> int:
+    average = mean_number(contribution_scores) or 0
+    diversity = min(pattern_count * 4, 12)
+    depth = min(binding_count * 1.2, 18)
+    moves = min(move_count * 3, 9)
+    return int(clamp(round(average * 0.72 + diversity + depth + moves), 0, 100))
+
+
+def build_repository_cognition_profiles(patterns: list[dict], rows: list[dict], limit: int) -> list[dict]:
+    pattern_by_key: dict[tuple[str, str], dict] = {}
+    for pattern in patterns:
+        semantic = pattern.get("semantic_normalization") or {}
+        key = (
+            semantic.get("field_category") or cognition_field_profile(pattern.get("field"))["category"],
+            semantic.get("layer_group") or pattern.get("missing_layer") or "unknown",
+        )
+        pattern_by_key[key] = pattern
+
+    groups: dict[str, dict] = {}
+    for row in rows:
+        repo = row.get("repo_full_name")
+        if not repo:
+            continue
+        semantic = semantic_pattern_profile(row.get("field"), row.get("missing_layer"))
+        pattern = pattern_by_key.get((semantic["field_category"], semantic["layer_group"]))
+        if not pattern:
+            continue
+        profile = groups.setdefault(
+            repo,
+            {
+                "profile_id": stable_id("repo_cognition", repo),
+                "repo_full_name": repo,
+                "schema_version": "repository_cognition_v1",
+                "_patterns": {},
+                "_move_counts": {},
+                "_move_details": {},
+                "_evidence_family_counts": {},
+                "_raw_field_counts": {},
+                "_raw_layer_counts": {},
+                "_evidence_type_counts": {},
+                "_signal_group_counts": {},
+                "_confidence_scores": [],
+                "_pattern_scores": [],
+                "_contribution_scores": [],
+                "_binding_count": 0,
+            },
+        )
+        profile["_binding_count"] += 1
+        confidence = row.get("binding_confidence") or {}
+        confidence_score = confidence.get("score")
+        if isinstance(confidence_score, (int, float)):
+            profile["_confidence_scores"].append(confidence_score)
+        else:
+            confidence_score = pattern.get("average_binding_confidence") or 0
+        pattern_score = pattern.get("pattern_score") or 0
+        signal_score = pattern.get("signal_group_score") or 0
+        contribution_score = int(clamp(round(pattern_score * 0.50 + float(confidence_score or 0) * 0.35 + signal_score * 0.15), 0, 100))
+        profile["_contribution_scores"].append(contribution_score)
+        if isinstance(pattern_score, (int, float)):
+            profile["_pattern_scores"].append(pattern_score)
+
+        category = semantic["field_category"]
+        label = semantic["field_label"]
+        count_value(profile["_move_counts"], label)
+        move = profile["_move_details"].setdefault(
+            category,
+            {
+                "category": category,
+                "label": label,
+                "move": semantic["field_move"],
+                "transfer_rule": semantic["field_transfer_rule"],
+                "binding_count": 0,
+                "pattern_ids": set(),
+                "score_samples": [],
+            },
+        )
+        move["binding_count"] += 1
+        move["pattern_ids"].add(pattern.get("pattern_id"))
+        move["score_samples"].append(contribution_score)
+
+        count_value(profile["_evidence_family_counts"], semantic["layer_label"])
+        count_value(profile["_raw_field_counts"], row.get("field"))
+        count_value(profile["_raw_layer_counts"], row.get("missing_layer_label") or SUPPORT_LAYER_LABELS.get(row.get("missing_layer"), row.get("missing_layer")))
+        count_value(profile["_evidence_type_counts"], row.get("evidence_type"))
+        for group_name in confidence_signal_group_names(confidence):
+            count_value(profile["_signal_group_counts"], group_name)
+
+        pattern_id = pattern.get("pattern_id")
+        local_pattern = profile["_patterns"].setdefault(
+            pattern_id,
+            {
+                "pattern_id": pattern_id,
+                "field": pattern.get("field"),
+                "missing_layer": pattern.get("missing_layer"),
+                "missing_layer_label": pattern.get("missing_layer_label"),
+                "semantic_normalization": pattern.get("semantic_normalization") or {},
+                "pattern_score": pattern.get("pattern_score"),
+                "signal_group_score": pattern.get("signal_group_score"),
+                "average_binding_confidence": pattern.get("average_binding_confidence"),
+                "local_binding_count": 0,
+                "evidence_examples": [],
+            },
+        )
+        local_pattern["local_binding_count"] += 1
+        if len(local_pattern["evidence_examples"]) < 3:
+            local_pattern["evidence_examples"].append(
+                {
+                    "evidence_id": row.get("evidence_id"),
+                    "evidence_stable_id": row.get("evidence_stable_id"),
+                    "evidence_title": row.get("evidence_title"),
+                    "evidence_type": row.get("evidence_type"),
+                    "confidence": confidence.get("label"),
+                    "confidence_score": confidence.get("score"),
+                }
+            )
+
+    profiles = []
+    for profile in groups.values():
+        pattern_items = sorted(
+            profile.pop("_patterns").values(),
+            key=lambda item: (
+                -item.get("local_binding_count", 0),
+                -(item.get("pattern_score") or 0),
+                item.get("field") or "",
+                item.get("missing_layer") or "",
+            ),
+        )
+        move_details = []
+        for item in profile.pop("_move_details").values():
+            pattern_ids = sorted(pattern_id for pattern_id in item.pop("pattern_ids") if pattern_id)
+            score_samples = item.pop("score_samples")
+            move_details.append(
+                {
+                    **item,
+                    "pattern_count": len(pattern_ids),
+                    "pattern_ids": pattern_ids[:8],
+                    "average_score": mean_number(score_samples),
+                }
+            )
+        move_details.sort(key=lambda item: (-item["binding_count"], -(item.get("average_score") or 0), item["category"]))
+
+        binding_count = profile.pop("_binding_count")
+        confidence_scores = profile.pop("_confidence_scores")
+        pattern_scores = profile.pop("_pattern_scores")
+        contribution_scores = profile.pop("_contribution_scores")
+        raw_fields = top_count_items(profile.pop("_raw_field_counts"), limit=8)
+        evidence_families = top_count_items(profile.pop("_evidence_family_counts"), limit=6)
+        raw_layers = top_count_items(profile.pop("_raw_layer_counts"), limit=8)
+        evidence_types = top_count_items(profile.pop("_evidence_type_counts"), limit=8)
+        signal_groups = top_count_items(profile.pop("_signal_group_counts"), limit=6)
+        move_counts = top_count_items(profile.pop("_move_counts"), limit=8)
+        pattern_count = len(pattern_items)
+        score = repository_cognition_profile_score(contribution_scores, pattern_count, binding_count, len(move_details))
+        top_moves = "、".join(item["label"] for item in move_details[:3]) or "通用工程动作"
+        top_families = "、".join(item["value"] for item in evidence_families[:3]) or "归档证据"
+        profiles.append(
+            {
+                **profile,
+                "score": score,
+                "confidence": repository_cognition_profile_confidence(score, pattern_count),
+                "summary": f"{profile['repo_full_name']} 最强体现的跨项目设计动作是：{top_moves}；主要证据族是：{top_families}。",
+                "evidence_basis": (
+                    f"{pattern_count} 个 semantic patterns、{binding_count} 条 bindings、"
+                    f"平均 contribution score {mean_number(contribution_scores) if contribution_scores else 'unknown'}、"
+                    f"平均 binding confidence {mean_number(confidence_scores) if confidence_scores else 'unknown'}。"
+                ),
+                "pattern_count": pattern_count,
+                "binding_count": binding_count,
+                "average_contribution_score": mean_number(contribution_scores),
+                "average_pattern_score": mean_number(pattern_scores),
+                "average_binding_confidence": mean_number(confidence_scores),
+                "strongest_moves": move_details[:6],
+                "move_counts": move_counts,
+                "evidence_families": evidence_families,
+                "raw_fields": raw_fields,
+                "raw_layers": raw_layers,
+                "evidence_types": evidence_types,
+                "signal_groups": signal_groups,
+                "supporting_patterns": pattern_items[:6],
+            }
+        )
+
+    profiles.sort(
+        key=lambda item: (
+            -item["score"],
+            -item["pattern_count"],
+            -item["binding_count"],
+            item["repo_full_name"],
+        )
+    )
+    return profiles[: max(limit, 1)]
+
+
 def archive_message_payload(mode: str, args: argparse.Namespace, message: str) -> dict:
     return {
         "schema_version": 1,
@@ -5062,6 +5263,7 @@ def archive_patterns_payload(conn: sqlite3.Connection, args: argparse.Namespace)
     rows = filter_archive_pattern_rows_by_signal_group(rows, signal_group)
     patterns = build_archive_acquisition_patterns(rows, args.limit)
     cognition_summaries = build_archive_cognition_summaries(patterns, args.limit)
+    repository_cognition_profiles = build_repository_cognition_profiles(patterns, rows, args.limit)
     repositories = sorted({row.get("repo_full_name") for row in rows if row.get("repo_full_name")})
     pattern_confidences = [
         item.get("average_binding_confidence")
@@ -5080,6 +5282,8 @@ def archive_patterns_payload(conn: sqlite3.Connection, args: argparse.Namespace)
             "patterns": len(patterns),
             "cognition_summaries": len(cognition_summaries),
             "high_confidence_cognition_summaries": sum(1 for item in cognition_summaries if item.get("confidence") == "high"),
+            "repository_cognition_profiles": len(repository_cognition_profiles),
+            "high_confidence_repository_profiles": sum(1 for item in repository_cognition_profiles if item.get("confidence") == "high"),
             "repositories": len(repositories),
             "cross_project_patterns": sum(1 for item in patterns if item.get("repository_count", 0) >= 2),
             "average_pattern_confidence": round(sum(pattern_confidences) / len(pattern_confidences), 1) if pattern_confidences else None,
@@ -5089,6 +5293,7 @@ def archive_patterns_payload(conn: sqlite3.Connection, args: argparse.Namespace)
             "signal_groups": aggregate_pattern_count_items(patterns, "signal_groups"),
         },
         "cognition_summaries": cognition_summaries,
+        "repository_cognition_profiles": repository_cognition_profiles,
         "patterns": patterns,
     }
 
@@ -5126,6 +5331,7 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
 
     patterns = build_archive_acquisition_patterns(pattern_rows, args.limit)
     cognition_summaries = build_archive_cognition_summaries(patterns, args.limit)
+    repository_cognition_profiles = build_repository_cognition_profiles(patterns, pattern_rows, args.limit)
     scores = [
         (summary.get("track_score") or {}).get("score")
         for summary in repositories
@@ -5162,6 +5368,8 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
             "acquisition_patterns": len(patterns),
             "cognition_summaries": len(cognition_summaries),
             "high_confidence_cognition_summaries": sum(1 for item in cognition_summaries if item.get("confidence") == "high"),
+            "repository_cognition_profiles": len(repository_cognition_profiles),
+            "high_confidence_repository_profiles": sum(1 for item in repository_cognition_profiles if item.get("confidence") == "high"),
             "cross_project_patterns": sum(1 for item in patterns if item.get("repository_count", 0) >= 2),
             "average_pattern_confidence": round(sum(pattern_confidences) / len(pattern_confidences), 1) if pattern_confidences else None,
             "average_pattern_signal_score": mean_number(
@@ -5175,6 +5383,7 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
         "repositories": repositories,
         "dossiers": dossiers,
         "cognition_summaries": cognition_summaries,
+        "repository_cognition_profiles": repository_cognition_profiles,
         "patterns": patterns,
     }
 
@@ -5634,6 +5843,7 @@ def render_archive_dashboard(payload: dict) -> str:
     const repos = DATA.repositories || [];
     const dossiers = DATA.dossiers || {};
     const cognitionSummaries = DATA.cognition_summaries || [];
+    const repositoryCognitionProfiles = DATA.repository_cognition_profiles || [];
     const patterns = DATA.patterns || [];
 
     const searchInput = document.getElementById("searchInput");
@@ -5749,6 +5959,10 @@ def render_archive_dashboard(payload: dict) -> str:
       return dossiers[repo.full_name] || { claims: [], claim_gap_report: [], evidence_acquisition: {}, evidence: [] };
     }
 
+    function cognitionProfileOf(repo) {
+      return repositoryCognitionProfiles.find((profile) => profile.repo_full_name === repo.full_name) || null;
+    }
+
     function bindingMatchesConfidenceSource(binding) {
       return state.confidenceSource === "all" || confidenceSource(binding?.binding_confidence) === state.confidenceSource;
     }
@@ -5767,6 +5981,8 @@ def render_archive_dashboard(payload: dict) -> str:
 
     function repoMatchesSignalGroup(repo) {
       if (state.signalGroup === "all") return true;
+      const profile = cognitionProfileOf(repo);
+      if (cognitionProfileMatchesSignalGroup(profile)) return true;
       const dossier = dossierOf(repo);
       const acquisitionBindings = (dossier.evidence_acquisition || {}).bindings || [];
       const evidenceBindings = (dossier.evidence || []).flatMap((item) => item.acquisition_bindings || []);
@@ -5786,6 +6002,54 @@ def render_archive_dashboard(payload: dict) -> str:
     function cognitionSummaryMatchesSignalGroup(summary) {
       if (state.signalGroup === "all") return true;
       return (summary.signal_groups || []).some((item) => item.value === state.signalGroup);
+    }
+
+    function cognitionProfileMatchesSignalGroup(profile) {
+      if (!profile) return false;
+      if (state.signalGroup === "all") return true;
+      return (profile.signal_groups || []).some((item) => item.value === state.signalGroup);
+    }
+
+    function cognitionProfileCorpus(profile) {
+      if (!profile) return "";
+      const parts = [
+        profile.repo_full_name,
+        profile.profile_id,
+        profile.schema_version,
+        profile.summary,
+        profile.evidence_basis,
+        profile.confidence,
+        profile.score,
+        ...(profile.strongest_moves || []).flatMap((item) => [
+          item.category,
+          item.label,
+          item.move,
+          item.transfer_rule,
+          item.average_score,
+        ]),
+        ...(profile.move_counts || []).map((item) => item.value),
+        ...(profile.evidence_families || []).map((item) => item.value),
+        ...(profile.raw_fields || []).map((item) => item.value),
+        ...(profile.raw_layers || []).map((item) => item.value),
+        ...(profile.evidence_types || []).map((item) => item.value),
+        ...(profile.signal_groups || []).map((item) => item.value),
+        ...(profile.supporting_patterns || []).flatMap((pattern) => [
+          pattern.pattern_id,
+          pattern.field,
+          pattern.missing_layer,
+          pattern.missing_layer_label,
+          pattern.semantic_normalization?.field_category,
+          pattern.semantic_normalization?.layer_group,
+          ...(pattern.evidence_examples || []).flatMap((item) => [
+            item.evidence_stable_id,
+            item.evidence_title,
+            item.evidence_type,
+            item.confidence,
+            item.confidence_score,
+          ]),
+        ]),
+      ];
+      return parts.filter(Boolean).join(" ").toLowerCase();
     }
 
     function cognitionSummaryCorpus(summary) {
@@ -5868,11 +6132,13 @@ def render_archive_dashboard(payload: dict) -> str:
 
     function corpusOf(repo) {
       const dossier = dossierOf(repo);
+      const cognitionProfile = cognitionProfileOf(repo);
       const parts = [
         repo.full_name,
         repo.description,
         repo.language,
         (repo.topics || []).join(" "),
+        cognitionProfileCorpus(cognitionProfile),
         ...(dossier.claims || []).flatMap((item) => [
           item.field,
           item.text,
@@ -5940,10 +6206,12 @@ def render_archive_dashboard(payload: dict) -> str:
       const terms = query.trim().toLowerCase().split(/\\s+/).filter(Boolean);
       if (!terms.length) return 0;
       const dossier = dossierOf(repo);
+      const cognitionProfile = cognitionProfileOf(repo);
       const sources = [
         { weight: 8, text: repo.full_name },
         { weight: 5, text: repo.description },
         { weight: 3, text: (repo.topics || []).join(" ") },
+        { weight: 5, text: cognitionProfileCorpus(cognitionProfile) },
         {
           weight: 3,
           text: (dossier.claims || []).map((item) => {
@@ -6025,6 +6293,7 @@ def render_archive_dashboard(payload: dict) -> str:
       const groups = Array.from(new Set([
         ...(DATA.statistics?.signal_groups || []).map((item) => item.value),
         ...cognitionSummaries.flatMap((summary) => (summary.signal_groups || []).map((item) => item.value)),
+        ...repositoryCognitionProfiles.flatMap((profile) => (profile.signal_groups || []).map((item) => item.value)),
         ...patterns.flatMap((pattern) => (pattern.signal_groups || []).map((item) => item.value)),
         ...repos.flatMap((repo) => {
           const dossier = dossierOf(repo);
@@ -6054,6 +6323,7 @@ def render_archive_dashboard(payload: dict) -> str:
       const gapCount = items.reduce((sum, repo) => sum + (dossierOf(repo).claim_gap_report || []).length, 0);
       const bindingCount = items.reduce((sum, repo) => sum + ((dossierOf(repo).evidence_acquisition || {}).binding_count || 0), 0);
       const patternCount = filteredPatterns().length;
+      const profileCount = items.filter((repo) => cognitionProfileOf(repo)).length;
       const evidenceCount = items.reduce((sum, repo) => sum + (dossierOf(repo).evidence || []).length, 0);
       const average = items.length
         ? items.reduce((sum, repo) => sum + scoreOf(repo), 0) / items.length
@@ -6073,6 +6343,7 @@ def render_archive_dashboard(payload: dict) -> str:
         ["Claim gaps", gapCount],
         ["Bindings", bindingCount],
         ["Patterns", patternCount],
+        ["Profiles", profileCount],
         ["Evidence", evidenceCount],
         ["Avg score", average ? average.toFixed(1) : "0.0"],
       ];
@@ -6215,6 +6486,7 @@ def render_archive_dashboard(payload: dict) -> str:
       repoList.innerHTML = items.map((repo) => {
         const active = repo.full_name === state.selected ? " active" : "";
         const score = scoreOf(repo);
+        const cognitionProfile = cognitionProfileOf(repo);
         return `
           <button class="repo-row${active}" type="button" data-repo="${escapeHtml(repo.full_name)}">
             <div class="repo-name">${escapeHtml(repo.full_name)}</div>
@@ -6223,6 +6495,7 @@ def render_archive_dashboard(payload: dict) -> str:
               <span class="chip track">${escapeHtml(trackOf(repo))}</span>
               <span class="chip">${escapeHtml(repo.language || "Unknown")}</span>
               ${repo.client_relevance ? `<span class="chip">Relevance ${escapeHtml(repo.client_relevance)}</span>` : ""}
+              ${cognitionProfile ? `<span class="chip">Cognition ${escapeHtml(cognitionProfile.score ?? 0)}</span>` : ""}
               <span class="chip ${riskClass(repo)}">${escapeHtml((repo.fake_star_risk || "unknown").split("：")[0])}</span>
             </div>
             <div class="score-line">
@@ -6262,6 +6535,22 @@ def render_archive_dashboard(payload: dict) -> str:
       const signalChips = Object.entries(signals).map(([name, value]) =>
         `<span class="chip">${escapeHtml(name)} ${escapeHtml(value)}</span>`
       ).join("");
+      const cognitionProfile = cognitionProfileOf(repo);
+      const cognitionProfileVisible = cognitionProfile && cognitionProfileMatchesSignalGroup(cognitionProfile);
+      const cognitionProfileMoves = cognitionProfileVisible ? (cognitionProfile.strongest_moves || []).slice(0, 4).map((move) => `
+        <article class="item">
+          <h3>${escapeHtml(move.label || move.category || "Design move")} <span class="subtle">${escapeHtml((move.average_score ?? 0) + "/100")}</span></h3>
+          <p>${escapeHtml(move.move || "")}</p>
+          <div class="chips">
+            <span class="chip support">Bindings ${escapeHtml(move.binding_count || 0)}</span>
+            <span class="chip">Patterns ${escapeHtml(move.pattern_count || 0)}</span>
+            ${(move.pattern_ids || []).slice(0, 3).map((patternId) => `<span class="chip">${escapeHtml(patternId)}</span>`).join("")}
+          </div>
+        </article>
+      `).join("") : "";
+      const cognitionProfilePatterns = cognitionProfileVisible ? (cognitionProfile.supporting_patterns || []).slice(0, 4).map((pattern) => `
+        <span class="chip">${escapeHtml(pattern.field || "pattern")} / ${escapeHtml(pattern.missing_layer_label || pattern.missing_layer || "evidence")} ${escapeHtml(pattern.local_binding_count || 0)}</span>
+      `).join("") : "";
       const claims = (dossier.claims || []).map((claim) => {
         const support = claim.support_coverage || {};
         const supportLayers = (support.layer_labels || support.layers || []).slice(0, 4);
@@ -6354,6 +6643,24 @@ def render_archive_dashboard(payload: dict) -> str:
           ${metric("Contributors", health.top_contributor_count_sample ?? 0)}
         </div>
         <div class="chips">${signalChips}</div>
+        <section class="repository-cognition">
+          <div class="section-title">Repository Cognition Profile</div>
+          ${cognitionProfileVisible ? `
+            <div class="chips">
+              <span class="chip ${cognitionProfile.confidence === "high" ? "support" : ""}">${escapeHtml(cognitionProfile.confidence || "unknown")} ${escapeHtml(cognitionProfile.score ?? 0)}</span>
+              <span class="chip">Patterns ${escapeHtml(cognitionProfile.pattern_count || 0)}</span>
+              <span class="chip">Bindings ${escapeHtml(cognitionProfile.binding_count || 0)}</span>
+              ${(cognitionProfile.evidence_families || []).slice(0, 4).map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
+            </div>
+            <p>${escapeHtml(cognitionProfile.summary || "")}</p>
+            <p class="subtle">${escapeHtml(cognitionProfile.evidence_basis || "")}</p>
+            <div class="chips">
+              ${(cognitionProfile.raw_fields || []).slice(0, 5).map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
+              ${cognitionProfilePatterns}
+            </div>
+            ${cognitionProfileMoves}
+          ` : '<div class="empty">No repository cognition profile for these filters.</div>'}
+        </section>
         <section class="claims">
           <div class="section-title">Claims</div>
           ${claims || '<div class="empty">No deep claims archived.</div>'}
@@ -6642,6 +6949,50 @@ def render_archive_cognition_summaries(summaries: list[dict]) -> list[str]:
     return lines
 
 
+def render_repository_cognition_profiles(profiles: list[dict]) -> list[str]:
+    if not profiles:
+        return []
+    lines = ["## Repository Cognition Profiles", ""]
+    for index, profile in enumerate(profiles, 1):
+        lines.extend(
+            [
+                f"### {index}. {profile.get('repo_full_name')}",
+                "",
+                f"- Profile ID：`{profile.get('profile_id')}`",
+                f"- Confidence：{profile.get('confidence') or 'unknown'} / {profile.get('score', 0)}/100",
+                f"- Pattern 数 / binding 数：{profile.get('pattern_count', 0)} / {profile.get('binding_count', 0)}",
+                f"- 摘要：{profile.get('summary') or '无'}",
+                f"- 证据依据：{profile.get('evidence_basis') or '无'}",
+                f"- 最强设计动作：{count_items_text(profile.get('move_counts') or [], limit=6)}",
+                f"- 证据族：{count_items_text(profile.get('evidence_families') or [], limit=6)}",
+                f"- 原始 claim 字段：{count_items_text(profile.get('raw_fields') or [], limit=8)}",
+                f"- 原始证据层：{count_items_text(profile.get('raw_layers') or [], limit=8)}",
+                f"- Signal groups：{count_items_text(profile.get('signal_groups') or [], limit=6)}",
+                "",
+            ]
+        )
+        strongest = profile.get("strongest_moves") or []
+        if strongest:
+            lines.extend(["设计动作明细：", ""])
+            for move in strongest[:4]:
+                lines.append(
+                    f"- {move.get('label') or move.get('category')}：bindings {move.get('binding_count', 0)}；"
+                    f"patterns {move.get('pattern_count', 0)}；avg score {move.get('average_score') if move.get('average_score') is not None else 'unknown'}；"
+                    f"{move.get('move') or ''}"
+                )
+            lines.append("")
+        supporting = profile.get("supporting_patterns") or []
+        if supporting:
+            lines.extend(["支撑 semantic patterns：", ""])
+            for pattern in supporting[:4]:
+                lines.append(
+                    f"- `{pattern.get('pattern_id')}` {pattern.get('field')} -> {pattern.get('missing_layer_label') or pattern.get('missing_layer')}；"
+                    f"local bindings {pattern.get('local_binding_count', 0)}；pattern score {pattern.get('pattern_score', 0)}"
+                )
+            lines.append("")
+    return lines
+
+
 def render_archive_patterns(payload: dict) -> str:
     if payload.get("message"):
         return "\n".join(["# OSS Cognition Archive Patterns", "", payload["message"], ""])
@@ -6660,6 +7011,8 @@ def render_archive_patterns(payload: dict) -> str:
         f"- 模式数：{stats.get('patterns', 0)}",
         f"- 自动认知摘要数：{stats.get('cognition_summaries', 0)}",
         f"- 高置信摘要数：{stats.get('high_confidence_cognition_summaries', 0)}",
+        f"- 单仓库认知画像数：{stats.get('repository_cognition_profiles', 0)}",
+        f"- 高置信仓库画像数：{stats.get('high_confidence_repository_profiles', 0)}",
         f"- 跨项目重复模式：{stats.get('cross_project_patterns', 0)}",
         f"- 平均模式可靠度：{stats.get('average_pattern_confidence') if stats.get('average_pattern_confidence') is not None else '未记录'}",
         f"- 平均信号结构分：{stats.get('average_pattern_signal_score') if stats.get('average_pattern_signal_score') is not None else '未记录'}",
@@ -6671,6 +7024,7 @@ def render_archive_patterns(payload: dict) -> str:
         return "\n".join(lines)
 
     lines.extend(render_archive_cognition_summaries(payload.get("cognition_summaries") or []))
+    lines.extend(render_repository_cognition_profiles(payload.get("repository_cognition_profiles") or []))
 
     for index, pattern in enumerate(payload["patterns"], 1):
         lines.extend(
