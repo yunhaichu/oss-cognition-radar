@@ -10421,15 +10421,19 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
                 "",
             ]
         )
-        for status in (validation.get("preset_statuses") or [])[:12]:
+        raw_preset_statuses = validation.get("preset_statuses") or []
+        if not isinstance(raw_preset_statuses, list):
+            raw_preset_statuses = []
+        preset_statuses = [status for status in raw_preset_statuses if isinstance(status, dict)]
+        for status in preset_statuses[:12]:
             messages = "; ".join(status.get("messages") or [])
             lines.append(
                 f"- `{status.get('preset_id') or ''}` {status.get('status') or 'unknown'}："
                 f"moves {status.get('matched_move_count', 0)}；routes {status.get('matched_route_count', 0)}；"
                 f"repos {status.get('matched_repository_count', 0)}；examples {status.get('expected_example_count', 0)}；{messages}"
             )
-        if len(validation.get("preset_statuses") or []) > 12:
-            lines.append(f"- ... {len(validation.get('preset_statuses') or []) - 12} more preset statuses in JSON")
+        if len(preset_statuses) > 12:
+            lines.append(f"- ... {len(preset_statuses) - 12} more preset statuses in JSON")
         lines.append("")
     if not exports:
         lines.extend(["当前 preset 范围没有可导出的 route detail。", ""])
