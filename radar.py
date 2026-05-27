@@ -10453,16 +10453,30 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
             ]
         )
         for route in routes:
+            route_examples = route.get("examples") or []
             evidence_ids = [
                 example.get("evidence_stable_id") or example.get("evidence_id")
-                for example in route.get("examples") or []
+                for example in route_examples
                 if example.get("evidence_stable_id") or example.get("evidence_id")
             ]
+            derived_route_example_count = len(route_examples)
+            derived_route_evidence_count = len(set(evidence_ids))
+            route_example_count = (
+                route.get("example_count")
+                if route.get("example_count") is not None
+                else route.get("path_count", derived_route_example_count)
+            )
+            route_evidence_count = (
+                route.get("unique_evidence_count")
+                if route.get("unique_evidence_count") is not None
+                else derived_route_evidence_count
+            )
             lines.extend(
                 [
                     f"- `{route.get('route_id') or ''}` {route.get('design_move') or 'Design move'} / {route.get('route_label') or 'route'}",
                     f"  - Repositories：{', '.join(route.get('repositories') or []) or '无'}",
                     f"  - Paths / high / avg：{route.get('path_count', 0)} / {route.get('high_confidence_paths', 0)} / {route.get('average_confidence') if route.get('average_confidence') is not None else 'unknown'}",
+                    f"  - Evidence/example count consistency：example {derived_route_example_count} / route {route_example_count} / matches route {derived_route_example_count == route_example_count}; evidence {derived_route_evidence_count} / route {route_evidence_count} / matches route {derived_route_evidence_count == route_evidence_count}",
                     f"  - Evidence stable IDs：{', '.join(evidence_ids[:6]) or '无'}",
                 ]
             )

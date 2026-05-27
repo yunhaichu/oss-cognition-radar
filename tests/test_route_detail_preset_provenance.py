@@ -572,6 +572,64 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_renders_per_route_evidence_example_count_consistency(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "routes": [
+                        {
+                            "route_id": "validation::tests",
+                            "example_count": 3,
+                            "unique_evidence_count": 2,
+                            "examples": [
+                                {"evidence_stable_id": "ev_repo"},
+                                {"evidence_id": "ev_second"},
+                                {"evidence_stable_id": "ev_repo"},
+                            ],
+                        }
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn(
+            "  - Evidence/example count consistency\uff1aexample 3 / route 3 / matches route True; evidence 2 / route 2 / matches route True",
+            lines,
+        )
+
+    def test_preset_export_markdown_flags_per_route_evidence_example_count_mismatch(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "routes": [
+                        {
+                            "route_id": "validation::tests",
+                            "example_count": 4,
+                            "unique_evidence_count": 1,
+                            "examples": [
+                                {"evidence_stable_id": "ev_repo"},
+                                {"evidence_id": "ev_second"},
+                                {"evidence_stable_id": "ev_repo"},
+                            ],
+                        }
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn(
+            "  - Evidence/example count consistency\uff1aexample 3 / route 4 / matches route False; evidence 2 / route 1 / matches route False",
+            lines,
+        )
+
     def test_preset_export_markdown_uses_source_fixture_status_fallback_when_filters_empty(self):
         markdown = radar.render_archive_route_detail_preset_exports(
             preset_exports_payload({"source_fixture_status_filter": "ready"})
