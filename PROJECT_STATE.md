@@ -136,6 +136,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Malformed route list Markdown coverage: route detail preset export Markdown now treats malformed route list payloads as empty and filters non-dict route entries before deriving route/example/repository/evidence counts.
 - Malformed route detail payload Markdown coverage: route detail preset export Markdown now treats malformed per-export route detail payloads as empty route details for Markdown summary rendering.
 - Malformed route detail summary payload Markdown coverage: route detail preset export Markdown now treats malformed per-export route detail summary payloads as missing summaries and falls back to derived route/example/repository/evidence counts.
+- Malformed export payload Markdown coverage: route detail preset export Markdown now treats malformed exports payloads as empty and filters export entries without preset or route detail data before rendering sections.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -160,4 +161,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add preset export Markdown malformed export payload coverage.
+Add preset export Markdown malformed top-level summary count coverage.

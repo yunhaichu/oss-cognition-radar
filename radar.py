@@ -10162,6 +10162,17 @@ def route_detail_routes_list(route_detail: dict) -> list[dict]:
     return [route for route in raw_routes if isinstance(route, dict)]
 
 
+def preset_exports_list(payload: dict) -> list[dict]:
+    raw_exports = payload.get("exports") or []
+    if not isinstance(raw_exports, list):
+        return []
+    return [
+        export
+        for export in raw_exports
+        if isinstance(export, dict) and ("preset" in export or "route_detail" in export)
+    ]
+
+
 def confidence_signal_breakdown_text(confidence: dict | None, group_limit: int = 5, signal_limit: int = 3) -> str:
     if not confidence:
         return "无"
@@ -10416,7 +10427,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
     expected_validation_status_text = string_value_text(
         payload.get("expected_validation_status"), fallback="无"
     )
-    exports = payload.get("exports") or []
+    exports = preset_exports_list(payload)
     derived_preset_count = len(exports)
     derived_route_count = 0
     derived_example_count = 0

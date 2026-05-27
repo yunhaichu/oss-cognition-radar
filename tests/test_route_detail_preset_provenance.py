@@ -1313,6 +1313,45 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertIn("- Repository / unique evidence\uff1a0 / 0", lines)
         self.assertFalse(any("bad route detail" in line for line in lines))
 
+    def test_preset_export_markdown_filters_malformed_export_entries(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            "bad export",
+            {"bad": "export"},
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "routes": [
+                        {
+                            "route_id": "validation::tests",
+                            "repositories": ["owner/repo"],
+                            "examples": [{"evidence_stable_id": "ev_repo"}],
+                        }
+                    ],
+                },
+            },
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Preset / route / example\uff1a0 / 0 / 0", lines)
+        self.assertIn("## 1. Preset batch_repo", lines)
+        self.assertIn("- Route / example\uff1a1 / 1", lines)
+        self.assertIn("- Repository / unique evidence\uff1a1 / 1", lines)
+        self.assertFalse(any("bad export" in line for line in lines))
+        self.assertFalse(any("{'bad': 'export'}" in line for line in lines))
+
+    def test_preset_export_markdown_renders_malformed_exports_payload_as_empty(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = {"bad": "exports"}
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Preset / route / example\uff1a0 / 0 / 0", lines)
+        self.assertIn("- Repository / unique evidence\uff1a0 / 0", lines)
+        self.assertIn("\u5f53\u524d preset \u8303\u56f4\u6ca1\u6709\u53ef\u5bfc\u51fa\u7684 route detail\u3002", lines)
+        self.assertFalse(any("{'bad': 'exports'}" in line for line in lines))
+
     def test_preset_export_markdown_renders_malformed_route_identity_as_fallbacks(self):
         payload = preset_exports_payload({})
         payload["exports"] = [
