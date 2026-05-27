@@ -340,6 +340,16 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertIn("duplicate", markdown)
         self.assert_common_markdown(markdown, "duplicate_ids", 1, 1, "duplicate_ids=1")
 
+    def test_preset_export_markdown_renders_malformed_root_payload_as_empty(self):
+        markdown = radar.render_archive_route_detail_preset_exports(["bad payload"])
+        lines = markdown.splitlines()
+
+        self.assertIn("- Schema\uff1aroute_detail_preset_exports_v1", lines)
+        self.assertIn("- Preset / route / example\uff1a0 / 0 / 0", lines)
+        self.assertIn("- Repository / unique evidence\uff1a0 / 0", lines)
+        self.assertIn("\u5f53\u524d preset \u8303\u56f4\u6ca1\u6709\u53ef\u5bfc\u51fa\u7684 route detail\u3002", lines)
+        self.assertFalse(any("bad payload" in line for line in lines))
+
     def test_preset_export_markdown_renders_string_duplicate_preset_id_as_single_id(self):
         payload = preset_exports_payload({})
         payload["preset_validation"]["duplicate_preset_ids"] = "duplicate"

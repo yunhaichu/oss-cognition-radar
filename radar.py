@@ -10386,6 +10386,8 @@ def render_archive_route_detail(payload: dict) -> str:
 
 
 def render_archive_route_detail_preset_exports(payload: dict) -> str:
+    if not isinstance(payload, dict):
+        payload = {}
     summary = payload.get("summary") or {}
     if not isinstance(summary, dict):
         summary = {}
