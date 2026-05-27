@@ -31,7 +31,7 @@ MAX_TEXT_CHARS = 5000
 MAX_IMPLEMENTATION_FILE_SIZE = 120_000
 GROWTH_WINDOWS = {"1d": 1, "7d": 7, "30d": 30}
 GROWTH_MAX_AGE_DAYS = {"1d": 2, "7d": 10, "30d": 45}
-ARCHIVE_SEARCH_INDEX_VERSION = 10
+ARCHIVE_SEARCH_INDEX_VERSION = 11
 BINDING_CONFIDENCE_BASE = 35
 BINDING_CONFIDENCE_SIGNAL_WEIGHTS = {
     "requested_missing_layer": 22,
@@ -4730,6 +4730,7 @@ def build_archive_acquisition_patterns(rows: list[dict], limit: int) -> list[dic
                     "field_category": semantic["field_category"],
                     "field_label": semantic["field_label"],
                     "field_move": semantic["field_move"],
+                    "field_transfer_rule": semantic["field_transfer_rule"],
                     "layer_group": semantic["layer_group"],
                     "layer_label": semantic["layer_label"],
                     "layer_action": semantic["layer_action"],
@@ -5230,12 +5231,24 @@ def build_repository_cognition_profiles(patterns: list[dict], rows: list[dict], 
         if len(local_pattern["evidence_examples"]) < 3:
             local_pattern["evidence_examples"].append(
                 {
+                    "run_id": row.get("run_id"),
+                    "claim_id": row.get("claim_id"),
+                    "claim_field": row.get("field"),
+                    "missing_layer": row.get("missing_layer"),
+                    "missing_layer_label": row.get("missing_layer_label") or SUPPORT_LAYER_LABELS.get(row.get("missing_layer"), row.get("missing_layer")),
+                    "reason": row.get("reason"),
+                    "keywords": row.get("keywords") or [],
                     "evidence_id": row.get("evidence_id"),
                     "evidence_stable_id": row.get("evidence_stable_id"),
+                    "evidence_kind": row.get("evidence_kind"),
                     "evidence_title": row.get("evidence_title"),
+                    "evidence_url": row.get("evidence_url"),
+                    "evidence_excerpt": one_line(row.get("evidence_quote"), 220),
                     "evidence_type": row.get("evidence_type"),
                     "confidence": confidence.get("label"),
                     "confidence_score": confidence.get("score"),
+                    "confidence_source": confidence.get("source"),
+                    "confidence_signal_groups": confidence_signal_group_names(confidence),
                 }
             )
 
@@ -5334,6 +5347,8 @@ def repository_cognition_profile_search_text(profile: dict) -> str:
         "strongest design moves",
         "evidence families",
         "semantic patterns",
+        "explanation paths",
+        "claim gap evidence chain",
         profile.get("profile_id"),
         profile.get("repo_full_name"),
         profile.get("schema_version"),
@@ -5361,6 +5376,67 @@ def repository_cognition_profile_search_text(profile: dict) -> str:
     return " ".join(str(part or "") for part in parts)
 
 
+def repository_cognition_profile_explanation_paths(profile: dict, limit: int = 6) -> list[dict]:
+    paths = []
+    seen: set[str] = set()
+    for pattern in profile.get("supporting_patterns") or []:
+        semantic = pattern.get("semantic_normalization") or {}
+        for example in pattern.get("evidence_examples") or []:
+            evidence_ref = example.get("evidence_stable_id") or example.get("evidence_id") or ""
+            key = "|".join(
+                str(value or "")
+                for value in [
+                    pattern.get("pattern_id"),
+                    example.get("claim_id"),
+                    evidence_ref,
+                ]
+            )
+            if not evidence_ref or key in seen:
+                continue
+            seen.add(key)
+            paths.append(
+                {
+                    "path_id": stable_id("profile_path", profile.get("profile_id") or "", key),
+                    "profile_id": profile.get("profile_id"),
+                    "repo_full_name": profile.get("repo_full_name"),
+                    "pattern_id": pattern.get("pattern_id"),
+                    "pattern_score": pattern.get("pattern_score"),
+                    "semantic_field_category": semantic.get("field_category"),
+                    "semantic_field_label": semantic.get("field_label") or pattern.get("field"),
+                    "semantic_layer_group": semantic.get("layer_group") or pattern.get("missing_layer"),
+                    "semantic_layer_label": semantic.get("layer_label") or pattern.get("missing_layer_label"),
+                    "cognition_move": semantic.get("field_move"),
+                    "transfer_rule": semantic.get("field_transfer_rule"),
+                    "claim_id": example.get("claim_id"),
+                    "claim_field": example.get("claim_field"),
+                    "claim_gap_layer": example.get("missing_layer"),
+                    "claim_gap_layer_label": example.get("missing_layer_label"),
+                    "acquisition_reason": example.get("reason"),
+                    "keywords": example.get("keywords") or [],
+                    "evidence_id": example.get("evidence_id"),
+                    "evidence_stable_id": example.get("evidence_stable_id"),
+                    "evidence_kind": example.get("evidence_kind"),
+                    "evidence_title": example.get("evidence_title"),
+                    "evidence_url": example.get("evidence_url"),
+                    "evidence_excerpt": example.get("evidence_excerpt"),
+                    "evidence_type": example.get("evidence_type"),
+                    "confidence": example.get("confidence"),
+                    "confidence_score": example.get("confidence_score"),
+                    "confidence_source": example.get("confidence_source"),
+                    "confidence_signal_groups": example.get("confidence_signal_groups") or [],
+                }
+            )
+    paths.sort(
+        key=lambda item: (
+            -(item.get("confidence_score") or 0),
+            -(item.get("pattern_score") or 0),
+            item.get("semantic_field_label") or "",
+            item.get("evidence_stable_id") or item.get("evidence_id") or "",
+        )
+    )
+    return paths[: max(limit, 1)]
+
+
 def repository_cognition_profile_match_payload(profile: dict, relevance: dict) -> dict:
     return {
         "profile_id": profile.get("profile_id"),
@@ -5377,6 +5453,7 @@ def repository_cognition_profile_match_payload(profile: dict, relevance: dict) -
         "raw_fields": profile.get("raw_fields") or [],
         "raw_layers": profile.get("raw_layers") or [],
         "supporting_patterns": (profile.get("supporting_patterns") or [])[:3],
+        "explanation_paths": repository_cognition_profile_explanation_paths(profile),
         "relevance": relevance,
     }
 
@@ -7094,6 +7171,18 @@ def render_archive_search(payload: dict) -> str:
                         f"  设计动作：{moves}；证据族：{families}",
                     ]
                 )
+                paths = profile.get("explanation_paths") or []
+                for path in paths[:3]:
+                    evidence_ref = path.get("evidence_stable_id") or path.get("evidence_id") or "no-evidence-id"
+                    lines.append(
+                        f"  路径 `{path.get('path_id') or 'no-path-id'}`："
+                        f"{path.get('semantic_field_label') or '认知动作'} / {path.get('claim_field') or 'claim'} -> "
+                        f"{path.get('claim_gap_layer_label') or path.get('claim_gap_layer') or 'evidence'}；"
+                        f"`{evidence_ref}` {path.get('evidence_kind') or 'Evidence'} - {path.get('evidence_title') or '无标题'}；"
+                        f"confidence {path.get('confidence') or 'unknown'} "
+                        f"{path.get('confidence_score') if path.get('confidence_score') is not None else 'unknown'}；"
+                        f"原因：{one_line(path.get('acquisition_reason'))}"
+                    )
             lines.append("")
         if entry["matched_claims"]:
             lines.extend(["### Matched claims", ""])
@@ -7294,9 +7383,12 @@ def render_repository_cognition_profile(profile: dict | None, context: dict | No
             for example in examples[:2]:
                 stable_ref = example.get("evidence_stable_id") or example.get("evidence_id") or "no-evidence-id"
                 lines.append(
-                    f"  - `{stable_ref}` {example.get('evidence_title') or 'Evidence'}；"
+                    f"  - `{stable_ref}` {example.get('claim_field') or 'claim'} -> "
+                    f"{example.get('missing_layer_label') or example.get('missing_layer') or 'evidence'}；"
+                    f"{example.get('evidence_title') or 'Evidence'}；"
                     f"type {example.get('evidence_type') or 'general'}；"
-                    f"confidence {example.get('confidence') or 'unknown'} {example.get('confidence_score') if example.get('confidence_score') is not None else 'unknown'}"
+                    f"confidence {example.get('confidence') or 'unknown'} {example.get('confidence_score') if example.get('confidence_score') is not None else 'unknown'}；"
+                    f"reason {one_line(example.get('reason'))}"
                 )
         lines.append("")
     return lines
