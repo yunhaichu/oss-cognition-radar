@@ -6800,6 +6800,7 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
         generated_at=generated_at,
     )
     route_detail_selector_summary = route_detail_selectors.get("summary") or {}
+    route_detail_validation_fixtures = (route_detail_selectors.get("validation_fixtures") or {}).get("fixtures") or []
     scores = [
         (summary.get("track_score") or {}).get("score")
         for summary in repositories
@@ -6845,6 +6846,8 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
             "route_detail_selector_moves": route_detail_selector_summary.get("move_count", 0),
             "route_detail_selector_routes": route_detail_selector_summary.get("route_count", 0),
             "route_detail_selector_examples": route_detail_selector_summary.get("example_count", 0),
+            "route_detail_selector_presets": route_detail_selector_summary.get("preset_count", 0),
+            "route_detail_validation_fixtures": len(route_detail_validation_fixtures),
             "cross_project_patterns": sum(1 for item in patterns if item.get("repository_count", 0) >= 2),
             "average_pattern_confidence": round(sum(pattern_confidences) / len(pattern_confidences), 1) if pattern_confidences else None,
             "average_pattern_signal_score": mean_number(
@@ -8513,6 +8516,79 @@ def render_archive_dashboard(payload: dict) -> str:
       };
     }
 
+    function routeDetailFixturePreset(presetId, label, moveSelector, routeSelector, repoSelector) {
+      return {
+        preset_id: presetId,
+        label,
+        selectors: {
+          profile_path_move: moveSelector,
+          profile_path_route: routeSelector,
+          profile_path_repo: repoSelector,
+        },
+        summary: { example_count: 0 },
+      };
+    }
+
+    function routeDetailValidationFixtures(payload) {
+      const firstRoute = (payload.routes || []).find((route) => (route.repositories || []).length);
+      const fixtures = [];
+      if (firstRoute) {
+        const moveKey = firstRoute.move_key || "";
+        const routeId = firstRoute.route_id || "";
+        const repo = (firstRoute.repositories || [])[0] || "";
+        const baseBundle = (presets) => ({
+          schema_version: "route_detail_selector_preset_bundle_v1",
+          generated_at: payload.exported_at || new Date().toISOString(),
+          source: "dashboard_route_detail_validation_fixture",
+          filters: payload.filters || {},
+          preset_count: presets.length,
+          presets,
+        });
+        fixtures.push(
+          {
+            fixture_id: "missing_move",
+            expected_validation_status: "blocked",
+            description: "Preset move selector is outside the current dashboard route detail export scope.",
+            preset_bundle: baseBundle([
+              routeDetailFixturePreset("route_preset_fixture_missing_move", "Missing move fixture", "missing-move-fixture", routeId, repo),
+            ]),
+          },
+          {
+            fixture_id: "missing_route",
+            expected_validation_status: "blocked",
+            description: "Preset route selector is outside the matched dashboard move scope.",
+            preset_bundle: baseBundle([
+              routeDetailFixturePreset("route_preset_fixture_missing_route", "Missing route fixture", moveKey, "missing-route-fixture", repo),
+            ]),
+          },
+          {
+            fixture_id: "missing_repo",
+            expected_validation_status: "blocked",
+            description: "Preset repository selector is outside the matched dashboard route scope.",
+            preset_bundle: baseBundle([
+              routeDetailFixturePreset("route_preset_fixture_missing_repo", "Missing repo fixture", moveKey, routeId, "missing/repo-fixture"),
+            ]),
+          },
+          {
+            fixture_id: "duplicate_ids",
+            expected_validation_status: "duplicate_ids",
+            description: "Two ready dashboard presets reuse the same preset ID.",
+            preset_bundle: baseBundle([
+              routeDetailFixturePreset("route_preset_fixture_duplicate", "Duplicate ID fixture A", moveKey, routeId, repo),
+              routeDetailFixturePreset("route_preset_fixture_duplicate", "Duplicate ID fixture B", moveKey, routeId, repo),
+            ]),
+          }
+        );
+      }
+      return {
+        schema_version: "route_detail_preset_validation_fixtures_v1",
+        generated_at: payload.exported_at || new Date().toISOString(),
+        source: "dashboard_route_detail_export",
+        fixture_count: fixtures.length,
+        fixtures,
+      };
+    }
+
     function routeDetailExportPayload() {
       const rows = routeDetailRows();
       const routePayloads = rows.map(({ comparison, route, examples }) => {
@@ -8568,7 +8644,9 @@ def render_archive_dashboard(payload: dict) -> str:
         routes: routePayloads,
       };
       payload.preset_bundle = routeDetailPresetBundle(payload);
+      payload.validation_fixtures = routeDetailValidationFixtures(payload);
       payload.summary.preset_count = payload.preset_bundle.preset_count;
+      payload.summary.validation_fixture_count = payload.validation_fixtures.fixture_count;
       return payload;
     }
 
@@ -8583,6 +8661,7 @@ def render_archive_dashboard(payload: dict) -> str:
         `- Filters: move=${payload.filters.path_move_label}; route=${payload.filters.path_route_label}; repo=${payload.filters.path_repo_label}; confidence=${payload.filters.confidence_source}; signal=${payload.filters.signal_group}`,
         `- Summary: ${payload.summary.route_count} routes; ${payload.summary.example_count} examples; ${payload.summary.repository_count} repositories`,
         `- Presets: ${payload.preset_bundle?.preset_count ?? 0}`,
+        `- Validation fixtures: ${payload.validation_fixtures?.fixture_count ?? 0}`,
         "",
       ];
       payload.routes.forEach((route, index) => {
@@ -8626,6 +8705,20 @@ def render_archive_dashboard(payload: dict) -> str:
         if (presets.length > 12) {
           lines.push(`- ... ${presets.length - 12} more presets in JSON`);
         }
+        lines.push("");
+      }
+      const fixtures = payload.validation_fixtures?.fixtures || [];
+      if (fixtures.length) {
+        lines.push(
+          "## Validation Fixtures",
+          "",
+          `- Schema: ${payload.validation_fixtures.schema_version}`,
+          `- Fixture count: ${payload.validation_fixtures.fixture_count}`,
+          ""
+        );
+        fixtures.forEach((fixture) => {
+          lines.push(`- \\`${fixture.fixture_id || ""}\\` expected=${fixture.expected_validation_status || "unknown"}; ${fixture.description || ""}`);
+        });
         lines.push("");
       }
       return lines.filter((line, index) => line || lines[index - 1] !== "").join("\\n");
