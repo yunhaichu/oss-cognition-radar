@@ -816,6 +816,48 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_preserves_explicit_zero_export_summary_counts(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "summary": {
+                        "route_count": 0,
+                        "example_count": 0,
+                        "repository_count": 0,
+                        "unique_evidence_count": 0,
+                    },
+                    "routes": [
+                        {
+                            "repositories": ["owner/repo", "owner/second"],
+                            "examples": [
+                                {"evidence_stable_id": "ev_repo"},
+                                {"evidence_id": "ev_second"},
+                            ],
+                        },
+                        {
+                            "repositories": ["owner/repo"],
+                            "examples": [{"evidence_stable_id": "ev_repo"}],
+                        },
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Route / example\uff1a0 / 0", lines)
+        self.assertIn("- Repository / unique evidence\uff1a0 / 0", lines)
+        self.assertIn(
+            "- Route/example count consistency\uff1aroute 2 / summary 0 / matches summary False; example 3 / summary 0 / matches summary False",
+            lines,
+        )
+        self.assertIn(
+            "- Repository/evidence count consistency\uff1arepository 2 / summary 0 / matches summary False; evidence 2 / summary 0 / matches summary False",
+            lines,
+        )
+
     def test_preset_export_markdown_uses_top_level_summary_count_fallbacks_when_counts_missing(self):
         payload = preset_exports_payload({})
         payload["summary"] = {}
@@ -899,6 +941,53 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         )
         self.assertIn(
             "- Repository/evidence count consistency\uff1arepository 2 / summary 2 / matches summary True; evidence 2 / summary 3 / matches summary False",
+            lines,
+        )
+
+    def test_preset_export_markdown_preserves_explicit_zero_top_level_summary_counts(self):
+        payload = preset_exports_payload({})
+        payload["summary"] = {
+            "preset_count": 0,
+            "route_count": 0,
+            "example_count": 0,
+            "repository_count": 0,
+            "unique_evidence_count": 0,
+        }
+        payload["preset_validation"]["selected_preset_count"] = 1
+        payload["preset_validation"]["expected_route_count"] = 2
+        payload["preset_validation"]["expected_example_count"] = 3
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "routes": [
+                        {
+                            "repositories": ["owner/repo", "owner/second"],
+                            "examples": [
+                                {"evidence_stable_id": "ev_repo"},
+                                {"evidence_id": "ev_second"},
+                            ],
+                        },
+                        {
+                            "repositories": ["owner/repo"],
+                            "examples": [{"evidence_stable_id": "ev_repo"}],
+                        },
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Preset / route / example\uff1a0 / 0 / 0", lines)
+        self.assertIn("- Repository / unique evidence\uff1a0 / 0", lines)
+        self.assertIn("- Selected preset count consistency\uff1a1 / summary 0 / matches summary False", lines)
+        self.assertIn(
+            "- Expected route/example consistency\uff1aroute 2 / summary 0 / matches summary False; example 3 / summary 0 / matches summary False",
+            lines,
+        )
+        self.assertIn(
+            "- Repository/evidence count consistency\uff1arepository 2 / summary 0 / matches summary False; evidence 2 / summary 0 / matches summary False",
             lines,
         )
 
