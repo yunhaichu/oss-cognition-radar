@@ -347,6 +347,20 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertIn("- Source selector fixture filter\uff1a\u65e0", lines)
         self.assertIn("- Source selector filters\uff1a\u65e0", lines)
 
+    def test_preset_export_markdown_renders_empty_requested_preset_ids(self):
+        markdown = radar.render_archive_route_detail_preset_exports(preset_exports_payload({}))
+        lines = markdown.splitlines()
+
+        self.assertIn("- Requested preset IDs\uff1a\u65e0", lines)
+
+    def test_preset_export_markdown_renders_requested_preset_ids(self):
+        payload = preset_exports_payload({})
+        payload["requested_preset_ids"] = ["batch_repo", "batch_second"]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Requested preset IDs\uff1abatch_repo, batch_second", lines)
+
     def test_preset_export_markdown_uses_source_fixture_status_fallback_when_filters_empty(self):
         markdown = radar.render_archive_route_detail_preset_exports(
             preset_exports_payload({"source_fixture_status_filter": "ready"})

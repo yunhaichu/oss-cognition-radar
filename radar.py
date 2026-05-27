@@ -10330,6 +10330,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         or "无"
     )
     source_filters_text = count_map_text(source_selector_filters)
+    requested_preset_ids_text = ", ".join(payload.get("requested_preset_ids") or []) or "无"
     source_status_counts = payload.get("source_fixture_status_counts") or {}
     source_all_status_counts = payload.get("source_all_fixture_status_counts") or {}
     source_status_text = ", ".join(
@@ -10345,6 +10346,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         f"- 数据库：{payload.get('db')}",
         f"- 生成时间：{payload.get('generated_at')}",
         f"- Preset source：{payload.get('source_preset_path') or '无'}",
+        f"- Requested preset IDs：{requested_preset_ids_text}",
         f"- Source schema：{payload.get('source_bundle_schema') or 'unknown'}",
         f"- Source fixture：{payload.get('source_fixture_id') or '无'}",
         f"- Source fixture status filter：{payload.get('source_fixture_status_filter') or '无'}",
