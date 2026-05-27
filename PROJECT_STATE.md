@@ -52,6 +52,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Dashboard route selector export: `--archive-dashboard` JSON now embeds the same `route_detail_selectors_v1` structure and selector statistics so browser and CLI route detail selector payloads stay aligned.
 - Dashboard selector-driven drilldown: dashboard design move, evidence route, and repository option lists now prefer `route_detail_selectors_v1`, and dashboard search includes selector values such as move keys, route IDs, route labels, and repository options.
 - Route detail selector presets: `--archive-route-selectors` JSON now includes `route_detail_selector_preset_bundle_v1`, and `--archive-route-detail --profile-path-preset PATH` can batch-run saved selector presets with optional preset ID selection.
+- Dashboard route detail preset bundle: dashboard route detail JSON exports now embed `route_detail_selector_preset_bundle_v1`, so browser-exported drilldowns can be reused by CLI `--profile-path-preset`.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -76,4 +77,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Expose route detail selector preset bundles in dashboard route detail exports.
+Add route detail preset bundle validation summaries before batch exports run.

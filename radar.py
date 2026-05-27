@@ -8141,12 +8141,90 @@ def render_archive_dashboard(payload: dict) -> str:
       return select.selectedOptions?.[0]?.textContent || "All";
     }
 
+    function dashboardStableId(prefix, ...parts) {
+      const raw = parts.map((part) => String(part ?? "")).join("::");
+      let hash = 2166136261;
+      for (let index = 0; index < raw.length; index += 1) {
+        hash ^= raw.charCodeAt(index);
+        hash = Math.imul(hash, 16777619) >>> 0;
+      }
+      const suffix = hash.toString(16).padStart(8, "0") + raw.length.toString(16).padStart(4, "0").slice(-4);
+      return `${prefix}_${suffix}`;
+    }
+
+    function routeDetailPresetSelectors(route, repo) {
+      const selectors = {
+        profile_path_move: route.move_key,
+        profile_path_route: route.route_id,
+        profile_path_repo: repo,
+      };
+      if (state.confidenceSource !== "all") selectors.profile_path_confidence_source = state.confidenceSource;
+      if (state.signalGroup !== "all") selectors.archive_signal_group = state.signalGroup;
+      if (state.track !== "all") selectors.archive_track = state.track;
+      if (state.minScore) selectors.min_track_score = state.minScore;
+      return selectors;
+    }
+
+    function routeDetailRepoCounts(route) {
+      const counts = new Map();
+      (route.examples || []).forEach((example) => {
+        const repo = example.repo_full_name;
+        if (!repo) return;
+        counts.set(repo, (counts.get(repo) || 0) + 1);
+      });
+      if (!counts.size) {
+        (route.repositories || []).forEach((repo) => counts.set(repo, 1));
+      }
+      return counts;
+    }
+
+    function routeDetailPresetBundle(payload) {
+      const presets = [];
+      (payload.routes || []).forEach((route) => {
+        routeDetailRepoCounts(route).forEach((exampleCount, repo) => {
+          const selectors = routeDetailPresetSelectors(route, repo);
+          presets.push({
+            preset_id: dashboardStableId("route_preset", selectors.profile_path_move, selectors.profile_path_route, repo),
+            label: `${route.design_move || route.design_move_category || "Design move"} / ${route.route_label || "route"} / ${repo}`,
+            design_move: route.design_move,
+            design_move_category: route.design_move_category,
+            route_label: route.route_label,
+            claim_gap_layer: route.claim_gap_layer,
+            evidence_type: route.evidence_type,
+            repo_full_name: repo,
+            selectors,
+            summary: {
+              example_count: exampleCount,
+              route_example_count: route.path_count || 0,
+              route_repository_count: route.repository_count || 0,
+              route_average_confidence: route.average_confidence,
+            },
+          });
+        });
+      });
+      presets.sort((a, b) =>
+        (b.summary?.example_count || 0) - (a.summary?.example_count || 0)
+        || String(a.design_move || "").localeCompare(String(b.design_move || ""))
+        || String(a.route_label || "").localeCompare(String(b.route_label || ""))
+        || String(a.repo_full_name || "").localeCompare(String(b.repo_full_name || ""))
+      );
+      return {
+        schema_version: "route_detail_selector_preset_bundle_v1",
+        generated_at: payload.exported_at || new Date().toISOString(),
+        source: "dashboard_route_detail_export",
+        filters: payload.filters || {},
+        preset_count: presets.length,
+        presets,
+      };
+    }
+
     function routeDetailExportPayload() {
       const rows = routeDetailRows();
       const routePayloads = rows.map(({ comparison, route, examples }) => {
         const scopedRepositories = Array.from(new Set(examples.map((example) => example.repo_full_name).filter(Boolean))).sort();
         return {
           comparison_id: comparison.comparison_id,
+          move_key: pathComparisonMoveKey(comparison),
           design_move_category: comparison.design_move_category,
           design_move: comparison.design_move,
           cognition_move: comparison.cognition_move,
@@ -8167,10 +8245,11 @@ def render_archive_dashboard(payload: dict) -> str:
           examples,
         };
       });
-      return {
+      const exportedAt = new Date().toISOString();
+      const payload = {
         schema_version: "route_detail_drilldown_v1",
         generated_at: DATA.generated_at,
-        exported_at: new Date().toISOString(),
+        exported_at: exportedAt,
         db: DATA.db || "",
         filters: {
           query: state.query,
@@ -8193,6 +8272,9 @@ def render_archive_dashboard(payload: dict) -> str:
         },
         routes: routePayloads,
       };
+      payload.preset_bundle = routeDetailPresetBundle(payload);
+      payload.summary.preset_count = payload.preset_bundle.preset_count;
+      return payload;
     }
 
     function routeDetailMarkdown(payload) {
@@ -8205,6 +8287,7 @@ def render_archive_dashboard(payload: dict) -> str:
         `- Database: ${payload.db || "unknown"}`,
         `- Filters: move=${payload.filters.path_move_label}; route=${payload.filters.path_route_label}; repo=${payload.filters.path_repo_label}; confidence=${payload.filters.confidence_source}; signal=${payload.filters.signal_group}`,
         `- Summary: ${payload.summary.route_count} routes; ${payload.summary.example_count} examples; ${payload.summary.repository_count} repositories`,
+        `- Presets: ${payload.preset_bundle?.preset_count ?? 0}`,
         "",
       ];
       payload.routes.forEach((route, index) => {
@@ -8235,6 +8318,21 @@ def render_archive_dashboard(payload: dict) -> str:
           );
         });
       });
+      const presets = payload.preset_bundle?.presets || [];
+      if (presets.length) {
+        lines.push("## Preset Bundle", "", `- Schema: ${payload.preset_bundle.schema_version}`, `- Preset count: ${payload.preset_bundle.preset_count}`, "");
+        presets.slice(0, 12).forEach((preset) => {
+          const selectors = preset.selectors || {};
+          lines.push(
+            `- \\`${preset.preset_id || ""}\\` ${preset.label || ""}`,
+            `  - move=\\`${selectors.profile_path_move || ""}\\`; route=\\`${selectors.profile_path_route || ""}\\`; repo=\\`${selectors.profile_path_repo || ""}\\``
+          );
+        });
+        if (presets.length > 12) {
+          lines.push(`- ... ${presets.length - 12} more presets in JSON`);
+        }
+        lines.push("");
+      }
       return lines.filter((line, index) => line || lines[index - 1] !== "").join("\\n");
     }
 
