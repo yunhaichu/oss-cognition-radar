@@ -68,6 +68,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Dashboard fixture provenance rendering: route detail Markdown exports and inline fixture previews now surface fixture status filters, filtered/unfiltered counts, matching-expected counts, and status distributions.
 - Selector fixture provenance rendering: CLI `--archive-route-selectors` Markdown now surfaces fixture source, status filters, filtered/unfiltered counts, matching-expected counts, and filtered/all status distributions.
 - Route selector provenance regression coverage: `tests/test_route_selector_provenance.py` verifies filtered fixture Markdown provenance for blocked, duplicate ID, and empty ready scopes without requiring a SQLite archive.
+- Route detail preset fixture provenance regression coverage: `tests/test_route_detail_preset_provenance.py` verifies selector fixture and dashboard single-fixture bundle roundtrips preserve source filters, filtered/unfiltered counts, matching-expected counts, validation status, and status distributions.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -92,4 +93,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add route detail preset fixture provenance regression coverage for selector/dashboard roundtrips.
+Add preset fixture error-path regression coverage for missing fixture IDs and preset ID selection.
