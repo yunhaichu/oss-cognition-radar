@@ -6621,6 +6621,7 @@ def render_archive_dashboard(payload: dict) -> str:
     const patternsPanel = document.getElementById("patternsPanel");
     const githubLink = document.getElementById("githubLink");
     let routeDetailExportUrl = null;
+    let updatingPermalink = false;
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -7571,6 +7572,86 @@ def render_archive_dashboard(payload: dict) -> str:
       return `route-detail-${movePart}-${routePart}-${repoPart}.${extension}`;
     }
 
+    function dashboardStateParams() {
+      const params = new URLSearchParams();
+      if (state.query) params.set("q", state.query);
+      if (state.track !== "all") params.set("track", state.track);
+      if (state.confidenceSource !== "all") params.set("confidence", state.confidenceSource);
+      if (state.signalGroup !== "all") params.set("signal", state.signalGroup);
+      if (state.minScore) params.set("score", String(state.minScore));
+      if (state.pathMove !== "all") params.set("move", state.pathMove);
+      if (state.pathRoute !== "all") params.set("route", state.pathRoute);
+      if (state.pathRepo !== "all") params.set("path_repo", state.pathRepo);
+      return params;
+    }
+
+    function dashboardPermalinkHash() {
+      const query = dashboardStateParams().toString();
+      return query ? `#${query}` : "";
+    }
+
+    function dashboardPermalinkUrl() {
+      const url = new URL(window.location.href);
+      url.hash = dashboardPermalinkHash().replace(/^#/, "");
+      return url.toString();
+    }
+
+    function syncDashboardPermalink() {
+      const nextHash = dashboardPermalinkHash();
+      if (window.location.hash === nextHash) return;
+      const url = new URL(window.location.href);
+      url.hash = nextHash.replace(/^#/, "");
+      updatingPermalink = true;
+      window.history.replaceState(null, "", url);
+      updatingPermalink = false;
+    }
+
+    function resetDashboardStateValues() {
+      state.query = "";
+      state.track = "all";
+      state.confidenceSource = "all";
+      state.signalGroup = "all";
+      state.minScore = 0;
+      state.selected = null;
+      state.pathMove = "all";
+      state.pathRoute = "all";
+      state.pathRepo = "all";
+    }
+
+    function applyDashboardPermalink(resetWhenEmpty = false) {
+      const raw = window.location.hash.replace(/^#/, "");
+      if (!raw) {
+        if (resetWhenEmpty) resetDashboardStateValues();
+        return;
+      }
+      const params = new URLSearchParams(raw);
+      const numberValue = Number(params.get("score"));
+      resetDashboardStateValues();
+      state.query = params.get("q") || "";
+      state.track = params.get("track") || "all";
+      state.confidenceSource = params.get("confidence") || "all";
+      state.signalGroup = params.get("signal") || "all";
+      state.minScore = Number.isFinite(numberValue) ? Math.max(0, Math.min(100, numberValue)) : 0;
+      state.selected = null;
+      state.pathMove = params.get("move") || "all";
+      state.pathRoute = params.get("route") || "all";
+      state.pathRepo = params.get("path_repo") || "all";
+    }
+
+    function setSelectValue(select, value, fallback = "all") {
+      const values = new Set(Array.from(select.options).map((option) => option.value));
+      select.value = values.has(value) ? value : fallback;
+      return select.value;
+    }
+
+    function syncControlsFromState() {
+      searchInput.value = state.query;
+      scoreRange.value = String(state.minScore);
+      state.track = setSelectValue(trackSelect, state.track);
+      state.confidenceSource = setSelectValue(confidenceSourceSelect, state.confidenceSource);
+      state.signalGroup = setSelectValue(signalGroupSelect, state.signalGroup);
+    }
+
     function clearRouteDetailExportUrl() {
       if (routeDetailExportUrl) {
         URL.revokeObjectURL(routeDetailExportUrl);
@@ -7595,6 +7676,22 @@ def render_archive_dashboard(payload: dict) -> str:
           <a href="${escapeHtml(routeDetailExportUrl)}" download="${escapeHtml(filename)}">${escapeHtml(filename)}</a>
         </div>
         <textarea readonly spellcheck="false">${escapeHtml(text)}</textarea>
+      `;
+    }
+
+    function showRouteDetailPermalink() {
+      const exportBlock = document.getElementById("routeDetailExportBlock");
+      if (!exportBlock) return;
+      clearRouteDetailExportUrl();
+      syncDashboardPermalink();
+      const permalink = dashboardPermalinkUrl();
+      exportBlock.hidden = false;
+      exportBlock.innerHTML = `
+        <div class="route-detail-export-head">
+          <div class="section-title">Permalink</div>
+          <a href="${escapeHtml(permalink)}">${escapeHtml("Open")}</a>
+        </div>
+        <textarea readonly spellcheck="false">${escapeHtml(permalink)}</textarea>
       `;
     }
 
@@ -7665,6 +7762,7 @@ def render_archive_dashboard(payload: dict) -> str:
           <div class="section-title">Route Drilldown Details</div>
           <div class="route-detail-actions">
             <div class="count">${escapeHtml(routeRows.length)} routes / ${escapeHtml(totalExamples)} examples</div>
+            <button id="routeDetailPermalinkButton" type="button" ${routeRows.length ? "" : "disabled"}>Permalink</button>
             <button id="routeDetailJsonButton" type="button" ${routeRows.length ? "" : "disabled"}>JSON</button>
             <button id="routeDetailMarkdownButton" type="button" ${routeRows.length ? "" : "disabled"}>Markdown</button>
           </div>
@@ -7672,6 +7770,7 @@ def render_archive_dashboard(payload: dict) -> str:
         <div class="route-detail-export" id="routeDetailExportBlock" hidden></div>
         <div class="route-detail-grid">${cards || '<div class="empty">No matching route details.</div>'}</div>
       `;
+      document.getElementById("routeDetailPermalinkButton")?.addEventListener("click", showRouteDetailPermalink);
       document.getElementById("routeDetailJsonButton")?.addEventListener("click", () => downloadRouteDetail("json"));
       document.getElementById("routeDetailMarkdownButton")?.addEventListener("click", () => downloadRouteDetail("markdown"));
     }
@@ -8085,6 +8184,7 @@ def render_archive_dashboard(payload: dict) -> str:
       renderPathRouteDetailPanel();
       renderPatterns();
       renderList(items);
+      syncDashboardPermalink();
     }
 
     document.getElementById("dbMeta").textContent = DATA.db || "";
@@ -8092,6 +8192,8 @@ def render_archive_dashboard(payload: dict) -> str:
     renderTrackOptions();
     renderConfidenceSourceOptions();
     renderSignalGroupOptions();
+    applyDashboardPermalink();
+    syncControlsFromState();
 
     searchInput.addEventListener("input", () => {
       state.query = searchInput.value;
@@ -8131,15 +8233,7 @@ def render_archive_dashboard(payload: dict) -> str:
       render();
     });
     resetButton.addEventListener("click", () => {
-      state.query = "";
-      state.track = "all";
-      state.confidenceSource = "all";
-      state.signalGroup = "all";
-      state.minScore = 0;
-      state.selected = null;
-      state.pathMove = "all";
-      state.pathRoute = "all";
-      state.pathRepo = "all";
+      resetDashboardStateValues();
       searchInput.value = "";
       trackSelect.value = "all";
       confidenceSourceSelect.value = "all";
@@ -8148,6 +8242,13 @@ def render_archive_dashboard(payload: dict) -> str:
       pathRouteSelect.value = "all";
       pathRepoSelect.value = "all";
       scoreRange.value = "0";
+      render();
+    });
+
+    window.addEventListener("hashchange", () => {
+      if (updatingPermalink) return;
+      applyDashboardPermalink(true);
+      syncControlsFromState();
       render();
     });
 
