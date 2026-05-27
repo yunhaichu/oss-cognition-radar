@@ -44,25 +44,35 @@ BINDING_CONFIDENCE_KEYWORD_HIT_WEIGHT = 5
 BINDING_CONFIDENCE_KEYWORD_HIT_MAX = 15
 AUTO_CONFIDENCE_CALIBRATION = "archive_auto_v1"
 AUTO_CONFIDENCE_ARCHIVE_WEIGHTS = {
-    "cross_project_5plus": 12,
-    "cross_project_3plus": 8,
-    "cross_project_2plus": 5,
-    "repeated_binding_5plus": 5,
-    "repeated_binding_3plus": 3,
     "cross_version_binding_3plus": 9,
     "cross_version_binding_2plus": 5,
     "cross_version_evidence_drift": -4,
     "repo_history_3plus": 3,
-    "repo_activity_sustained": 6,
-    "repo_activity_declining": -6,
-    "release_cadence_stable": 5,
-    "release_cadence_missing": -4,
-    "source_or_validation_evidence": 6,
-    "configuration_or_release_evidence": 4,
-    "generic_evidence": -5,
-    "negative_or_boundary_polarity": -8,
-    "stable_artifact_url": 3,
-    "keyword_sparse": -4,
+    "repo_activity_sustained": 4,
+    "repo_activity_declining": -8,
+    "release_cadence_stable": 3,
+    "release_cadence_missing": -7,
+    "source_or_validation_evidence": 9,
+    "configuration_or_release_evidence": 6,
+    "generic_evidence": -9,
+    "negative_or_boundary_polarity": -12,
+    "stable_artifact_url": 2,
+    "keyword_sparse": -7,
+}
+AUTO_CONFIDENCE_REPEAT_THRESHOLDS = {
+    "cross_project_repositories": [5, 3, 2],
+    "repeated_bindings": [5, 3],
+}
+AUTO_CONFIDENCE_SCORING = {
+    "base": 42,
+    "heuristic_floor": 55,
+    "heuristic_scale": 0.45,
+    "heuristic_max": 22,
+    "repeat_repo_weight": 3.5,
+    "repeat_binding_weight": 0.9,
+    "repeat_max": 22,
+    "high_threshold": 85,
+    "medium_threshold": 65,
 }
 CONFIDENCE_SIGNAL_GROUPS = [
     ("time_series", "Time series"),
@@ -1062,6 +1072,20 @@ def binding_confidence_label(score: int | float) -> str:
     return "low"
 
 
+def auto_confidence_label(score: int | float) -> str:
+    if score >= AUTO_CONFIDENCE_SCORING["high_threshold"]:
+        return "high"
+    if score >= AUTO_CONFIDENCE_SCORING["medium_threshold"]:
+        return "medium"
+    return "low"
+
+
+def confidence_label_for_calibration(score: int | float, calibration: str | None = None) -> str:
+    if calibration == AUTO_CONFIDENCE_CALIBRATION:
+        return auto_confidence_label(score)
+    return binding_confidence_label(score)
+
+
 def normalized_binding_signal(signal: str) -> str:
     if signal.startswith("keyword_hits:"):
         return "keyword_hits"
@@ -1193,6 +1217,18 @@ def binding_confidence_weight_snapshot() -> dict:
         "keyword_hits": {
             "per_hit": BINDING_CONFIDENCE_KEYWORD_HIT_WEIGHT,
             "max": BINDING_CONFIDENCE_KEYWORD_HIT_MAX,
+        },
+    }
+
+
+def auto_confidence_scoring_snapshot() -> dict:
+    return {
+        "scoring": dict(AUTO_CONFIDENCE_SCORING),
+        "archive_signal_weights": dict(AUTO_CONFIDENCE_ARCHIVE_WEIGHTS),
+        "repeat_signal_thresholds": dict(AUTO_CONFIDENCE_REPEAT_THRESHOLDS),
+        "label_thresholds": {
+            "high": AUTO_CONFIDENCE_SCORING["high_threshold"],
+            "medium": AUTO_CONFIDENCE_SCORING["medium_threshold"],
         },
     }
 
@@ -3128,12 +3164,12 @@ def binding_confidence_from_row(row: sqlite3.Row) -> dict:
         }
 
     auto_score = int(clamp(auto_score, 0, 100))
-    auto_label = (
-        row["auto_confidence_label"] if "auto_confidence_label" in row_keys else None
-    ) or binding_confidence_label(auto_score)
     auto_calibration = (
         row["auto_calibration"] if "auto_calibration" in row_keys else None
     ) or AUTO_CONFIDENCE_CALIBRATION
+    auto_label = (
+        row["auto_confidence_label"] if "auto_confidence_label" in row_keys else None
+    ) or confidence_label_for_calibration(auto_score, auto_calibration)
     auto_signals_json = row["auto_confidence_signals_json"] if "auto_confidence_signals_json" in row_keys else None
     auto_signals = safe_json_loads(auto_signals_json, [])
     auto_breakdown = confidence_signal_breakdown(auto_signals)
@@ -4227,93 +4263,121 @@ def archive_repository_time_series_context(conn: sqlite3.Connection) -> dict[str
     return context
 
 
-def auto_confidence_signal_delta(row: dict, context: dict) -> tuple[int, list[str]]:
-    score_delta = 0
+def auto_confidence_repetition_score(repo_count: int, binding_count: int) -> float:
+    return min(
+        repo_count * AUTO_CONFIDENCE_SCORING["repeat_repo_weight"]
+        + binding_count * AUTO_CONFIDENCE_SCORING["repeat_binding_weight"],
+        AUTO_CONFIDENCE_SCORING["repeat_max"],
+    )
+
+
+def auto_confidence_heuristic_component(heuristic_score: int | float) -> float:
+    return min(
+        max(
+            (float(heuristic_score) - AUTO_CONFIDENCE_SCORING["heuristic_floor"])
+            * AUTO_CONFIDENCE_SCORING["heuristic_scale"],
+            0,
+        ),
+        AUTO_CONFIDENCE_SCORING["heuristic_max"],
+    )
+
+
+def auto_confidence_score_parts(row: dict, context: dict, heuristic_score: int, heuristic: dict) -> tuple[int, list[str], dict]:
     signals: list[str] = [AUTO_CONFIDENCE_CALIBRATION]
     repo_count = context.get("repository_count", 0)
     binding_count = context.get("binding_count", 0)
+    components = {
+        "base": float(AUTO_CONFIDENCE_SCORING["base"]),
+        "heuristic_component": round(auto_confidence_heuristic_component(heuristic_score), 2),
+        "repetition_component": round(auto_confidence_repetition_score(repo_count, binding_count), 2),
+        "time_series_component": 0.0,
+        "evidence_quality_component": 0.0,
+        "penalty_component": 0.0,
+    }
 
-    if repo_count >= 5:
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["cross_project_5plus"]
+    repo_thresholds = AUTO_CONFIDENCE_REPEAT_THRESHOLDS["cross_project_repositories"]
+    binding_thresholds = AUTO_CONFIDENCE_REPEAT_THRESHOLDS["repeated_bindings"]
+
+    if repo_count >= repo_thresholds[0]:
         signals.append(f"cross_project_repeated:{repo_count}")
-    elif repo_count >= 3:
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["cross_project_3plus"]
+    elif repo_count >= repo_thresholds[1]:
         signals.append(f"cross_project_repeated:{repo_count}")
-    elif repo_count >= 2:
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["cross_project_2plus"]
+    elif repo_count >= repo_thresholds[2]:
         signals.append(f"cross_project_repeated:{repo_count}")
 
-    if binding_count >= 5:
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["repeated_binding_5plus"]
+    if binding_count >= binding_thresholds[0]:
         signals.append(f"repeated_binding:{binding_count}")
-    elif binding_count >= 3:
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["repeated_binding_3plus"]
+    elif binding_count >= binding_thresholds[1]:
         signals.append(f"repeated_binding:{binding_count}")
 
     binding_history = context.get("binding_history") or {}
     history_run_count = binding_history.get("run_count") or 0
     if history_run_count >= 3:
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["cross_version_binding_3plus"]
+        components["time_series_component"] += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["cross_version_binding_3plus"]
         signals.append(f"cross_version_binding_stable:{history_run_count}")
     elif history_run_count >= 2:
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["cross_version_binding_2plus"]
+        components["time_series_component"] += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["cross_version_binding_2plus"]
         signals.append(f"cross_version_binding_stable:{history_run_count}")
     evidence_ref_count = binding_history.get("evidence_ref_count") or 0
     if history_run_count >= 2 and evidence_ref_count > 1:
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["cross_version_evidence_drift"]
+        components["penalty_component"] += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["cross_version_evidence_drift"]
         signals.append(f"cross_version_evidence_drift:{evidence_ref_count}")
 
     repo_time_series = context.get("repository_time_series") or {}
     snapshot_count = repo_time_series.get("snapshot_count") or 0
     if snapshot_count >= 3 and (repo_time_series.get("history_days") or 0) >= 7:
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["repo_history_3plus"]
+        components["time_series_component"] += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["repo_history_3plus"]
         signals.append(f"repo_history:{snapshot_count}")
     activity_trend = repo_time_series.get("activity_trend")
     if activity_trend in {"rising_or_sustained", "stable"} and (repo_time_series.get("latest_activity_score") or 0) >= 20:
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["repo_activity_sustained"]
+        components["time_series_component"] += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["repo_activity_sustained"]
         signals.append(f"repo_activity:{activity_trend}")
     elif activity_trend == "declining":
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["repo_activity_declining"]
+        components["penalty_component"] += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["repo_activity_declining"]
         signals.append("repo_activity:declining")
     release_trend = repo_time_series.get("release_trend")
     if release_trend == "stable_or_rising":
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["release_cadence_stable"]
+        components["time_series_component"] += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["release_cadence_stable"]
         signals.append("release_cadence:stable_or_rising")
     elif release_trend == "missing" and snapshot_count >= 2:
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["release_cadence_missing"]
+        components["penalty_component"] += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["release_cadence_missing"]
         signals.append("release_cadence:missing")
 
     evidence_type = row.get("evidence_type") or "general"
     if evidence_type in {"source_entrypoint", "test_surface", "benchmark"}:
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["source_or_validation_evidence"]
+        components["evidence_quality_component"] += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["source_or_validation_evidence"]
         signals.append(f"source_or_validation_evidence:{evidence_type}")
     elif evidence_type in {"configuration", "release_delta", "implementation_change"}:
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["configuration_or_release_evidence"]
+        components["evidence_quality_component"] += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["configuration_or_release_evidence"]
         signals.append(f"engineering_trace_evidence:{evidence_type}")
     elif evidence_type == "general":
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["generic_evidence"]
+        components["penalty_component"] += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["generic_evidence"]
         signals.append("generic_evidence")
 
     polarity = row.get("polarity") or "supporting"
     if polarity in {"negative", "boundary"}:
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["negative_or_boundary_polarity"]
+        components["penalty_component"] += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["negative_or_boundary_polarity"]
         signals.append(f"boundary_polarity:{polarity}")
 
     if row.get("evidence_url"):
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["stable_artifact_url"]
+        components["evidence_quality_component"] += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["stable_artifact_url"]
         signals.append("stable_artifact_url")
 
-    heuristic = (row.get("binding_confidence") or {}).get("heuristic") or row.get("binding_confidence") or {}
     normalized_signals = {
         normalized_binding_signal(str(signal))
         for signal in heuristic.get("signals") or []
         if str(signal) != "heuristic_v1"
     }
     if "keyword_hits" not in normalized_signals:
-        score_delta += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["keyword_sparse"]
+        components["penalty_component"] += AUTO_CONFIDENCE_ARCHIVE_WEIGHTS["keyword_sparse"]
         signals.append("keyword_sparse")
 
-    return score_delta, signals
+    raw_score = sum(components.values())
+    components = {key: round(value, 2) for key, value in components.items()}
+    components["raw_score"] = round(raw_score, 2)
+    score = int(clamp(round(raw_score), 0, 100))
+    components["score"] = score
+    return score, signals, components
 
 
 def auto_confidence_for_row(row: dict, context: dict) -> dict:
@@ -4328,17 +4392,17 @@ def auto_confidence_for_row(row: dict, context: dict) -> dict:
     heuristic_score = heuristic.get("score")
     if not isinstance(heuristic_score, (int, float)):
         heuristic_score = 50
-    score_delta, signals = auto_confidence_signal_delta(row, context)
-    score = int(clamp(int(heuristic_score) + score_delta, 0, 100))
+    score, signals, score_components = auto_confidence_score_parts(row, context, int(heuristic_score), heuristic)
     return {
         "score": score,
-        "label": binding_confidence_label(score),
+        "label": auto_confidence_label(score),
         "calibration": AUTO_CONFIDENCE_CALIBRATION,
         "signals": signals,
         "signal_breakdown": confidence_signal_breakdown(signals),
         "source": "auto",
         "heuristic": heuristic,
         "score_delta": score - int(heuristic_score),
+        "score_components": score_components,
         "pattern_context": {
             "repository_count": context.get("repository_count", 0),
             "binding_count": context.get("binding_count", 0),
@@ -4405,6 +4469,7 @@ def apply_archive_auto_calibration(conn: sqlite3.Connection, args: argparse.Name
                     "auto_score": auto_confidence.get("score"),
                     "auto_label": auto_confidence.get("label"),
                     "score_delta": auto_confidence.get("score_delta"),
+                    "score_components": auto_confidence.get("score_components") or {},
                     "signals": auto_confidence.get("signals") or [],
                     "pattern_context": auto_confidence.get("pattern_context") or {},
                     "binding_history_context": auto_confidence.get("binding_history_context") or {},
@@ -4417,6 +4482,9 @@ def apply_archive_auto_calibration(conn: sqlite3.Connection, args: argparse.Name
     scores = [item["auto_score"] for item in updated if isinstance(item.get("auto_score"), (int, float))]
     deltas = [item["score_delta"] for item in updated if isinstance(item.get("score_delta"), (int, float))]
     source_counts = {"auto": len(updated)} if updated else {}
+    label_counts: dict[str, int] = {}
+    for item in updated:
+        count_value(label_counts, item.get("auto_label"))
     return {
         "schema_version": 1,
         "mode": "archive_auto_calibrate",
@@ -4426,7 +4494,7 @@ def apply_archive_auto_calibration(conn: sqlite3.Connection, args: argparse.Name
         "scope": "latest_deep_dossiers",
         "weights": {
             "heuristic_v1": binding_confidence_weight_snapshot(),
-            AUTO_CONFIDENCE_CALIBRATION: dict(AUTO_CONFIDENCE_ARCHIVE_WEIGHTS),
+            AUTO_CONFIDENCE_CALIBRATION: auto_confidence_scoring_snapshot(),
         },
         "statistics": {
             "candidate_bindings": len(rows),
@@ -4434,6 +4502,9 @@ def apply_archive_auto_calibration(conn: sqlite3.Connection, args: argparse.Name
             "repositories": len({item.get("repo_full_name") for item in updated if item.get("repo_full_name")}),
             "mean_auto_confidence": mean_number(scores),
             "mean_score_delta": mean_number(deltas),
+            "minimum_auto_confidence": min(scores) if scores else None,
+            "maximum_auto_confidence": max(scores) if scores else None,
+            "auto_confidence_labels": top_count_items(label_counts),
             "confidence_sources": top_count_items(source_counts),
             "cross_version_stable_bindings": sum(
                 1 for item in updated if any(str(signal).startswith("cross_version_binding_stable:") for signal in item.get("signals") or [])
@@ -4592,10 +4663,10 @@ def cognition_summary_score(patterns: list[dict], repo_count: int, binding_count
         for item in patterns
         if isinstance(item.get("signal_group_score"), (int, float))
     ]
-    pattern_part = (mean_number(pattern_scores) or 0) * 0.42
-    confidence_part = (mean_number(confidence_scores) or 0) * 0.22
-    signal_part = (mean_number(signal_scores) or 0) * 1.15
-    repeat_part = min(repo_count * 5 + binding_count * 1.5, 24)
+    pattern_part = (mean_number(pattern_scores) or 0) * 0.36
+    confidence_part = (mean_number(confidence_scores) or 0) * 0.20
+    signal_part = (mean_number(signal_scores) or 0) * 0.85
+    repeat_part = min(repo_count * 4 + binding_count * 1.0, 22)
     return int(clamp(round(pattern_part + confidence_part + signal_part + repeat_part), 0, 100))
 
 
@@ -6479,6 +6550,8 @@ def render_archive_auto_calibrate(payload: dict) -> str:
         f"- 已自动校准绑定数：{stats.get('updated_bindings', 0)}",
         f"- 参与仓库数：{stats.get('repositories', 0)}",
         f"- 平均自动 confidence：{stats.get('mean_auto_confidence') if stats.get('mean_auto_confidence') is not None else '未记录'}",
+        f"- 自动 confidence 范围：{stats.get('minimum_auto_confidence') if stats.get('minimum_auto_confidence') is not None else '未记录'} - {stats.get('maximum_auto_confidence') if stats.get('maximum_auto_confidence') is not None else '未记录'}",
+        f"- 自动 confidence labels：{count_items_text(stats.get('auto_confidence_labels') or [])}",
         f"- 平均分数调整：{stats.get('mean_score_delta') if stats.get('mean_score_delta') is not None else '未记录'}",
         f"- 跨版本稳定绑定数：{stats.get('cross_version_stable_bindings', 0)}",
         f"- 带时间序列上下文仓库数：{stats.get('time_series_context_repositories', 0)}",
@@ -6492,10 +6565,14 @@ def render_archive_auto_calibrate(payload: dict) -> str:
             context = item.get("pattern_context") or {}
             history = item.get("binding_history_context") or {}
             time_series = item.get("repository_time_series_context") or {}
+            score_components = item.get("score_components") or {}
             lines.append(
                 f"- `{item.get('repo_full_name')}` {item.get('field')} / {item.get('missing_layer_label') or item.get('missing_layer')} / "
                 f"`{stable_ref}`：heuristic {item.get('heuristic_score')} -> auto {item.get('auto_score')} "
                 f"({item.get('auto_label')}, delta {item.get('score_delta')}); "
+                f"components base {score_components.get('base', 'unknown')}, heuristic {score_components.get('heuristic_component', 'unknown')}, "
+                f"repeat {score_components.get('repetition_component', 'unknown')}, time {score_components.get('time_series_component', 'unknown')}, "
+                f"evidence {score_components.get('evidence_quality_component', 'unknown')}, penalty {score_components.get('penalty_component', 'unknown')}; "
                 f"repos {context.get('repository_count', 0)}, bindings {context.get('binding_count', 0)}, "
                 f"versions {history.get('run_count', 0)}, activity {time_series.get('activity_trend', 'unknown')}, "
                 f"release {time_series.get('release_trend', 'unknown')}"

@@ -83,7 +83,7 @@ python3 radar.py --archive-patterns \
   --limit 20
 ```
 
-自动校准 archive 中的 acquisition binding confidence。该步骤只使用归档内信号，会根据跨项目重复性、同仓库跨版本稳定性、release/issue/PR 时间序列、证据类型、证据极性、稳定链接和关键词稀疏度等归档信号生成 `archive_auto_v1` confidence：
+自动校准 archive 中的 acquisition binding confidence。该步骤只使用归档内信号，会根据跨项目重复性、同仓库跨版本稳定性、release/issue/PR 时间序列、证据类型、证据极性、稳定链接和关键词稀疏度等归档信号生成 `archive_auto_v1` confidence。`archive_auto_v1` 会把分数拆成 heuristic 基础分、跨项目重复分、时间序列分、证据质量分和惩罚项，避免热门项目的绑定全部饱和为 high：
 
 ```bash
 python3 radar.py \
@@ -251,7 +251,7 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 - `signal_breakdown`：把原始信号自动分组为 `time_series`、`drift`、`pattern`、`evidence`、`calibration` 等可读维度；`--archive-show` 和 dashboard 详情页会直接展示这些分组
 - `source`：`heuristic` 或 `auto`，dashboard 可按该来源过滤
 
-自动校准不会删除原始 heuristic 分数。应用校准后，归档读取会把 `archive_auto_v1` 作为有效 confidence，同时保留 `heuristic` 子字段，方便比较自动归档信号和原始规则信号。
+自动校准不会删除原始 heuristic 分数。应用校准后，归档读取会把 `archive_auto_v1` 作为有效 confidence，同时保留 `heuristic` 子字段，方便比较自动归档信号和原始规则信号。校准报告会输出自动 confidence 的范围、label 分布和分数组件，便于判断 high/medium/low 是否真正拉开。
 
 `--archive-patterns` 的 `pattern_score` 现在会同时考虑重复度、平均绑定可靠度和 `signal_breakdown` 的结构分。含有 `time_series`、`drift`、`pattern`、`evidence` 等自动信号的模式会在 JSON、Markdown 和 dashboard 中暴露 `signal_group_score`、`signal_groups` 和 `signal_labels`，并可用 `--archive-signal-group` 或 dashboard 的 Signal group 过滤器筛选。
 
@@ -280,4 +280,4 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 ## 下一步
 
-- 修正 `archive_auto_v1` 在热门真实项目上的 confidence 饱和问题，让自动摘要的置信度区分度更强
+- 对 cross-project patterns 和 `cognition_summaries` 做自动语义归并，减少只按精确 claim 字段和证据层分组带来的碎片化

@@ -27,6 +27,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Cross-project pattern view: `--archive-patterns` groups persisted acquisition bindings from latest deep dossiers by claim field and missing evidence layer, surfacing repeated claim-gap repair moves with example repositories and evidence.
 - Binding confidence: acquisition bindings now carry a heuristic `binding_confidence` score/label/calibration/signals field, persisted in SQLite and surfaced in archive show/search, patterns, and dashboard views.
 - Automatic confidence calibration: `--archive-auto-calibrate` recalculates binding confidence from archive-only signals such as cross-project repetition, same-repository cross-version stability/drift, release/issue/PR activity trends, evidence type, polarity, stable URLs, and keyword sparsity, while preserving the original heuristic score.
+- Saturation-aware confidence scoring: `archive_auto_v1` now uses separate heuristic, repetition, time-series, evidence-quality, and penalty components plus stricter automatic label thresholds, so popular real projects can produce high/medium/low confidence separation instead of all-high saturation.
 - Confidence signal breakdowns: binding confidence now carries a derived `signal_breakdown` grouped into time-series, cross-version drift, archive pattern, evidence quality, and calibration buckets; archive show and dashboard detail views surface those buckets directly from archive signals.
 - Signal-ranked archive patterns: `--archive-patterns` now scores and sorts patterns from repetition, average binding confidence, and automatic signal group structure; `--archive-signal-group` and dashboard Signal group filtering can isolate time-series, drift, pattern, or evidence-backed repair moves.
 - Automatic cognition summaries: `--archive-patterns` and `--archive-dashboard` now derive `cognition_summaries` from signal-ranked archive patterns, including stable summary IDs, cognition move labels, evidence basis, transfer rules, automatic verification actions, confidence, and supporting patterns.
@@ -46,7 +47,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Evidence type/polarity classification is rule-based and can still misclassify domain-specific wording.
 - Implementation-layer file selection is heuristic and may miss the true core module in unusual repository layouts.
 - Support coverage reflects evidence linked to each claim; targeted bindings can now add missing-layer evidence, but those bindings are still heuristic and can over-associate broad artifacts.
-- Binding confidence calibration is fully automatic and rule-based; `archive_auto_v1` now includes first-pass longitudinal stability/drift signal breakdowns but can still saturate on popular real projects.
+- Binding confidence calibration is fully automatic and rule-based; `archive_auto_v1` now has saturation-aware component scoring, but its weights are still deterministic first-pass heuristics.
 - Cross-project pattern and cognition summary grouping is currently deterministic and shallow; signal-ranked sorting improves evidence structure awareness, but grouping still uses exact claim fields and evidence layers rather than semantic variants across differently named claims.
 - Star growth depends on repeated snapshots; fresh databases correctly show insufficient history.
 - Repository health release/contributor fields are first-pass API samples, not complete longitudinal analytics.
@@ -59,4 +60,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Refine `archive_auto_v1` confidence scoring so popular real projects produce stronger separation between high, medium, and low automatic evidence confidence.
+Add automatic semantic normalization for cross-project patterns and `cognition_summaries` so equivalent design moves are merged even when claim fields or evidence layers differ slightly.
