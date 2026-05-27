@@ -43,6 +43,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Dashboard profile paths: dashboard repository detail now renders Profile Explanation Paths inside Repository Cognition Profile, linking design moves to claim gap layers, acquisition reasons, confidence signals, and evidence stable IDs.
 - Profile path statistics: repository profiles and archive pattern/dashboard payloads now include path-level aggregate statistics grouped by design move, claim gap layer, evidence type, evidence kind, confidence label, and signal group.
 - Profile path comparisons: `--archive-patterns` and `--archive-dashboard` now include cross-repository comparison views for profile explanation paths, grouping the same design move by evidence route across claim gap layer and evidence type.
+- Profile path comparison drilldown: the dashboard now has dedicated filters for comparison design move, evidence route, and repository, while still honoring search, confidence source, and signal group filters.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -67,4 +68,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add drilldown filters for profile path comparisons so the same design move can be narrowed by evidence route, repository, and signal group.
+Add a route detail panel or export for profile path comparison drilldown results so one evidence route can expand into full repository examples and evidence stable IDs.

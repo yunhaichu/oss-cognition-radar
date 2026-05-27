@@ -6159,6 +6159,18 @@ def render_archive_dashboard(payload: dict) -> str:
       padding: 14px 24px 0;
     }
 
+    .comparison-toolbar {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.3fr) minmax(180px, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 24px 0;
+    }
+
+    .comparison-toolbar[hidden] {
+      display: none;
+    }
+
     .patterns-head {
       display: flex;
       align-items: center;
@@ -6394,6 +6406,7 @@ def render_archive_dashboard(payload: dict) -> str:
 
     @media (max-width: 980px) {
       .toolbar { grid-template-columns: 1fr 1fr; }
+      .comparison-toolbar { grid-template-columns: 1fr 1fr; }
       .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .patterns-grid { grid-template-columns: 1fr; }
       main { grid-template-columns: 1fr; }
@@ -6404,6 +6417,7 @@ def render_archive_dashboard(payload: dict) -> str:
       header { align-items: flex-start; flex-direction: column; padding: 14px; }
       .meta { text-align: left; }
       .toolbar { grid-template-columns: 1fr; padding: 10px 14px; }
+      .comparison-toolbar { grid-template-columns: 1fr; padding: 10px 14px 0; }
       .stats { grid-template-columns: 1fr; padding: 10px 14px 0; }
       main { padding: 10px 14px 18px; }
       .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -6433,6 +6447,12 @@ def render_archive_dashboard(payload: dict) -> str:
     </section>
 
     <section class="stats" id="stats"></section>
+    <section class="comparison-toolbar" id="pathComparisonToolbar" aria-label="Profile path comparison filters" hidden>
+      <select id="pathMoveSelect" aria-label="Comparison design move"></select>
+      <select id="pathRouteSelect" aria-label="Comparison evidence route"></select>
+      <select id="pathRepoSelect" aria-label="Comparison repository"></select>
+      <div class="count" id="pathComparisonDrilldownCount"></div>
+    </section>
     <section class="patterns-panel" id="patternsPanel"></section>
 
     <main>
@@ -6456,7 +6476,17 @@ def render_archive_dashboard(payload: dict) -> str:
 
   <script>
     const DATA = __DATA__;
-    const state = { query: "", track: "all", confidenceSource: "all", signalGroup: DATA.filters?.signal_group || "all", minScore: 0, selected: null };
+    const state = {
+      query: "",
+      track: "all",
+      confidenceSource: "all",
+      signalGroup: DATA.filters?.signal_group || "all",
+      minScore: 0,
+      selected: null,
+      pathMove: "all",
+      pathRoute: "all",
+      pathRepo: "all",
+    };
     const repos = DATA.repositories || [];
     const dossiers = DATA.dossiers || {};
     const cognitionSummaries = DATA.cognition_summaries || [];
@@ -6475,6 +6505,11 @@ def render_archive_dashboard(payload: dict) -> str:
     const detailBody = document.getElementById("detailBody");
     const resultCount = document.getElementById("resultCount");
     const stats = document.getElementById("stats");
+    const pathComparisonToolbar = document.getElementById("pathComparisonToolbar");
+    const pathMoveSelect = document.getElementById("pathMoveSelect");
+    const pathRouteSelect = document.getElementById("pathRouteSelect");
+    const pathRepoSelect = document.getElementById("pathRepoSelect");
+    const pathComparisonDrilldownCount = document.getElementById("pathComparisonDrilldownCount");
     const patternsPanel = document.getElementById("patternsPanel");
     const githubLink = document.getElementById("githubLink");
 
@@ -6638,6 +6673,69 @@ def render_archive_dashboard(payload: dict) -> str:
       if (state.signalGroup === "all") return true;
       return (comparison.signal_groups || []).some((item) => item.value === state.signalGroup)
         || (comparison.evidence_routes || []).some((route) => (route.signal_groups || []).some((item) => item.value === state.signalGroup));
+    }
+
+    function pathComparisonMoveKey(comparison) {
+      return `${comparison.design_move_category || "unknown"}::${comparison.design_move || comparison.design_move_category || "Design move"}`;
+    }
+
+    function pathComparisonRouteKey(route) {
+      return route.route_id || `${route.claim_gap_layer || "gap"}::${route.evidence_type || "evidence"}`;
+    }
+
+    function pathComparisonRouteLabel(route) {
+      return `${route.claim_gap_layer || "gap"} / ${route.evidence_type || "evidence"}`;
+    }
+
+    function routeMatchesConfidenceSource(route) {
+      if (state.confidenceSource === "all") return true;
+      return (route.confidence_sources || []).some((item) => item.value === state.confidenceSource);
+    }
+
+    function routeMatchesSignalGroup(route) {
+      if (state.signalGroup === "all") return true;
+      return (route.signal_groups || []).some((item) => item.value === state.signalGroup);
+    }
+
+    function routeMatchesDrilldown(route) {
+      if (!routeMatchesConfidenceSource(route)) return false;
+      if (!routeMatchesSignalGroup(route)) return false;
+      if (state.pathRoute !== "all" && pathComparisonRouteKey(route) !== state.pathRoute) return false;
+      if (state.pathRepo !== "all" && !(route.repositories || []).includes(state.pathRepo)) return false;
+      return true;
+    }
+
+    function visibleRoutesForComparison(comparison) {
+      return (comparison.evidence_routes || []).filter(routeMatchesDrilldown);
+    }
+
+    function visibleExamplesForComparison(comparison, routes) {
+      const routeIds = new Set(routes.map(pathComparisonRouteKey));
+      return (comparison.repository_examples || []).filter((example) => {
+        if (state.pathRepo !== "all" && example.repo_full_name !== state.pathRepo) return false;
+        if (state.pathRoute === "all") return true;
+        return (routes || []).some((route) => {
+          if (!routeIds.has(pathComparisonRouteKey(route))) return false;
+          const routeLabel = pathComparisonRouteLabel(route);
+          return routeLabel === `${example.claim_gap_layer_label || example.claim_gap_layer || "gap"} / ${example.evidence_type || "evidence"}`;
+        });
+      });
+    }
+
+    function pathComparisonMatchesDrilldown(comparison) {
+      if (state.pathMove !== "all" && pathComparisonMoveKey(comparison) !== state.pathMove) return false;
+      if (state.pathRoute !== "all" || state.pathRepo !== "all") {
+        return visibleRoutesForComparison(comparison).length > 0;
+      }
+      return true;
+    }
+
+    function pathComparisonMatchesBaseFilters(comparison) {
+      const query = state.query.trim().toLowerCase();
+      if (!pathComparisonMatchesConfidenceSource(comparison)) return false;
+      if (!pathComparisonMatchesSignalGroup(comparison)) return false;
+      if (query && !pathComparisonCorpus(comparison).includes(query)) return false;
+      return true;
     }
 
     function pathComparisonCorpus(comparison) {
@@ -7072,6 +7170,72 @@ def render_archive_dashboard(payload: dict) -> str:
       state.signalGroup = signalGroupSelect.value;
     }
 
+    function setFilterOptions(select, options, currentValue, allLabel) {
+      const normalized = options
+        .filter((item) => item.value && item.label)
+        .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+      const values = new Set(normalized.map((item) => item.value));
+      const nextValue = currentValue === "all" || values.has(currentValue) ? currentValue : "all";
+      select.innerHTML = [
+        `<option value="all">${escapeHtml(allLabel)}</option>`,
+        ...normalized.map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)} (${escapeHtml(item.count)})</option>`),
+      ].join("");
+      select.value = nextValue;
+      return nextValue;
+    }
+
+    function countOption(map, value, label, count = 1) {
+      if (!value || !label) return;
+      const item = map.get(value) || { value, label, count: 0 };
+      item.count += count;
+      map.set(value, item);
+    }
+
+    function renderPathComparisonDrilldownOptions() {
+      if (!repositoryCognitionPathComparisons.length) {
+        pathComparisonToolbar.hidden = true;
+        return;
+      }
+      pathComparisonToolbar.hidden = false;
+      const baseComparisons = repositoryCognitionPathComparisons.filter(pathComparisonMatchesBaseFilters);
+      const moveOptions = new Map();
+      baseComparisons.forEach((comparison) => {
+        countOption(moveOptions, pathComparisonMoveKey(comparison), comparison.design_move || comparison.design_move_category || "Design move", comparison.path_count || 1);
+      });
+      state.pathMove = setFilterOptions(pathMoveSelect, Array.from(moveOptions.values()), state.pathMove, "All design moves");
+
+      const moveComparisons = baseComparisons.filter((comparison) =>
+        state.pathMove === "all" || pathComparisonMoveKey(comparison) === state.pathMove
+      );
+      const routeOptions = new Map();
+      moveComparisons.forEach((comparison) => {
+        (comparison.evidence_routes || []).forEach((route) => {
+          if (!routeMatchesConfidenceSource(route)) return;
+          if (!routeMatchesSignalGroup(route)) return;
+          if (state.pathRepo !== "all" && !(route.repositories || []).includes(state.pathRepo)) return;
+          countOption(routeOptions, pathComparisonRouteKey(route), pathComparisonRouteLabel(route), route.path_count || 1);
+        });
+      });
+      state.pathRoute = setFilterOptions(pathRouteSelect, Array.from(routeOptions.values()), state.pathRoute, "All evidence routes");
+
+      const routeComparisons = moveComparisons.filter((comparison) => {
+        if (state.pathRoute === "all") return true;
+        return (comparison.evidence_routes || []).some((route) => pathComparisonRouteKey(route) === state.pathRoute);
+      });
+      const repoOptions = new Map();
+      routeComparisons.forEach((comparison) => {
+        (comparison.evidence_routes || []).forEach((route) => {
+          if (!routeMatchesConfidenceSource(route)) return;
+          if (!routeMatchesSignalGroup(route)) return;
+          if (state.pathRoute !== "all" && pathComparisonRouteKey(route) !== state.pathRoute) return;
+          (route.repositories || []).forEach((repo) => countOption(repoOptions, repo, repo, 1));
+        });
+      });
+      state.pathRepo = setFilterOptions(pathRepoSelect, Array.from(repoOptions.values()), state.pathRepo, "All repositories");
+
+      pathComparisonDrilldownCount.textContent = `${filteredPathComparisons().length} / ${baseComparisons.length}`;
+    }
+
     function renderStats(items) {
       const deepCount = items.filter((repo) => {
         const dossier = dossierOf(repo);
@@ -7144,11 +7308,9 @@ def render_archive_dashboard(payload: dict) -> str:
     }
 
     function filteredPathComparisons() {
-      const query = state.query.trim().toLowerCase();
       return repositoryCognitionPathComparisons.filter((comparison) => {
-        if (!pathComparisonMatchesConfidenceSource(comparison)) return false;
-        if (!pathComparisonMatchesSignalGroup(comparison)) return false;
-        if (query && !pathComparisonCorpus(comparison).includes(query)) return false;
+        if (!pathComparisonMatchesBaseFilters(comparison)) return false;
+        if (!pathComparisonMatchesDrilldown(comparison)) return false;
         return true;
       });
     }
@@ -7164,10 +7326,25 @@ def render_archive_dashboard(payload: dict) -> str:
       const averageConfidence = DATA.statistics?.average_pattern_confidence;
       const averageSignal = DATA.statistics?.average_pattern_signal_score;
       const comparisonCards = comparisons.map((comparison) => {
-        const topRoutes = (comparison.evidence_routes || []).slice(0, 3);
+        const visibleRoutes = visibleRoutesForComparison(comparison);
+        const scopedExamples = visibleExamplesForComparison(comparison, visibleRoutes).slice(0, 3);
+        const drilldownActive = state.pathRoute !== "all" || state.pathRepo !== "all";
+        const scopedRepos = state.pathRepo !== "all"
+          ? [state.pathRepo]
+          : Array.from(new Set(visibleRoutes.flatMap((route) => route.repositories || []))).sort();
+        const topRoutes = visibleRoutes.slice(0, 3);
         const routeText = topRoutes.map((route) =>
           `${route.claim_gap_layer || "gap"} / ${route.evidence_type || "evidence"}: ${route.repository_count || 0} repos, ${route.path_count || 0} paths`
         ).join(" | ");
+        const exampleText = scopedExamples.map((example) =>
+          `${example.repo_full_name || "repo"} -> ${example.evidence_stable_id || example.evidence_id || "evidence"}`
+        ).join(" | ");
+        const visiblePathCount = state.pathRepo !== "all"
+          ? (scopedExamples.length || "1+")
+          : visibleRoutes.reduce((sum, route) => sum + (route.path_count || 0), 0);
+        const visibleHighCount = state.pathRepo !== "all"
+          ? scopedExamples.filter((example) => example.confidence === "high").length
+          : visibleRoutes.reduce((sum, route) => sum + (route.high_confidence_paths || 0), 0);
         const topLayers = (comparison.claim_gap_layers || []).slice(0, 3);
         const topEvidenceTypes = (comparison.evidence_types || []).slice(0, 3);
         const topSignals = (comparison.signal_groups || []).slice(0, 4);
@@ -7176,16 +7353,20 @@ def render_archive_dashboard(payload: dict) -> str:
             <h2>${escapeHtml(comparison.design_move || "Design move")}</h2>
             <div class="chips">
               <span class="chip ${comparison.confidence === "high" ? "support" : ""}">${escapeHtml(comparison.confidence || "unknown")} ${escapeHtml(comparison.score ?? 0)}</span>
-              <span class="chip">Repos ${escapeHtml(comparison.repository_count || 0)}</span>
-              <span class="chip">Paths ${escapeHtml(comparison.path_count || 0)}</span>
-              <span class="chip">Routes ${escapeHtml(comparison.route_count || 0)}</span>
-              <span class="chip">High ${escapeHtml(comparison.high_confidence_paths || 0)}</span>
+              <span class="chip">Repos ${escapeHtml(drilldownActive ? scopedRepos.length : comparison.repository_count || 0)}</span>
+              <span class="chip">Paths ${escapeHtml(drilldownActive ? visiblePathCount : comparison.path_count || 0)}</span>
+              <span class="chip">Routes ${escapeHtml(drilldownActive ? visibleRoutes.length : comparison.route_count || 0)}</span>
+              <span class="chip">High ${escapeHtml(drilldownActive ? visibleHighCount : comparison.high_confidence_paths || 0)}</span>
               <span class="chip">${escapeHtml(comparison.schema_version || "profile_path_comparison_v1")}</span>
             </div>
             <p>${escapeHtml(compact(comparison.cognition_move || comparison.transfer_rule || "", 180))}</p>
             <p class="subtle">Evidence routes: ${escapeHtml(compact(routeText, 180))}</p>
+            ${exampleText ? `<p class="subtle">Examples: ${escapeHtml(compact(exampleText, 180))}</p>` : ""}
             <div class="chips">
               <span class="chip">Avg confidence ${escapeHtml(comparison.average_confidence ?? "unknown")}</span>
+              ${state.pathMove !== "all" ? `<span class="chip support">${escapeHtml(comparison.design_move || "Design move")}</span>` : ""}
+              ${state.pathRoute !== "all" ? topRoutes.slice(0, 1).map((route) => `<span class="chip support">${escapeHtml(pathComparisonRouteLabel(route))}</span>`).join("") : ""}
+              ${state.pathRepo !== "all" ? `<span class="chip support">${escapeHtml(state.pathRepo)}</span>` : ""}
               ${topLayers.map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
               ${topEvidenceTypes.map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
               ${topSignals.map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
@@ -7537,6 +7718,7 @@ def render_archive_dashboard(payload: dict) -> str:
 
     function render() {
       scoreOutput.value = state.minScore;
+      renderPathComparisonDrilldownOptions();
       const items = filteredRepos();
       renderStats(items);
       renderPatterns();
@@ -7567,6 +7749,21 @@ def render_archive_dashboard(payload: dict) -> str:
       state.selected = null;
       render();
     });
+    pathMoveSelect.addEventListener("change", () => {
+      state.pathMove = pathMoveSelect.value;
+      state.pathRoute = "all";
+      state.pathRepo = "all";
+      render();
+    });
+    pathRouteSelect.addEventListener("change", () => {
+      state.pathRoute = pathRouteSelect.value;
+      state.pathRepo = "all";
+      render();
+    });
+    pathRepoSelect.addEventListener("change", () => {
+      state.pathRepo = pathRepoSelect.value;
+      render();
+    });
     scoreRange.addEventListener("input", () => {
       state.minScore = Number(scoreRange.value) || 0;
       render();
@@ -7578,10 +7775,16 @@ def render_archive_dashboard(payload: dict) -> str:
       state.signalGroup = "all";
       state.minScore = 0;
       state.selected = null;
+      state.pathMove = "all";
+      state.pathRoute = "all";
+      state.pathRepo = "all";
       searchInput.value = "";
       trackSelect.value = "all";
       confidenceSourceSelect.value = "all";
       signalGroupSelect.value = "all";
+      pathMoveSelect.value = "all";
+      pathRouteSelect.value = "all";
+      pathRepoSelect.value = "all";
       scoreRange.value = "0";
       render();
     });
