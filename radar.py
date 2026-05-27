@@ -10112,6 +10112,12 @@ def count_map_text(counts: dict | None) -> str:
     return text or "无"
 
 
+def count_value_text(value) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "unknown"
+    return str(value)
+
+
 def confidence_signal_breakdown_text(confidence: dict | None, group_limit: int = 5, signal_limit: int = 3) -> str:
     if not confidence:
         return "无"
@@ -10408,8 +10414,8 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         f"- Source selector fixture filter：{source_filter_value}",
         f"- Source selector filters：{source_filters_text}",
         f"- Source fixture validation：{payload.get('source_fixture_validation_status') or 'unknown'} / matches expected {payload.get('source_fixture_validation_matches_expected') if payload.get('source_fixture_validation_matches_expected') is not None else 'unknown'}",
-        f"- Source fixture count：{payload.get('source_fixture_count') if payload.get('source_fixture_count') is not None else 'unknown'} / unfiltered {payload.get('source_unfiltered_fixture_count') if payload.get('source_unfiltered_fixture_count') is not None else 'unknown'}",
-        f"- Source fixture matching expected：{payload.get('source_fixture_matching_expected_count') if payload.get('source_fixture_matching_expected_count') is not None else 'unknown'} / unfiltered {payload.get('source_fixture_unfiltered_matching_expected_count') if payload.get('source_fixture_unfiltered_matching_expected_count') is not None else 'unknown'}",
+        f"- Source fixture count：{count_value_text(payload.get('source_fixture_count'))} / unfiltered {count_value_text(payload.get('source_unfiltered_fixture_count'))}",
+        f"- Source fixture matching expected：{count_value_text(payload.get('source_fixture_matching_expected_count'))} / unfiltered {count_value_text(payload.get('source_fixture_unfiltered_matching_expected_count'))}",
         f"- Source fixture status counts：{source_status_text}",
         f"- Source all fixture status counts：{source_all_status_text}",
         f"- Expected validation status：{payload.get('expected_validation_status') or '无'}",

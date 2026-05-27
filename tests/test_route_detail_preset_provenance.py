@@ -1523,6 +1523,39 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertIn("- Source fixture count\uff1aunknown / unfiltered unknown", lines)
         self.assertIn("- Source fixture matching expected\uff1aunknown / unfiltered unknown", lines)
 
+    def test_preset_export_markdown_preserves_numeric_fixture_counts(self):
+        markdown = radar.render_archive_route_detail_preset_exports(
+            preset_exports_payload(
+                {
+                    "source_fixture_count": 0,
+                    "source_unfiltered_fixture_count": 4,
+                    "source_fixture_matching_expected_count": 0,
+                    "source_fixture_unfiltered_matching_expected_count": 4,
+                }
+            )
+        )
+        lines = markdown.splitlines()
+
+        self.assertIn("- Source fixture count\uff1a0 / unfiltered 4", lines)
+        self.assertIn("- Source fixture matching expected\uff1a0 / unfiltered 4", lines)
+
+    def test_preset_export_markdown_renders_malformed_fixture_counts_as_unknown(self):
+        payload = preset_exports_payload(
+            {
+                "source_fixture_count": {"bad": "count"},
+                "source_unfiltered_fixture_count": ["bad"],
+                "source_fixture_matching_expected_count": "2",
+                "source_fixture_unfiltered_matching_expected_count": True,
+            }
+        )
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Source fixture count\uff1aunknown / unfiltered unknown", lines)
+        self.assertIn("- Source fixture matching expected\uff1aunknown / unfiltered unknown", lines)
+        self.assertFalse(any("{'bad': 'count'}" in line for line in lines))
+        self.assertFalse(any("['bad']" in line for line in lines))
+
     def test_preset_export_markdown_renders_empty_fixture_status_counts(self):
         markdown = radar.render_archive_route_detail_preset_exports(preset_exports_payload({}))
         lines = markdown.splitlines()

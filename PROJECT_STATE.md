@@ -118,6 +118,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Malformed requested preset ID Markdown coverage: route detail preset export Markdown now treats string requested preset IDs as single IDs, filters non-string requested ID list entries, and renders malformed requested ID payloads as empty provenance.
 - Malformed source selector filter Markdown coverage: route detail preset export Markdown now renders non-dict source selector filters as empty provenance and filters selector entries to string keys with scalar values.
 - Malformed source fixture status count Markdown coverage: route detail preset export Markdown now renders non-dict source fixture status count payloads as empty provenance and filters status count entries to string keys with scalar values.
+- Malformed source fixture count Markdown coverage: route detail preset export Markdown now renders malformed source fixture count fields as unknown while preserving numeric zero and positive counts.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -142,4 +143,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add preset export Markdown malformed source fixture count coverage.
+Add preset export Markdown malformed source fixture validation status coverage.
