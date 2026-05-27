@@ -1750,6 +1750,21 @@ COGNITION_FIELD_PROFILES = {
         "transfer_rule": "不要只按 README 定位项目，需用 API、源码和使用面确认真实领域边界。",
     },
 }
+COGNITION_CATEGORY_PROFILES = {
+    profile["category"]: profile
+    for profile in COGNITION_FIELD_PROFILES.values()
+}
+COGNITION_FIELD_PROFILE_PATTERNS = [
+    (r"领域|domain|赛道|类别", "领域"),
+    (r"重新定义|问题|定位|场景|需求|用户", "作者如何重新定义问题"),
+    (r"抽象|接口|api|模型|primitive|核心类型|组合", "关键抽象"),
+    (r"边界|约束|契约|兼容|安全|可承诺", "架构边界"),
+    (r"复杂|性能|并发|状态|错误|失败|扩展|伸缩", "复杂度藏处"),
+    (r"治理|维护|贡献|协作|社区|ci|流程|发布|release", "治理模式"),
+    (r"复用|迁移|可迁移|思想|模式|原则", "可复用思想"),
+    (r"不可复制|条件|上下文|依赖|生态|势能", "不可复制条件"),
+    (r"实现|源码|复核|验证|benchmark|测试", "实现层复核线索"),
+]
 DEFAULT_COGNITION_FIELD_PROFILE = {
     "category": "general_engineering_move",
     "label": "通用工程动作",
@@ -1764,6 +1779,48 @@ COGNITION_LAYER_ACTIONS = {
     "collaboration": "用 issue/PR 协作痕迹观察真实摩擦",
     "release": "用 release/changelog 验证演化轨迹",
     "narrative": "用叙事材料提出初始假设",
+}
+SEMANTIC_LAYER_PROFILES = {
+    "source": {
+        "group": "implementation_validation",
+        "label": "实现/验证",
+        "action": "用源码、测试或 benchmark 复核工程机制",
+    },
+    "tests": {
+        "group": "implementation_validation",
+        "label": "实现/验证",
+        "action": "用源码、测试或 benchmark 复核工程机制",
+    },
+    "benchmarks": {
+        "group": "implementation_validation",
+        "label": "实现/验证",
+        "action": "用源码、测试或 benchmark 复核工程机制",
+    },
+    "configuration": {
+        "group": "operational_governance",
+        "label": "配置/流程",
+        "action": "用配置、CI 或 package metadata 固化运行边界",
+    },
+    "collaboration": {
+        "group": "evolution_collaboration",
+        "label": "演化/协作",
+        "action": "用 issue、PR、release 或 changelog 观察真实演化",
+    },
+    "release": {
+        "group": "evolution_collaboration",
+        "label": "演化/协作",
+        "action": "用 issue、PR、release 或 changelog 观察真实演化",
+    },
+    "narrative": {
+        "group": "narrative_framing",
+        "label": "叙事/定位",
+        "action": "用叙事材料提出初始假设，再回到工程证据复核",
+    },
+}
+DEFAULT_SEMANTIC_LAYER_PROFILE = {
+    "group": "other_evidence",
+    "label": "其他证据",
+    "action": "用 archive evidence 复核高层判断",
 }
 
 
@@ -4523,16 +4580,29 @@ def build_archive_acquisition_patterns(rows: list[dict], limit: int) -> list[dic
     for row in rows:
         field = row.get("field") or "未知 claim"
         layer = row.get("missing_layer") or "unknown"
-        key = (field, layer)
+        semantic = semantic_pattern_profile(field, layer)
+        key = (semantic["field_category"], semantic["layer_group"])
         pattern = groups.setdefault(
             key,
             {
-                "pattern_id": stable_id("pattern", field, layer),
-                "field": field,
-                "missing_layer": layer,
-                "missing_layer_label": row.get("missing_layer_label") or SUPPORT_LAYER_LABELS.get(layer, layer),
+                "pattern_id": stable_id("pattern", semantic["field_category"], semantic["layer_group"]),
+                "field": semantic["field_label"],
+                "missing_layer": semantic["layer_group"],
+                "missing_layer_label": semantic["layer_label"],
+                "semantic_normalization": {
+                    "version": "semantic_v1",
+                    "field_category": semantic["field_category"],
+                    "field_label": semantic["field_label"],
+                    "field_move": semantic["field_move"],
+                    "layer_group": semantic["layer_group"],
+                    "layer_label": semantic["layer_label"],
+                    "layer_action": semantic["layer_action"],
+                },
                 "binding_count": 0,
                 "_repositories": set(),
+                "_raw_field_counts": {},
+                "_raw_layer_counts": {},
+                "_raw_layer_label_counts": {},
                 "_track_counts": {},
                 "_evidence_type_counts": {},
                 "_evidence_kind_counts": {},
@@ -4549,6 +4619,9 @@ def build_archive_acquisition_patterns(rows: list[dict], limit: int) -> list[dic
         )
         pattern["binding_count"] += 1
         pattern["_repositories"].add(row.get("repo_full_name") or "")
+        count_value(pattern["_raw_field_counts"], field)
+        count_value(pattern["_raw_layer_counts"], layer)
+        count_value(pattern["_raw_layer_label_counts"], row.get("missing_layer_label") or SUPPORT_LAYER_LABELS.get(layer, layer))
         count_value(pattern["_track_counts"], row.get("track"))
         count_value(pattern["_evidence_type_counts"], row.get("evidence_type"))
         count_value(pattern["_evidence_kind_counts"], row.get("evidence_kind"))
@@ -4575,6 +4648,11 @@ def build_archive_acquisition_patterns(rows: list[dict], limit: int) -> list[dic
                     "track": row.get("track"),
                     "track_score": row.get("track_score"),
                     "claim_id": row.get("claim_id"),
+                    "field": field,
+                    "missing_layer": layer,
+                    "missing_layer_label": row.get("missing_layer_label") or SUPPORT_LAYER_LABELS.get(layer, layer),
+                    "semantic_field_category": semantic["field_category"],
+                    "semantic_layer_group": semantic["layer_group"],
                     "evidence_id": row.get("evidence_id"),
                     "evidence_stable_id": row.get("evidence_stable_id"),
                     "evidence_kind": row.get("evidence_kind"),
@@ -4609,6 +4687,9 @@ def build_archive_acquisition_patterns(rows: list[dict], limit: int) -> list[dic
                 "repository_count": repo_count,
                 "repositories": repositories[:12],
                 "repeat_status": "cross_project" if repo_count >= 2 else "single_project",
+                "raw_fields": top_count_items(pattern.pop("_raw_field_counts")),
+                "raw_missing_layers": top_count_items(pattern.pop("_raw_layer_counts")),
+                "raw_missing_layer_labels": top_count_items(pattern.pop("_raw_layer_label_counts")),
                 "repeat_score": repeat_score,
                 "confidence_score": confidence_score,
                 "signal_group_score": signal_group_score,
@@ -4644,7 +4725,70 @@ def build_archive_acquisition_patterns(rows: list[dict], limit: int) -> list[dic
 
 
 def cognition_field_profile(field: str | None) -> dict:
-    return COGNITION_FIELD_PROFILES.get(field or "", DEFAULT_COGNITION_FIELD_PROFILE)
+    field_text = str(field or "")
+    exact = COGNITION_FIELD_PROFILES.get(field_text)
+    if exact:
+        return {
+            **exact,
+            "canonical_field": field_text,
+            "normalization_source": "exact",
+        }
+    lowered = field_text.lower()
+    for pattern, canonical_field in COGNITION_FIELD_PROFILE_PATTERNS:
+        if re.search(pattern, lowered, re.IGNORECASE):
+            profile = COGNITION_FIELD_PROFILES[canonical_field]
+            return {
+                **profile,
+                "canonical_field": canonical_field,
+                "normalization_source": "pattern",
+            }
+    return {
+        **DEFAULT_COGNITION_FIELD_PROFILE,
+        "canonical_field": field_text or "unknown",
+        "normalization_source": "default",
+    }
+
+
+def cognition_profile_for_category(category: str | None) -> dict:
+    if category in COGNITION_CATEGORY_PROFILES:
+        profile = COGNITION_CATEGORY_PROFILES[category]
+        return {
+            **profile,
+            "canonical_field": category or "unknown",
+            "normalization_source": "category",
+        }
+    return {
+        **DEFAULT_COGNITION_FIELD_PROFILE,
+        "canonical_field": category or "unknown",
+        "normalization_source": "default",
+    }
+
+
+def semantic_layer_profile(layer: str | None) -> dict:
+    profile = SEMANTIC_LAYER_PROFILES.get(layer or "", DEFAULT_SEMANTIC_LAYER_PROFILE)
+    return {
+        **profile,
+        "canonical_layer": layer or "unknown",
+        "normalization_source": "exact" if layer in SEMANTIC_LAYER_PROFILES else "default",
+    }
+
+
+def semantic_pattern_profile(field: str | None, layer: str | None) -> dict:
+    field_profile = cognition_field_profile(field)
+    layer_profile = semantic_layer_profile(layer)
+    return {
+        "field_category": field_profile["category"],
+        "field_label": field_profile["label"],
+        "field_move": field_profile["move"],
+        "field_transfer_rule": field_profile["transfer_rule"],
+        "field_normalization_source": field_profile.get("normalization_source"),
+        "canonical_field": field_profile.get("canonical_field"),
+        "layer_group": layer_profile["group"],
+        "layer_label": layer_profile["label"],
+        "layer_action": layer_profile["action"],
+        "layer_normalization_source": layer_profile.get("normalization_source"),
+        "canonical_layer": layer_profile.get("canonical_layer"),
+    }
 
 
 def cognition_summary_score(patterns: list[dict], repo_count: int, binding_count: int) -> int:
@@ -4681,8 +4825,9 @@ def cognition_summary_confidence(score: int, repo_count: int) -> str:
 def build_archive_cognition_summaries(patterns: list[dict], limit: int) -> list[dict]:
     groups: dict[str, dict] = {}
     for pattern in patterns:
-        profile = cognition_field_profile(pattern.get("field"))
-        category = profile["category"]
+        semantic = pattern.get("semantic_normalization") or {}
+        category = semantic.get("field_category") or cognition_field_profile(pattern.get("field"))["category"]
+        profile = cognition_profile_for_category(category)
         group = groups.setdefault(
             category,
             {
@@ -4695,6 +4840,8 @@ def build_archive_cognition_summaries(patterns: list[dict], limit: int) -> list[
                 "_repositories": set(),
                 "_layer_counts": {},
                 "_layer_action_counts": {},
+                "_raw_field_counts": {},
+                "_raw_layer_counts": {},
                 "_signal_group_counts": {},
                 "_signal_label_counts": {},
                 "_confidence_scores": [],
@@ -4708,18 +4855,24 @@ def build_archive_cognition_summaries(patterns: list[dict], limit: int) -> list[
         for repo in pattern.get("repositories") or []:
             group["_repositories"].add(repo)
         missing_layer = pattern.get("missing_layer")
-        missing_layer_label = (
-            pattern.get("missing_layer_label")
-            or SUPPORT_LAYER_LABELS.get(missing_layer, missing_layer)
-        )
+        missing_layer_label = pattern.get("missing_layer_label") or missing_layer
+        layer_action = semantic.get("layer_action") or semantic_layer_profile(missing_layer).get("action") or missing_layer_label
         count_value(
             group["_layer_counts"],
             missing_layer_label,
         )
         count_value(
             group["_layer_action_counts"],
-            COGNITION_LAYER_ACTIONS.get(missing_layer, missing_layer_label),
+            layer_action,
         )
+        for item in pattern.get("raw_fields") or [{"value": pattern.get("field"), "count": 1}]:
+            value = item.get("value")
+            if value:
+                group["_raw_field_counts"][value] = group["_raw_field_counts"].get(value, 0) + int(item.get("count") or 0)
+        for item in pattern.get("raw_missing_layer_labels") or [{"value": pattern.get("missing_layer_label"), "count": 1}]:
+            value = item.get("value")
+            if value:
+                group["_raw_layer_counts"][value] = group["_raw_layer_counts"].get(value, 0) + int(item.get("count") or 0)
         for item in pattern.get("signal_groups") or []:
             value = item.get("value")
             if value:
@@ -4750,6 +4903,8 @@ def build_archive_cognition_summaries(patterns: list[dict], limit: int) -> list[
         repositories = sorted(repo for repo in group.pop("_repositories") if repo)
         layer_counts = top_count_items(group.pop("_layer_counts"), limit=5)
         layer_actions = top_count_items(group.pop("_layer_action_counts"), limit=5)
+        raw_fields = top_count_items(group.pop("_raw_field_counts"), limit=8)
+        raw_layers = top_count_items(group.pop("_raw_layer_counts"), limit=8)
         signal_groups = top_count_items(group.pop("_signal_group_counts"), limit=6)
         signal_labels = top_count_items(group.pop("_signal_label_counts"), limit=8)
         confidence_scores = group.pop("_confidence_scores")
@@ -4760,7 +4915,7 @@ def build_archive_cognition_summaries(patterns: list[dict], limit: int) -> list[
         top_layers = "、".join(item["value"] for item in layer_counts[:3]) or "归档证据"
         top_actions = "；".join(item["value"] for item in layer_actions[:3]) or "用 archive evidence 复核高层判断"
         top_signals = "、".join(item["value"] for item in signal_groups[:3]) or "archive signals"
-        top_fields = unique_ordered([item.get("field") or "" for item in patterns_for_group if item.get("field")])[:4]
+        top_fields = [item["value"] for item in raw_fields[:4]]
         field_text = "、".join(top_fields) or group["label"]
         summaries.append(
             {
@@ -4776,6 +4931,8 @@ def build_archive_cognition_summaries(patterns: list[dict], limit: int) -> list[
                 "average_signal_group_score": mean_number(signal_scores),
                 "layer_counts": layer_counts,
                 "layer_actions": layer_actions,
+                "raw_fields": raw_fields,
+                "raw_layers": raw_layers,
                 "signal_groups": signal_groups,
                 "signal_labels": signal_labels,
                 "summary": (
@@ -4794,6 +4951,9 @@ def build_archive_cognition_summaries(patterns: list[dict], limit: int) -> list[
                         "field": item.get("field"),
                         "missing_layer": item.get("missing_layer"),
                         "missing_layer_label": item.get("missing_layer_label"),
+                        "semantic_normalization": item.get("semantic_normalization") or {},
+                        "raw_fields": item.get("raw_fields") or [],
+                        "raw_missing_layers": item.get("raw_missing_layers") or [],
                         "pattern_score": item.get("pattern_score"),
                         "signal_group_score": item.get("signal_group_score"),
                         "average_binding_confidence": item.get("average_binding_confidence"),
@@ -4801,7 +4961,7 @@ def build_archive_cognition_summaries(patterns: list[dict], limit: int) -> list[
                         "binding_count": item.get("binding_count"),
                         "repositories": item.get("repositories") or [],
                         "signal_groups": item.get("signal_groups") or [],
-                        "missing_layer_action": COGNITION_LAYER_ACTIONS.get(item.get("missing_layer")),
+                        "missing_layer_action": ((item.get("semantic_normalization") or {}).get("layer_action") or semantic_layer_profile(item.get("missing_layer")).get("action")),
                     }
                     for item in patterns_for_group[:5]
                 ],
@@ -5641,15 +5801,21 @@ def render_archive_dashboard(payload: dict) -> str:
         (summary.repositories || []).join(" "),
         ...(summary.layer_counts || []).map((item) => item.value),
         ...(summary.layer_actions || []).map((item) => item.value),
+        ...(summary.raw_fields || []).map((item) => item.value),
+        ...(summary.raw_layers || []).map((item) => item.value),
         ...(summary.signal_groups || []).map((item) => item.value),
         ...(summary.signal_labels || []).map((item) => item.value),
         ...(summary.supporting_patterns || []).flatMap((pattern) => [
           pattern.field,
           pattern.missing_layer,
           pattern.missing_layer_label,
+          pattern.semantic_normalization?.field_category,
+          pattern.semantic_normalization?.layer_group,
           pattern.pattern_id,
           pattern.pattern_score,
           (pattern.repositories || []).join(" "),
+          ...(pattern.raw_fields || []).map((item) => item.value),
+          ...(pattern.raw_missing_layers || []).map((item) => item.value),
           ...(pattern.signal_groups || []).map((item) => item.value),
         ]),
       ];
@@ -5661,6 +5827,12 @@ def render_archive_dashboard(payload: dict) -> str:
         pattern.field,
         pattern.missing_layer,
         pattern.missing_layer_label,
+        pattern.semantic_normalization?.field_category,
+        pattern.semantic_normalization?.field_label,
+        pattern.semantic_normalization?.field_move,
+        pattern.semantic_normalization?.layer_group,
+        pattern.semantic_normalization?.layer_label,
+        pattern.semantic_normalization?.layer_action,
         pattern.repeat_status,
         pattern.reliability_status,
         pattern.pattern_score,
@@ -5668,6 +5840,9 @@ def render_archive_dashboard(payload: dict) -> str:
         pattern.repeat_score,
         pattern.confidence_score,
         (pattern.repositories || []).join(" "),
+        ...(pattern.raw_fields || []).map((item) => item.value),
+        ...(pattern.raw_missing_layers || []).map((item) => item.value),
+        ...(pattern.raw_missing_layer_labels || []).map((item) => item.value),
         ...(pattern.keywords || []).map((item) => item.value),
         ...(pattern.evidence_types || []).map((item) => item.value),
         ...(pattern.evidence_kinds || []).map((item) => item.value),
@@ -5947,6 +6122,7 @@ def render_archive_dashboard(payload: dict) -> str:
       const summaryCards = summaries.map((summary) => {
         const topLayers = (summary.layer_counts || []).slice(0, 3);
         const topActions = (summary.layer_actions || []).slice(0, 2);
+        const rawFields = (summary.raw_fields || []).slice(0, 3);
         const topSignals = (summary.signal_groups || []).slice(0, 4);
         return `
           <article class="pattern-card">
@@ -5960,6 +6136,7 @@ def render_archive_dashboard(payload: dict) -> str:
             <p>${escapeHtml(compact(summary.summary || "", 180))}</p>
             <p class="subtle">${escapeHtml(compact(summary.transfer_rule || "", 160))}</p>
             <div class="chips">
+              ${rawFields.map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
               ${topLayers.map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
               ${topActions.map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
               ${topSignals.map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
@@ -5970,6 +6147,8 @@ def render_archive_dashboard(payload: dict) -> str:
       const cards = items.map((pattern) => {
         const topKeyword = (pattern.keywords || [])[0]?.value;
         const topEvidenceType = (pattern.evidence_types || [])[0]?.value;
+        const rawFields = (pattern.raw_fields || []).slice(0, 3);
+        const rawLayers = (pattern.raw_missing_layer_labels || []).slice(0, 3);
         const topSignalGroups = (pattern.signal_groups || []).slice(0, 6);
         const confidence = {
           label: pattern.reliability_status,
@@ -5982,12 +6161,15 @@ def render_archive_dashboard(payload: dict) -> str:
               <span class="chip ${pattern.repeat_status === "cross_project" ? "support" : ""}">${escapeHtml(pattern.repeat_status || "single_project")}</span>
               <span class="chip">Repos ${escapeHtml(pattern.repository_count || 0)}</span>
               <span class="chip">Bindings ${escapeHtml(pattern.binding_count || 0)}</span>
+              <span class="chip">${escapeHtml(pattern.semantic_normalization?.version || "semantic_v1")}</span>
               <span class="chip ${confidenceClass(confidence)}">Confidence ${escapeHtml(confidenceText(confidence))}</span>
               <span class="chip">Signal score ${escapeHtml(pattern.signal_group_score ?? 0)}</span>
               ${(pattern.confidence_sources || []).slice(0, 2).map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
             </div>
             <p class="subtle">${escapeHtml(compact((pattern.repositories || []).join(", "), 120))}</p>
             <div class="chips">
+              ${rawFields.map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
+              ${rawLayers.map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
               ${topSignalGroups.map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
               ${topEvidenceType ? `<span class="chip">${escapeHtml(topEvidenceType)}</span>` : ""}
               ${topKeyword ? `<span class="chip">${escapeHtml(topKeyword)}</span>` : ""}
@@ -6438,6 +6620,8 @@ def render_archive_cognition_summaries(summaries: list[dict]) -> list[str]:
                 f"- 可迁移规则：{summary.get('transfer_rule') or '无'}",
                 f"- 证据层：{count_items_text(summary.get('layer_counts') or [])}",
                 f"- 自动复核动作：{count_items_text(summary.get('layer_actions') or [])}",
+                f"- 原始 claim 字段：{count_items_text(summary.get('raw_fields') or [], limit=8)}",
+                f"- 原始证据层：{count_items_text(summary.get('raw_layers') or [], limit=8)}",
                 f"- Signal groups：{count_items_text(summary.get('signal_groups') or [])}",
                 f"- Signal labels：{count_items_text(summary.get('signal_labels') or [], limit=8)}",
                 "",
@@ -6450,6 +6634,7 @@ def render_archive_cognition_summaries(summaries: list[dict]) -> list[str]:
                 lines.append(
                     f"- `{pattern.get('pattern_id')}` {pattern.get('field')} -> "
                     f"{pattern.get('missing_layer_label') or pattern.get('missing_layer')}；"
+                    f"raw fields {count_items_text(pattern.get('raw_fields') or [], limit=3)}；"
                     f"score {pattern.get('pattern_score', 0)}；repos {pattern.get('repository_count', 0)}；"
                     f"bindings {pattern.get('binding_count', 0)}"
                 )
@@ -6493,8 +6678,11 @@ def render_archive_patterns(payload: dict) -> str:
                 f"## {index}. {pattern.get('field')} -> {pattern.get('missing_layer_label') or pattern.get('missing_layer')}",
                 "",
                 f"- Pattern ID：`{pattern.get('pattern_id')}`",
+                f"- Semantic normalization：{(pattern.get('semantic_normalization') or {}).get('version', 'semantic_v1')} / {(pattern.get('semantic_normalization') or {}).get('field_category', 'unknown')} / {(pattern.get('semantic_normalization') or {}).get('layer_group', 'unknown')}",
                 f"- 状态：{pattern.get('repeat_status')}",
                 f"- 仓库数 / 绑定数：{pattern.get('repository_count', 0)} / {pattern.get('binding_count', 0)}",
+                f"- 原始 claim 字段：{count_items_text(pattern.get('raw_fields') or [])}",
+                f"- 原始缺口层：{count_items_text(pattern.get('raw_missing_layer_labels') or [])}",
                 f"- Pattern score：{pattern.get('pattern_score', 0)}/100",
                 f"- Repeat / confidence / signal score：{pattern.get('repeat_score', 0)} / {pattern.get('confidence_score', 0)} / {pattern.get('signal_group_score', 0)}",
                 f"- 平均绑定可靠度：{pattern.get('average_binding_confidence') if pattern.get('average_binding_confidence') is not None else '未记录'}（{pattern.get('reliability_status') or 'unknown'}）",

@@ -255,7 +255,9 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 `--archive-patterns` 的 `pattern_score` 现在会同时考虑重复度、平均绑定可靠度和 `signal_breakdown` 的结构分。含有 `time_series`、`drift`、`pattern`、`evidence` 等自动信号的模式会在 JSON、Markdown 和 dashboard 中暴露 `signal_group_score`、`signal_groups` 和 `signal_labels`，并可用 `--archive-signal-group` 或 dashboard 的 Signal group 过滤器筛选。
 
-`--archive-patterns` 还会从 signal-ranked patterns 自动派生 `cognition_summaries`。每条摘要包含稳定 `summary_id`、认知动作类别、可迁移规则、证据依据、自动复核动作、置信度和支撑 patterns，用于把“哪些 claim-gap 修补模式反复出现”提升为“哪些可观察设计/认知动作反复出现”。该摘要完全来自 archive evidence 和自动信号。
+patterns 现在会先做 `semantic_v1` 归并：claim 字段会归一到问题重定义、关键抽象、架构边界、复杂度管理、治理设计等认知类别；缺口证据层会归一到实现/验证、配置/流程、演化/协作、叙事/定位等证据族。JSON、Markdown 和 dashboard 会同时保留 `raw_fields`、`raw_missing_layers` 和 `raw_missing_layer_labels`，因此聚合不会切断原始证据链。
+
+`--archive-patterns` 还会从 signal-ranked semantic patterns 自动派生 `cognition_summaries`。每条摘要包含稳定 `summary_id`、认知动作类别、可迁移规则、证据依据、自动复核动作、置信度、原始字段/证据层分布和支撑 patterns，用于把“哪些 claim-gap 修补模式反复出现”提升为“哪些可观察设计/认知动作反复出现”。该摘要完全来自 archive evidence 和自动信号。
 
 实现层证据会从 Git tree 中限量抽取：
 
@@ -280,4 +282,4 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 ## 下一步
 
-- 对 cross-project patterns 和 `cognition_summaries` 做自动语义归并，减少只按精确 claim 字段和证据层分组带来的碎片化
+- 基于 `semantic_v1` patterns 生成单仓库认知画像，说明每个项目最强体现了哪些跨项目设计动作

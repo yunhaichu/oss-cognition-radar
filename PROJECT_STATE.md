@@ -30,6 +30,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Saturation-aware confidence scoring: `archive_auto_v1` now uses separate heuristic, repetition, time-series, evidence-quality, and penalty components plus stricter automatic label thresholds, so popular real projects can produce high/medium/low confidence separation instead of all-high saturation.
 - Confidence signal breakdowns: binding confidence now carries a derived `signal_breakdown` grouped into time-series, cross-version drift, archive pattern, evidence quality, and calibration buckets; archive show and dashboard detail views surface those buckets directly from archive signals.
 - Signal-ranked archive patterns: `--archive-patterns` now scores and sorts patterns from repetition, average binding confidence, and automatic signal group structure; `--archive-signal-group` and dashboard Signal group filtering can isolate time-series, drift, pattern, or evidence-backed repair moves.
+- Semantic pattern normalization: archive patterns now use `semantic_v1` keys that normalize claim fields into cognition categories and evidence layers into evidence families such as implementation/validation, configuration/process, and evolution/collaboration while retaining raw field/layer counts.
 - Automatic cognition summaries: `--archive-patterns` and `--archive-dashboard` now derive `cognition_summaries` from signal-ranked archive patterns, including stable summary IDs, cognition move labels, evidence basis, transfer rules, automatic verification actions, confidence, and supporting patterns.
 - Dashboard patterns: the static dashboard now includes a cross-project patterns band with repeated claim-gap repair moves and average binding confidence.
 - Repository health: captures 180d merged PR / closed issue counts, open PRs, release sample cadence, and top contributor samples.
@@ -48,7 +49,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Implementation-layer file selection is heuristic and may miss the true core module in unusual repository layouts.
 - Support coverage reflects evidence linked to each claim; targeted bindings can now add missing-layer evidence, but those bindings are still heuristic and can over-associate broad artifacts.
 - Binding confidence calibration is fully automatic and rule-based; `archive_auto_v1` now has saturation-aware component scoring, but its weights are still deterministic first-pass heuristics.
-- Cross-project pattern and cognition summary grouping is currently deterministic and shallow; signal-ranked sorting improves evidence structure awareness, but grouping still uses exact claim fields and evidence layers rather than semantic variants across differently named claims.
+- Cross-project pattern and cognition summary grouping now has first-pass deterministic semantic normalization, but equivalent moves can still be split if the field wording or evidence layer falls outside the current rule set.
 - Star growth depends on repeated snapshots; fresh databases correctly show insufficient history.
 - Repository health release/contributor fields are first-pass API samples, not complete longitudinal analytics.
 - Track classification is heuristic and should be refined with stronger automatic repository behavior signals.
@@ -60,4 +61,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add automatic semantic normalization for cross-project patterns and `cognition_summaries` so equivalent design moves are merged even when claim fields or evidence layers differ slightly.
+Generate per-repository cognition profiles from `semantic_v1` patterns so each archived project can show which cross-project design moves it most strongly expresses.
