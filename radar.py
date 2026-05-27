@@ -10329,6 +10329,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         or payload.get("source_fixture_status_filter")
         or "无"
     )
+    source_filters_text = count_map_text(source_selector_filters)
     source_status_counts = payload.get("source_fixture_status_counts") or {}
     source_all_status_counts = payload.get("source_all_fixture_status_counts") or {}
     source_status_text = ", ".join(
@@ -10348,6 +10349,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         f"- Source fixture：{payload.get('source_fixture_id') or '无'}",
         f"- Source fixture status filter：{payload.get('source_fixture_status_filter') or '无'}",
         f"- Source selector fixture filter：{source_filter_value}",
+        f"- Source selector filters：{source_filters_text}",
         f"- Source fixture validation：{payload.get('source_fixture_validation_status') or 'unknown'} / matches expected {payload.get('source_fixture_validation_matches_expected') if payload.get('source_fixture_validation_matches_expected') is not None else 'unknown'}",
         f"- Source fixture count：{payload.get('source_fixture_count') if payload.get('source_fixture_count') is not None else 'unknown'} / unfiltered {payload.get('source_unfiltered_fixture_count') if payload.get('source_unfiltered_fixture_count') is not None else 'unknown'}",
         f"- Source fixture matching expected：{payload.get('source_fixture_matching_expected_count') if payload.get('source_fixture_matching_expected_count') is not None else 'unknown'} / unfiltered {payload.get('source_fixture_unfiltered_matching_expected_count') if payload.get('source_fixture_unfiltered_matching_expected_count') is not None else 'unknown'}",
