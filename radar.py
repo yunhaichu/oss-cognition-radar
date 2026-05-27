@@ -8601,12 +8601,28 @@ def render_archive_dashboard(payload: dict) -> str:
           }
         );
       }
+      const fixturesWithSummaries = fixtures.map((fixture) => {
+        const validationSummary = routeDetailPresetValidationSummary(payload, fixture.preset_bundle || {});
+        return {
+          ...fixture,
+          validation_status: validationSummary.status,
+          validation_matches_expected: validationSummary.status === fixture.expected_validation_status,
+          validation_summary: validationSummary,
+        };
+      });
+      const statusCounts = fixturesWithSummaries.reduce((acc, fixture) => {
+        const status = fixture.validation_status || "unknown";
+        acc[status] = (acc[status] || 0) + 1;
+        return acc;
+      }, {});
       return {
         schema_version: "route_detail_preset_validation_fixtures_v1",
         generated_at: payload.exported_at || new Date().toISOString(),
         source: "dashboard_route_detail_export",
-        fixture_count: fixtures.length,
-        fixtures,
+        fixture_count: fixturesWithSummaries.length,
+        matching_expected_count: fixturesWithSummaries.filter((fixture) => fixture.validation_matches_expected).length,
+        fixture_status_counts: statusCounts,
+        fixtures: fixturesWithSummaries,
       };
     }
 
@@ -8668,6 +8684,8 @@ def render_archive_dashboard(payload: dict) -> str:
       payload.validation_fixtures = routeDetailValidationFixtures(payload);
       payload.summary.preset_count = payload.preset_bundle.preset_count;
       payload.summary.validation_fixture_count = payload.validation_fixtures.fixture_count;
+      payload.summary.validation_fixture_matching_expected_count = payload.validation_fixtures.matching_expected_count;
+      payload.summary.validation_fixture_status_counts = payload.validation_fixtures.fixture_status_counts;
       return payload;
     }
 
@@ -8738,7 +8756,11 @@ def render_archive_dashboard(payload: dict) -> str:
           ""
         );
         fixtures.forEach((fixture) => {
-          lines.push(`- \\`${fixture.fixture_id || ""}\\` expected=${fixture.expected_validation_status || "unknown"}; ${fixture.description || ""}`);
+          const validation = fixture.validation_summary || {};
+          lines.push(
+            `- \\`${fixture.fixture_id || ""}\\` status=${fixture.validation_status || validation.status || "unknown"} expected=${fixture.expected_validation_status || "unknown"} ` +
+            `ready=${validation.ready_preset_count ?? "unknown"} unmatched=${validation.unmatched_preset_count ?? "unknown"}; ${fixture.description || ""}`
+          );
         });
         lines.push("");
       }
@@ -8753,6 +8775,10 @@ def render_archive_dashboard(payload: dict) -> str:
       bundle.source_validation_fixtures_schema = payload.validation_fixtures?.schema_version || "";
       bundle.source_route_detail_schema = payload.schema_version || "";
       bundle.source_route_detail_generated_at = payload.generated_at || "";
+      const validationSummary = fixture?.validation_summary || routeDetailPresetValidationSummary(payload, bundle);
+      bundle.validation_status = fixture?.validation_status || validationSummary.status || "";
+      bundle.validation_matches_expected = fixture?.validation_matches_expected ?? (bundle.validation_status === bundle.expected_validation_status);
+      bundle.validation_summary = validationSummary;
       return bundle;
     }
 
@@ -8862,7 +8888,7 @@ def render_archive_dashboard(payload: dict) -> str:
     function routeDetailFixtureValidationPreviewHtml(payload, fixture) {
       if (!fixture) return "";
       const bundle = routeDetailFixtureBundlePayload(payload, fixture);
-      const validation = routeDetailPresetValidationSummary(payload, bundle);
+      const validation = bundle.validation_summary || routeDetailPresetValidationSummary(payload, bundle);
       const statusClass = validation.status === "ready" ? "support" : (validation.status === "blocked" || validation.status === "duplicate_ids" ? "risk-mid" : "");
       const duplicateText = validation.duplicate_preset_ids.length ? validation.duplicate_preset_ids.join(", ") : "none";
       const statusRows = validation.preset_statuses.slice(0, 3).map((item) => `
@@ -8904,13 +8930,20 @@ def render_archive_dashboard(payload: dict) -> str:
     }
 
     function routeDetailFixtureMarkdown(fixture, bundle) {
+      const validation = bundle.validation_summary || {};
+      const duplicateText = (validation.duplicate_preset_ids || []).join(", ") || "none";
       const lines = [
         "# Route Detail Validation Fixture Bundle",
         "",
         `- Schema: ${bundle.schema_version || "route_detail_selector_preset_bundle_v1"}`,
         `- Fixture ID: \\`${bundle.fixture_id || ""}\\``,
         `- Expected validation status: ${bundle.expected_validation_status || "unknown"}`,
+        `- Validation status: ${bundle.validation_status || "unknown"}`,
+        `- Validation matches expected: ${bundle.validation_matches_expected ? "yes" : "no"}`,
         `- Preset count: ${bundle.preset_count ?? (bundle.presets || []).length}`,
+        `- Ready / unmatched: ${validation.ready_preset_count ?? "unknown"} / ${validation.unmatched_preset_count ?? "unknown"}`,
+        `- Expected route / example: ${validation.expected_route_count ?? "unknown"} / ${validation.expected_example_count ?? "unknown"}`,
+        `- Duplicate preset IDs: ${duplicateText}`,
         "",
         bundle.fixture_description || "",
         "",
