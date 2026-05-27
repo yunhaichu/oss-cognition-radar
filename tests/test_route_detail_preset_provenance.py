@@ -396,6 +396,41 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
 
         self.assertIn("- Requested preset IDs\uff1abatch_repo, batch_second", lines)
 
+    def test_preset_export_markdown_renders_string_requested_preset_id_as_single_id(self):
+        payload = preset_exports_payload({})
+        payload["requested_preset_ids"] = "batch_repo"
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Requested preset IDs\uff1abatch_repo", lines)
+        self.assertNotIn("- Requested preset IDs\uff1ab, a, t, c, h, _, r, e, p, o", lines)
+
+    def test_preset_export_markdown_filters_malformed_requested_preset_ids(self):
+        payload = preset_exports_payload({})
+        payload["requested_preset_ids"] = [
+            "batch_repo",
+            {"bad": "id"},
+            None,
+            ["nested"],
+            "batch_second",
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Requested preset IDs\uff1abatch_repo, batch_second", lines)
+        self.assertFalse(any("{'bad': 'id'}" in line for line in lines))
+        self.assertFalse(any("['nested']" in line for line in lines))
+
+    def test_preset_export_markdown_renders_malformed_requested_preset_id_payload_as_empty(self):
+        for requested_preset_ids in ({"bad": "id"}, 7):
+            with self.subTest(requested_preset_ids=requested_preset_ids):
+                payload = preset_exports_payload({})
+                payload["requested_preset_ids"] = requested_preset_ids
+                markdown = radar.render_archive_route_detail_preset_exports(payload)
+                lines = markdown.splitlines()
+
+                self.assertIn("- Requested preset IDs\uff1a\u65e0", lines)
+
     def test_preset_export_markdown_renders_selected_preset_count_consistency(self):
         payload = preset_exports_payload({"presets": [preset("batch_repo"), preset("batch_second")]})
         markdown = radar.render_archive_route_detail_preset_exports(payload)

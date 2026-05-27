@@ -10330,7 +10330,16 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         or "无"
     )
     source_filters_text = count_map_text(source_selector_filters)
-    requested_preset_ids_text = ", ".join(payload.get("requested_preset_ids") or []) or "无"
+    raw_requested_preset_ids = payload.get("requested_preset_ids") or []
+    if isinstance(raw_requested_preset_ids, str):
+        requested_preset_ids = [raw_requested_preset_ids]
+    elif isinstance(raw_requested_preset_ids, list):
+        requested_preset_ids = [
+            preset_id for preset_id in raw_requested_preset_ids if isinstance(preset_id, str)
+        ]
+    else:
+        requested_preset_ids = []
+    requested_preset_ids_text = ", ".join(requested_preset_ids) or "无"
     source_status_counts = payload.get("source_fixture_status_counts") or {}
     source_all_status_counts = payload.get("source_all_fixture_status_counts") or {}
     source_status_text = ", ".join(
