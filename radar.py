@@ -5291,32 +5291,32 @@ def build_repository_cognition_profiles(patterns: list[dict], rows: list[dict], 
         score = repository_cognition_profile_score(contribution_scores, pattern_count, binding_count, len(move_details))
         top_moves = "、".join(item["label"] for item in move_details[:3]) or "通用工程动作"
         top_families = "、".join(item["value"] for item in evidence_families[:3]) or "归档证据"
-        profiles.append(
-            {
-                **profile,
-                "score": score,
-                "confidence": repository_cognition_profile_confidence(score, pattern_count),
-                "summary": f"{profile['repo_full_name']} 最强体现的跨项目设计动作是：{top_moves}；主要证据族是：{top_families}。",
-                "evidence_basis": (
-                    f"{pattern_count} 个 semantic patterns、{binding_count} 条 bindings、"
-                    f"平均 contribution score {mean_number(contribution_scores) if contribution_scores else 'unknown'}、"
-                    f"平均 binding confidence {mean_number(confidence_scores) if confidence_scores else 'unknown'}。"
-                ),
-                "pattern_count": pattern_count,
-                "binding_count": binding_count,
-                "average_contribution_score": mean_number(contribution_scores),
-                "average_pattern_score": mean_number(pattern_scores),
-                "average_binding_confidence": mean_number(confidence_scores),
-                "strongest_moves": move_details[:6],
-                "move_counts": move_counts,
-                "evidence_families": evidence_families,
-                "raw_fields": raw_fields,
-                "raw_layers": raw_layers,
-                "evidence_types": evidence_types,
-                "signal_groups": signal_groups,
-                "supporting_patterns": pattern_items[:6],
-            }
-        )
+        profile_payload = {
+            **profile,
+            "score": score,
+            "confidence": repository_cognition_profile_confidence(score, pattern_count),
+            "summary": f"{profile['repo_full_name']} 最强体现的跨项目设计动作是：{top_moves}；主要证据族是：{top_families}。",
+            "evidence_basis": (
+                f"{pattern_count} 个 semantic patterns、{binding_count} 条 bindings、"
+                f"平均 contribution score {mean_number(contribution_scores) if contribution_scores else 'unknown'}、"
+                f"平均 binding confidence {mean_number(confidence_scores) if confidence_scores else 'unknown'}。"
+            ),
+            "pattern_count": pattern_count,
+            "binding_count": binding_count,
+            "average_contribution_score": mean_number(contribution_scores),
+            "average_pattern_score": mean_number(pattern_scores),
+            "average_binding_confidence": mean_number(confidence_scores),
+            "strongest_moves": move_details[:6],
+            "move_counts": move_counts,
+            "evidence_families": evidence_families,
+            "raw_fields": raw_fields,
+            "raw_layers": raw_layers,
+            "evidence_types": evidence_types,
+            "signal_groups": signal_groups,
+            "supporting_patterns": pattern_items[:6],
+        }
+        profile_payload["explanation_paths"] = repository_cognition_profile_explanation_paths(profile_payload)
+        profiles.append(profile_payload)
 
     profiles.sort(
         key=lambda item: (
@@ -6052,7 +6052,7 @@ def render_archive_dashboard(payload: dict) -> str:
       font-size: 16px;
     }
 
-    .claims, .gaps, .acquisition, .evidence {
+    .repository-cognition, .profile-paths, .claims, .gaps, .acquisition, .evidence {
       display: grid;
       gap: 10px;
       margin-top: 16px;
@@ -6329,6 +6329,8 @@ def render_archive_dashboard(payload: dict) -> str:
         profile.repo_full_name,
         profile.profile_id,
         profile.schema_version,
+        "explanation paths",
+        "claim gap evidence chain",
         profile.summary,
         profile.evidence_basis,
         profile.confidence,
@@ -6354,12 +6356,51 @@ def render_archive_dashboard(payload: dict) -> str:
           pattern.semantic_normalization?.field_category,
           pattern.semantic_normalization?.layer_group,
           ...(pattern.evidence_examples || []).flatMap((item) => [
+            item.claim_id,
+            item.claim_field,
+            item.missing_layer,
+            item.missing_layer_label,
+            item.reason,
+            (item.keywords || []).join(" "),
             item.evidence_stable_id,
+            item.evidence_id,
+            item.evidence_kind,
             item.evidence_title,
+            item.evidence_url,
+            item.evidence_excerpt,
             item.evidence_type,
             item.confidence,
             item.confidence_score,
+            item.confidence_source,
+            (item.confidence_signal_groups || []).join(" "),
           ]),
+        ]),
+        ...(profile.explanation_paths || []).flatMap((path) => [
+          path.path_id,
+          path.pattern_id,
+          path.semantic_field_category,
+          path.semantic_field_label,
+          path.semantic_layer_group,
+          path.semantic_layer_label,
+          path.cognition_move,
+          path.transfer_rule,
+          path.claim_id,
+          path.claim_field,
+          path.claim_gap_layer,
+          path.claim_gap_layer_label,
+          path.acquisition_reason,
+          (path.keywords || []).join(" "),
+          path.evidence_id,
+          path.evidence_stable_id,
+          path.evidence_kind,
+          path.evidence_title,
+          path.evidence_url,
+          path.evidence_excerpt,
+          path.evidence_type,
+          path.confidence,
+          path.confidence_score,
+          path.confidence_source,
+          (path.confidence_signal_groups || []).join(" "),
         ]),
       ];
       return parts.filter(Boolean).join(" ").toLowerCase();
@@ -6864,6 +6905,25 @@ def render_archive_dashboard(payload: dict) -> str:
       const cognitionProfilePatterns = cognitionProfileVisible ? (cognitionProfile.supporting_patterns || []).slice(0, 4).map((pattern) => `
         <span class="chip">${escapeHtml(pattern.field || "pattern")} / ${escapeHtml(pattern.missing_layer_label || pattern.missing_layer || "evidence")} ${escapeHtml(pattern.local_binding_count || 0)}</span>
       `).join("") : "";
+      const cognitionProfilePaths = cognitionProfileVisible ? (cognitionProfile.explanation_paths || []).slice(0, 6).map((path) => {
+        const evidenceRef = path.evidence_stable_id || path.evidence_id || "no-evidence-id";
+        const confidenceClassName = path.confidence === "high" ? "support" : (path.confidence === "low" ? "risk-mid" : "");
+        return `
+          <article class="item">
+            <h3>${escapeHtml(path.semantic_field_label || "Design move")} <span class="subtle">${escapeHtml(path.claim_field || "claim")} -> ${escapeHtml(path.claim_gap_layer_label || path.claim_gap_layer || "evidence")}</span></h3>
+            <p>${escapeHtml(compact(path.acquisition_reason || path.evidence_excerpt || "", 240))}</p>
+            <div class="chips">
+              <span class="chip support">${escapeHtml(evidenceRef)}</span>
+              <span class="chip ${confidenceClassName}">Confidence ${escapeHtml(path.confidence || "unknown")} ${escapeHtml(path.confidence_score ?? "unknown")}</span>
+              <span class="chip">${escapeHtml(path.evidence_kind || "Evidence")}</span>
+              ${path.evidence_type ? `<span class="chip">${escapeHtml(path.evidence_type)}</span>` : ""}
+              ${(path.keywords || []).slice(0, 4).map((keyword) => `<span class="chip">${escapeHtml(keyword)}</span>`).join("")}
+              ${(path.confidence_signal_groups || []).slice(0, 3).map((group) => `<span class="chip">${escapeHtml(group)}</span>`).join("")}
+            </div>
+            <div class="subtle">${escapeHtml(path.path_id || "")}${path.pattern_id ? " · " + escapeHtml(path.pattern_id) : ""}${path.evidence_title ? " · " + escapeHtml(compact(path.evidence_title, 120)) : ""}</div>
+          </article>
+        `;
+      }).join("") : "";
       const claims = (dossier.claims || []).map((claim) => {
         const support = claim.support_coverage || {};
         const supportLayers = (support.layer_labels || support.layers || []).slice(0, 4);
@@ -6972,6 +7032,10 @@ def render_archive_dashboard(payload: dict) -> str:
               ${cognitionProfilePatterns}
             </div>
             ${cognitionProfileMoves}
+            <div class="profile-paths">
+              <div class="section-title">Profile Explanation Paths</div>
+              ${cognitionProfilePaths || '<div class="empty">No explanation paths for this profile.</div>'}
+            </div>
           ` : '<div class="empty">No repository cognition profile for these filters.</div>'}
         </section>
         <section class="claims">

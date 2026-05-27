@@ -40,6 +40,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - FTS archive search: `--archive-search TEXT` now maintains a derived SQLite FTS5 index over repository metadata, claims, and evidence; it returns relevance backend, score, matched document count, and matched source types, with a LIKE fallback if FTS5 is unavailable or misses Chinese substrings.
 - Profile-aware archive search: CLI `--archive-search` now indexes and renders Repository Cognition Profile content, so design moves, evidence families, raw fields/layers, and supporting semantic pattern terms can directly retrieve related repositories through FTS5 or LIKE fallback.
 - Profile explanation paths: Repository Cognition Profile evidence examples now carry claim gap fields, acquisition reasons, confidence signals, and evidence references; CLI `--archive-search` renders explanation paths from matched profiles to concrete claim gaps and evidence stable IDs.
+- Dashboard profile paths: dashboard repository detail now renders Profile Explanation Paths inside Repository Cognition Profile, linking design moves to claim gap layers, acquisition reasons, confidence signals, and evidence stable IDs.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -64,4 +65,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Attach profile-to-claim/evidence explanation paths to the dashboard repository detail view so browser exploration can drill from a profile into supporting claim gaps and evidence.
+Add path-level aggregate statistics for profile explanation paths, grouped by design move, claim gap layer, and evidence type.
