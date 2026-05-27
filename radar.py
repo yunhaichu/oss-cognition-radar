@@ -10074,6 +10074,13 @@ def count_items_text(items: list[dict], limit: int = 6) -> str:
     return text or "无"
 
 
+def count_map_text(counts: dict | None) -> str:
+    if not counts:
+        return "无"
+    text = ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
+    return text or "无"
+
+
 def confidence_signal_breakdown_text(confidence: dict | None, group_limit: int = 5, signal_limit: int = 3) -> str:
     if not confidence:
         return "无"
@@ -10468,22 +10475,22 @@ def render_archive_route_selectors(payload: dict) -> str:
     fixtures = validation_fixtures.get("fixtures") or []
     if validation_fixtures:
         lines.extend(["## Validation Fixtures", ""])
+        status_counts = validation_fixtures.get("fixture_status_counts") or {}
+        all_status_counts = validation_fixtures.get("all_fixture_status_counts") or {}
         lines.append(f"- Schema：{validation_fixtures.get('schema_version') or 'route_detail_preset_validation_fixtures_v1'}")
+        lines.append(f"- Source：{validation_fixtures.get('source') or 'archive_route_selectors'}")
         lines.append(f"- Fixture count：{validation_fixtures.get('fixture_count', len(fixtures))}")
         lines.append(f"- Fixture status filter：{validation_fixtures.get('fixture_status_filter') or 'all'}")
-        if validation_fixtures.get("matching_expected_count") is not None:
-            lines.append(
-                f"- Matching expected：{validation_fixtures.get('matching_expected_count', 0)} / "
-                f"{validation_fixtures.get('unfiltered_fixture_count', len(fixtures))}"
-            )
-        status_counts = validation_fixtures.get("fixture_status_counts") or {}
-        if status_counts:
-            status_text = ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
-            lines.append(f"- Status counts：{status_text}")
-        all_status_counts = validation_fixtures.get("all_fixture_status_counts") or {}
-        if all_status_counts and all_status_counts != status_counts:
-            all_status_text = ", ".join(f"{status}={count}" for status, count in sorted(all_status_counts.items()))
-            lines.append(f"- All status counts：{all_status_text}")
+        lines.append(
+            f"- Fixture count / unfiltered：{validation_fixtures.get('fixture_count', len(fixtures))} / "
+            f"{validation_fixtures.get('unfiltered_fixture_count', len(fixtures))}"
+        )
+        lines.append(
+            f"- Matching expected / unfiltered：{validation_fixtures.get('matching_expected_count', 0)} / "
+            f"{validation_fixtures.get('unfiltered_matching_expected_count', 0)}"
+        )
+        lines.append(f"- Status counts：{count_map_text(status_counts)}")
+        lines.append(f"- All status counts：{count_map_text(all_status_counts)}")
         lines.append("")
         if not fixtures:
             lines.extend(["当前 fixture status 过滤范围没有 validation fixtures。", ""])

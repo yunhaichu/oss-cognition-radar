@@ -66,6 +66,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Selector fixture roundtrip provenance: downstream `--archive-route-detail --profile-path-preset-fixture` exports now preserve selector fixture filters, filtered/unfiltered fixture counts, matching-expected counts, and status distributions from filtered selector sources.
 - Dashboard fixture bundle provenance: dashboard single fixture bundle JSON/Markdown now preserves source selector filters, filtered/unfiltered fixture counts, matching-expected counts, and status distributions for CLI roundtrips.
 - Dashboard fixture provenance rendering: route detail Markdown exports and inline fixture previews now surface fixture status filters, filtered/unfiltered counts, matching-expected counts, and status distributions.
+- Selector fixture provenance rendering: CLI `--archive-route-selectors` Markdown now surfaces fixture source, status filters, filtered/unfiltered counts, matching-expected counts, and filtered/all status distributions.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -90,4 +91,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add selector fixture provenance rendering parity to CLI route selector Markdown.
+Add route selector provenance regression coverage for filtered fixture Markdown exports.
