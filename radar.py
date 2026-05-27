@@ -10433,6 +10433,19 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
     expected_validation_status_text = string_value_text(
         payload.get("expected_validation_status"), fallback="无"
     )
+    source_fixture_validation_status_text = string_value_text(
+        payload.get("source_fixture_validation_status"),
+        fallback=string_value_text(validation.get("status"), fallback="unknown"),
+    )
+    source_fixture_matches_expected = payload.get("source_fixture_validation_matches_expected")
+    if not isinstance(source_fixture_matches_expected, bool):
+        if source_fixture_validation_status_text != "unknown" and expected_validation_status_text != "无":
+            source_fixture_matches_expected = (
+                source_fixture_validation_status_text == expected_validation_status_text
+            )
+        else:
+            source_fixture_matches_expected = None
+    source_fixture_matches_expected_text = bool_value_text(source_fixture_matches_expected)
     exports = preset_exports_list(payload)
     derived_preset_count = len(exports)
     derived_route_count = 0
@@ -10497,7 +10510,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         f"- Source fixture status filter：{string_value_text(payload.get('source_fixture_status_filter'), fallback='无')}",
         f"- Source selector fixture filter：{source_filter_value}",
         f"- Source selector filters：{source_filters_text}",
-        f"- Source fixture validation：{string_value_text(payload.get('source_fixture_validation_status'))} / matches expected {bool_value_text(payload.get('source_fixture_validation_matches_expected'))}",
+        f"- Source fixture validation：{source_fixture_validation_status_text} / matches expected {source_fixture_matches_expected_text}",
         f"- Source fixture count：{count_value_text(payload.get('source_fixture_count'))} / unfiltered {count_value_text(payload.get('source_unfiltered_fixture_count'))}",
         f"- Source fixture matching expected：{count_value_text(payload.get('source_fixture_matching_expected_count'))} / unfiltered {count_value_text(payload.get('source_fixture_unfiltered_matching_expected_count'))}",
         f"- Source fixture status counts：{source_status_text}",
