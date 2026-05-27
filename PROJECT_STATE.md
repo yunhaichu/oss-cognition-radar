@@ -104,6 +104,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Missing validation preset status count Markdown coverage: route detail preset export Markdown now has regression coverage that defaults missing per-preset validation status move/route/repository/example counts to zero.
 - Explicit zero validation preset status count Markdown coverage: route detail preset export Markdown now has regression coverage that preserves explicit zero per-preset validation status move/route/repository/example counts.
 - Missing validation preset status identity Markdown coverage: route detail preset export Markdown now has regression coverage for missing per-preset validation status preset ID and status fields.
+- Missing validation preset status message Markdown coverage: route detail preset export Markdown now has regression coverage that defaults missing per-preset validation status messages to an empty message suffix.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -128,4 +129,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add preset export Markdown missing validation preset status message coverage.
+Add preset export Markdown empty validation preset status message coverage.
