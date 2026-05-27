@@ -10500,8 +10500,10 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
             matched_route_count = count_or_default(status.get("matched_route_count", 0))
             matched_repository_count = count_or_default(status.get("matched_repository_count", 0))
             expected_status_example_count = count_or_default(status.get("expected_example_count", 0))
+            preset_status_id_text = string_value_text(status.get("preset_id"), fallback="")
+            preset_status_text = string_value_text(status.get("status"), fallback="unknown")
             lines.append(
-                f"- `{status.get('preset_id') or ''}` {status.get('status') or 'unknown'}："
+                f"- `{preset_status_id_text}` {preset_status_text}："
                 f"moves {matched_move_count}；routes {matched_route_count}；"
                 f"repos {matched_repository_count}；examples {expected_status_example_count}；{messages}"
             )

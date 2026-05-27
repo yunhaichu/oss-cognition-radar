@@ -733,6 +733,29 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_renders_malformed_validation_preset_status_identity_as_fallbacks(self):
+        payload = preset_exports_payload({})
+        payload["preset_validation"]["preset_statuses"] = [
+            {
+                "preset_id": {"bad": "preset"},
+                "status": ["ready"],
+                "matched_move_count": 1,
+                "matched_route_count": 2,
+                "matched_repository_count": 3,
+                "expected_example_count": 4,
+                "messages": ["malformed identity"],
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn(
+            "- `` unknown\uff1amoves 1\uff1broutes 2\uff1brepos 3\uff1bexamples 4\uff1bmalformed identity",
+            lines,
+        )
+        self.assertFalse(any("{'bad': 'preset'}" in line for line in lines))
+        self.assertFalse(any("['ready']" in line for line in lines))
+
     def test_preset_export_markdown_defaults_missing_validation_preset_status_messages_to_empty(self):
         payload = preset_exports_payload({})
         payload["preset_validation"]["preset_statuses"] = [
