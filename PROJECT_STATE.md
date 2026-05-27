@@ -59,6 +59,8 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Dashboard fixture bundle downloads: route detail drilldown now has a validation fixture selector plus JSON/Markdown controls for downloading a single fixture's `route_detail_selector_preset_bundle_v1` with fixture metadata preserved for CLI roundtrips.
 - Dashboard fixture validation preview: selecting a route detail validation fixture now renders an inline `route_detail_preset_validation_v1` summary with status, ready/unmatched counts, duplicate IDs, and expected route/example counts before export.
 - Dashboard fixture validation metadata: route detail JSON exports now persist each fixture's validation summary, actual status, expected-status match flag, status distribution, and matching-expected counts.
+- Dashboard fixture status filtering: route detail drilldown now has a fixture validation status filter that narrows exported validation fixtures, fixture selectors, previews, JSON/Markdown exports, and permalink state.
+- CLI fixture status parity: `--archive-route-detail --profile-path-preset-fixture` now preserves dashboard-exported fixture status filters, validation status, expected-status match flags, and status counts in preset export payloads.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -83,4 +85,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add dashboard filters for fixture validation status metadata.
+Add selector-side validation status metadata parity to direct `--archive-route-selectors` fixture payloads.

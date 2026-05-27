@@ -6520,7 +6520,8 @@ def read_json_payload(path: str) -> dict:
 def route_detail_preset_bundle_from_payload(payload: dict, args: argparse.Namespace) -> dict:
     fixture_id = getattr(args, "profile_path_preset_fixture", None)
     if fixture_id:
-        fixtures = ((payload.get("validation_fixtures") or {}).get("fixtures") or [])
+        validation_fixtures = payload.get("validation_fixtures") or {}
+        fixtures = validation_fixtures.get("fixtures") or []
         fixture = next((item for item in fixtures if item.get("fixture_id") == fixture_id), None)
         if not fixture:
             available = ", ".join(item.get("fixture_id") or "" for item in fixtures if item.get("fixture_id")) or "none"
@@ -6529,6 +6530,11 @@ def route_detail_preset_bundle_from_payload(payload: dict, args: argparse.Namesp
         bundle["fixture_id"] = fixture.get("fixture_id")
         bundle["fixture_description"] = fixture.get("description")
         bundle["expected_validation_status"] = fixture.get("expected_validation_status")
+        bundle["source_fixture_status_filter"] = validation_fixtures.get("fixture_status_filter") or "all"
+        bundle["source_fixture_status_counts"] = validation_fixtures.get("fixture_status_counts") or {}
+        bundle["source_all_fixture_status_counts"] = validation_fixtures.get("all_fixture_status_counts") or {}
+        bundle["validation_status"] = fixture.get("validation_status")
+        bundle["validation_matches_expected"] = fixture.get("validation_matches_expected")
         return bundle
     if payload.get("schema_version") == "route_detail_selector_preset_bundle_v1":
         return payload
@@ -6742,6 +6748,11 @@ def archive_route_detail_preset_exports_payload(conn: sqlite3.Connection, args: 
         "source_bundle_generated_at": bundle.get("generated_at"),
         "source_fixture_id": bundle.get("fixture_id"),
         "source_fixture_description": bundle.get("fixture_description"),
+        "source_fixture_status_filter": bundle.get("source_fixture_status_filter"),
+        "source_fixture_status_counts": bundle.get("source_fixture_status_counts") or {},
+        "source_all_fixture_status_counts": bundle.get("source_all_fixture_status_counts") or {},
+        "source_fixture_validation_status": bundle.get("validation_status"),
+        "source_fixture_validation_matches_expected": bundle.get("validation_matches_expected"),
         "expected_validation_status": bundle.get("expected_validation_status"),
         "requested_preset_ids": args.profile_path_preset_id or [],
         "filters": archive_route_detail_filters_payload(args),
@@ -7479,6 +7490,7 @@ def render_archive_dashboard(payload: dict) -> str:
       pathMove: "all",
       pathRoute: "all",
       pathRepo: "all",
+      fixtureStatus: "all",
     };
     const repos = DATA.repositories || [];
     const dossiers = DATA.dossiers || {};
@@ -8615,14 +8627,27 @@ def render_archive_dashboard(payload: dict) -> str:
         acc[status] = (acc[status] || 0) + 1;
         return acc;
       }, {});
+      const statusFilter = state.fixtureStatus || "all";
+      const filteredFixtures = statusFilter === "all"
+        ? fixturesWithSummaries
+        : fixturesWithSummaries.filter((fixture) => fixture.validation_status === statusFilter);
+      const filteredStatusCounts = filteredFixtures.reduce((acc, fixture) => {
+        const status = fixture.validation_status || "unknown";
+        acc[status] = (acc[status] || 0) + 1;
+        return acc;
+      }, {});
       return {
         schema_version: "route_detail_preset_validation_fixtures_v1",
         generated_at: payload.exported_at || new Date().toISOString(),
         source: "dashboard_route_detail_export",
-        fixture_count: fixturesWithSummaries.length,
-        matching_expected_count: fixturesWithSummaries.filter((fixture) => fixture.validation_matches_expected).length,
-        fixture_status_counts: statusCounts,
-        fixtures: fixturesWithSummaries,
+        fixture_status_filter: statusFilter,
+        fixture_count: filteredFixtures.length,
+        unfiltered_fixture_count: fixturesWithSummaries.length,
+        matching_expected_count: filteredFixtures.filter((fixture) => fixture.validation_matches_expected).length,
+        unfiltered_matching_expected_count: fixturesWithSummaries.filter((fixture) => fixture.validation_matches_expected).length,
+        fixture_status_counts: filteredStatusCounts,
+        all_fixture_status_counts: statusCounts,
+        fixtures: filteredFixtures,
       };
     }
 
@@ -8671,6 +8696,7 @@ def render_archive_dashboard(payload: dict) -> str:
           path_route_label: selectedOptionText(pathRouteSelect),
           path_repo: state.pathRepo,
           path_repo_label: selectedOptionText(pathRepoSelect),
+          fixture_validation_status: state.fixtureStatus,
         },
         summary: {
           comparison_count: new Set(routePayloads.map((route) => route.comparison_id)).size,
@@ -8698,6 +8724,7 @@ def render_archive_dashboard(payload: dict) -> str:
         `- Exported at: ${payload.exported_at}`,
         `- Database: ${payload.db || "unknown"}`,
         `- Filters: move=${payload.filters.path_move_label}; route=${payload.filters.path_route_label}; repo=${payload.filters.path_repo_label}; confidence=${payload.filters.confidence_source}; signal=${payload.filters.signal_group}`,
+        `- Fixture validation status filter: ${payload.filters.fixture_validation_status || "all"}`,
         `- Summary: ${payload.summary.route_count} routes; ${payload.summary.example_count} examples; ${payload.summary.repository_count} repositories`,
         `- Presets: ${payload.preset_bundle?.preset_count ?? 0}`,
         `- Validation fixtures: ${payload.validation_fixtures?.fixture_count ?? 0}`,
@@ -8773,6 +8800,9 @@ def render_archive_dashboard(payload: dict) -> str:
       bundle.fixture_description = fixture?.description || "";
       bundle.expected_validation_status = fixture?.expected_validation_status || "";
       bundle.source_validation_fixtures_schema = payload.validation_fixtures?.schema_version || "";
+      bundle.source_fixture_status_filter = payload.validation_fixtures?.fixture_status_filter || "all";
+      bundle.source_fixture_status_counts = payload.validation_fixtures?.fixture_status_counts || {};
+      bundle.source_all_fixture_status_counts = payload.validation_fixtures?.all_fixture_status_counts || {};
       bundle.source_route_detail_schema = payload.schema_version || "";
       bundle.source_route_detail_generated_at = payload.generated_at || "";
       const validationSummary = fixture?.validation_summary || routeDetailPresetValidationSummary(payload, bundle);
@@ -8937,6 +8967,7 @@ def render_archive_dashboard(payload: dict) -> str:
         "",
         `- Schema: ${bundle.schema_version || "route_detail_selector_preset_bundle_v1"}`,
         `- Fixture ID: \\`${bundle.fixture_id || ""}\\``,
+        `- Source fixture status filter: ${bundle.source_fixture_status_filter || "all"}`,
         `- Expected validation status: ${bundle.expected_validation_status || "unknown"}`,
         `- Validation status: ${bundle.validation_status || "unknown"}`,
         `- Validation matches expected: ${bundle.validation_matches_expected ? "yes" : "no"}`,
@@ -9003,6 +9034,7 @@ def render_archive_dashboard(payload: dict) -> str:
       if (state.pathMove !== "all") params.set("move", state.pathMove);
       if (state.pathRoute !== "all") params.set("route", state.pathRoute);
       if (state.pathRepo !== "all") params.set("path_repo", state.pathRepo);
+      if (state.fixtureStatus !== "all") params.set("fixture_status", state.fixtureStatus);
       return params;
     }
 
@@ -9037,6 +9069,7 @@ def render_archive_dashboard(payload: dict) -> str:
       state.pathMove = "all";
       state.pathRoute = "all";
       state.pathRepo = "all";
+      state.fixtureStatus = "all";
     }
 
     function applyDashboardPermalink(resetWhenEmpty = false) {
@@ -9057,6 +9090,7 @@ def render_archive_dashboard(payload: dict) -> str:
       state.pathMove = params.get("move") || "all";
       state.pathRoute = params.get("route") || "all";
       state.pathRepo = params.get("path_repo") || "all";
+      state.fixtureStatus = params.get("fixture_status") || "all";
     }
 
     function setSelectValue(select, value, fallback = "all") {
@@ -9158,7 +9192,18 @@ def render_archive_dashboard(payload: dict) -> str:
       clearRouteDetailExportUrl();
       const routeRows = routeDetailRows();
       const totalExamples = routeRows.reduce((sum, row) => sum + row.examples.length, 0);
-      const fixturePayload = routeRows.length ? routeDetailExportPayload() : null;
+      let fixturePayload = routeRows.length ? routeDetailExportPayload() : null;
+      const allFixtureStatusCounts = fixturePayload?.validation_fixtures?.all_fixture_status_counts || {};
+      if (state.fixtureStatus !== "all" && !allFixtureStatusCounts[state.fixtureStatus]) {
+        state.fixtureStatus = "all";
+        fixturePayload = routeRows.length ? routeDetailExportPayload() : null;
+      }
+      const statusEntries = Object.entries(fixturePayload?.validation_fixtures?.all_fixture_status_counts || {})
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+      const fixtureStatusOptions = [
+        `<option value="all">All fixture statuses (${escapeHtml(fixturePayload?.validation_fixtures?.unfiltered_fixture_count || 0)})</option>`,
+        ...statusEntries.map(([status, count]) => `<option value="${escapeHtml(status)}">${escapeHtml(status)} (${escapeHtml(count)})</option>`),
+      ].join("");
       const fixtureOptions = (fixturePayload?.validation_fixtures?.fixtures || []).map((fixture) => {
         const status = fixture.expected_validation_status || "unknown";
         return `<option value="${escapeHtml(fixture.fixture_id || "")}">${escapeHtml((fixture.fixture_id || "fixture") + " / " + status)}</option>`;
@@ -9216,6 +9261,7 @@ def render_archive_dashboard(payload: dict) -> str:
             <button id="routeDetailPermalinkButton" type="button" ${routeRows.length ? "" : "disabled"}>Permalink</button>
             <button id="routeDetailJsonButton" type="button" ${routeRows.length ? "" : "disabled"}>JSON</button>
             <button id="routeDetailMarkdownButton" type="button" ${routeRows.length ? "" : "disabled"}>Markdown</button>
+            <select id="routeDetailFixtureStatusSelect" ${routeRows.length ? "" : "disabled"} aria-label="Validation fixture status">${fixtureStatusOptions}</select>
             <select id="routeDetailFixtureSelect" ${fixtureControlsDisabled} aria-label="Validation fixture">${fixtureOptions}</select>
             <button id="routeDetailFixtureJsonButton" type="button" ${fixtureControlsDisabled}>Fixture JSON</button>
             <button id="routeDetailFixtureMarkdownButton" type="button" ${fixtureControlsDisabled}>Fixture MD</button>
@@ -9228,6 +9274,14 @@ def render_archive_dashboard(payload: dict) -> str:
       document.getElementById("routeDetailPermalinkButton")?.addEventListener("click", showRouteDetailPermalink);
       document.getElementById("routeDetailJsonButton")?.addEventListener("click", () => downloadRouteDetail("json"));
       document.getElementById("routeDetailMarkdownButton")?.addEventListener("click", () => downloadRouteDetail("markdown"));
+      const fixtureStatusSelect = document.getElementById("routeDetailFixtureStatusSelect");
+      if (fixtureStatusSelect) {
+        fixtureStatusSelect.value = state.fixtureStatus;
+        fixtureStatusSelect.addEventListener("change", () => {
+          state.fixtureStatus = fixtureStatusSelect.value;
+          render();
+        });
+      }
       document.getElementById("routeDetailFixtureSelect")?.addEventListener("change", renderRouteDetailFixturePreview);
       document.getElementById("routeDetailFixtureJsonButton")?.addEventListener("click", () => exportRouteDetailFixture("json"));
       document.getElementById("routeDetailFixtureMarkdownButton")?.addEventListener("click", () => exportRouteDetailFixture("markdown"));
@@ -10119,6 +10173,8 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         f"- Preset source：{payload.get('source_preset_path') or '无'}",
         f"- Source schema：{payload.get('source_bundle_schema') or 'unknown'}",
         f"- Source fixture：{payload.get('source_fixture_id') or '无'}",
+        f"- Source fixture status filter：{payload.get('source_fixture_status_filter') or '无'}",
+        f"- Source fixture validation：{payload.get('source_fixture_validation_status') or 'unknown'} / matches expected {payload.get('source_fixture_validation_matches_expected') if payload.get('source_fixture_validation_matches_expected') is not None else 'unknown'}",
         f"- Expected validation status：{payload.get('expected_validation_status') or '无'}",
         f"- Preset / route / example：{summary.get('preset_count', 0)} / {summary.get('route_count', 0)} / {summary.get('example_count', 0)}",
         f"- Repository / unique evidence：{summary.get('repository_count', 0)} / {summary.get('unique_evidence_count', 0)}",
