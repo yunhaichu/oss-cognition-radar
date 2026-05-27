@@ -10435,19 +10435,35 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
                     export_evidence_refs.add(evidence_ref)
         derived_repository_count = len(export_repository_names)
         derived_evidence_count = len(export_evidence_refs)
-        summary_route_count = route_summary.get("route_count", 0)
-        summary_example_count = route_summary.get("example_count", 0)
-        summary_repository_count = route_summary.get("repository_count", 0)
-        summary_evidence_count = route_summary.get("unique_evidence_count", 0)
+        summary_route_count = (
+            route_summary.get("route_count")
+            if route_summary.get("route_count") is not None
+            else derived_route_count
+        )
+        summary_example_count = (
+            route_summary.get("example_count")
+            if route_summary.get("example_count") is not None
+            else derived_example_count
+        )
+        summary_repository_count = (
+            route_summary.get("repository_count")
+            if route_summary.get("repository_count") is not None
+            else derived_repository_count
+        )
+        summary_evidence_count = (
+            route_summary.get("unique_evidence_count")
+            if route_summary.get("unique_evidence_count") is not None
+            else derived_evidence_count
+        )
         lines.extend(
             [
                 f"## {index}. {preset.get('label') or preset.get('preset_id') or 'Route detail preset'}",
                 "",
                 f"- Preset ID：`{preset.get('preset_id') or ''}`",
                 f"- Move / route / repo：`{selectors.get('profile_path_move') or ''}` / `{selectors.get('profile_path_route') or ''}` / `{selectors.get('profile_path_repo') or ''}`",
-                f"- Route / example：{route_summary.get('route_count', 0)} / {route_summary.get('example_count', 0)}",
+                f"- Route / example：{summary_route_count} / {summary_example_count}",
                 f"- Route/example count consistency：route {derived_route_count} / summary {summary_route_count} / matches summary {derived_route_count == summary_route_count}; example {derived_example_count} / summary {summary_example_count} / matches summary {derived_example_count == summary_example_count}",
-                f"- Repository / unique evidence：{route_summary.get('repository_count', 0)} / {route_summary.get('unique_evidence_count', 0)}",
+                f"- Repository / unique evidence：{summary_repository_count} / {summary_evidence_count}",
                 f"- Repository/evidence count consistency：repository {derived_repository_count} / summary {summary_repository_count} / matches summary {derived_repository_count == summary_repository_count}; evidence {derived_evidence_count} / summary {summary_evidence_count} / matches summary {derived_evidence_count == summary_evidence_count}",
                 "",
             ]

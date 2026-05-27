@@ -739,6 +739,83 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_uses_export_summary_count_fallbacks_when_counts_missing(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "summary": {},
+                    "routes": [
+                        {
+                            "repositories": ["owner/repo", "owner/second"],
+                            "examples": [
+                                {"evidence_stable_id": "ev_repo"},
+                                {"evidence_id": "ev_second"},
+                            ],
+                        },
+                        {
+                            "repositories": ["owner/repo"],
+                            "examples": [{"evidence_stable_id": "ev_repo"}],
+                        },
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Route / example\uff1a2 / 3", lines)
+        self.assertIn("- Repository / unique evidence\uff1a2 / 2", lines)
+        self.assertIn(
+            "- Route/example count consistency\uff1aroute 2 / summary 2 / matches summary True; example 3 / summary 3 / matches summary True",
+            lines,
+        )
+        self.assertIn(
+            "- Repository/evidence count consistency\uff1arepository 2 / summary 2 / matches summary True; evidence 2 / summary 2 / matches summary True",
+            lines,
+        )
+
+    def test_preset_export_markdown_uses_partial_export_summary_count_fallbacks(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "summary": {
+                        "route_count": 1,
+                        "unique_evidence_count": 3,
+                    },
+                    "routes": [
+                        {
+                            "repositories": ["owner/repo", "owner/second"],
+                            "examples": [
+                                {"evidence_stable_id": "ev_repo"},
+                                {"evidence_id": "ev_second"},
+                            ],
+                        },
+                        {
+                            "repositories": ["owner/repo"],
+                            "examples": [{"evidence_stable_id": "ev_repo"}],
+                        },
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Route / example\uff1a1 / 3", lines)
+        self.assertIn("- Repository / unique evidence\uff1a2 / 3", lines)
+        self.assertIn(
+            "- Route/example count consistency\uff1aroute 2 / summary 1 / matches summary False; example 3 / summary 3 / matches summary True",
+            lines,
+        )
+        self.assertIn(
+            "- Repository/evidence count consistency\uff1arepository 2 / summary 2 / matches summary True; evidence 2 / summary 3 / matches summary False",
+            lines,
+        )
+
     def test_preset_export_markdown_uses_source_fixture_status_fallback_when_filters_empty(self):
         markdown = radar.render_archive_route_detail_preset_exports(
             preset_exports_payload({"source_fixture_status_filter": "ready"})
