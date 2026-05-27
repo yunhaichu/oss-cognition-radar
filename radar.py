@@ -10145,10 +10145,21 @@ def evidence_ref_text(example: dict) -> str:
 
 
 def route_examples_list(route: dict) -> list[dict]:
+    if not isinstance(route, dict):
+        return []
     raw_examples = route.get("examples") or []
     if not isinstance(raw_examples, list):
         return []
     return [example for example in raw_examples if isinstance(example, dict)]
+
+
+def route_detail_routes_list(route_detail: dict) -> list[dict]:
+    if not isinstance(route_detail, dict):
+        return []
+    raw_routes = route_detail.get("routes") or []
+    if not isinstance(raw_routes, list):
+        return []
+    return [route for route in raw_routes if isinstance(route, dict)]
 
 
 def confidence_signal_breakdown_text(confidence: dict | None, group_limit: int = 5, signal_limit: int = 3) -> str:
@@ -10413,7 +10424,9 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
     export_evidence_refs = set()
     for export in exports:
         route_detail = export.get("route_detail") or {}
-        for route in route_detail.get("routes") or []:
+        if not isinstance(route_detail, dict):
+            route_detail = {}
+        for route in route_detail_routes_list(route_detail):
             derived_route_count += 1
             route_examples = route_examples_list(route)
             derived_example_count += len(route_examples)
@@ -10541,8 +10554,10 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         preset = export.get("preset") or {}
         selectors = preset.get("selectors") or {}
         route_detail = export.get("route_detail") or {}
+        if not isinstance(route_detail, dict):
+            route_detail = {}
         route_summary = route_detail.get("summary") or {}
-        routes = route_detail.get("routes") or []
+        routes = route_detail_routes_list(route_detail)
         preset_label_text = string_value_text(
             preset.get("label"), fallback=string_value_text(preset.get("preset_id"), fallback="Route detail preset")
         )
