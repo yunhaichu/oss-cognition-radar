@@ -10420,6 +10420,11 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         selectors = preset.get("selectors") or {}
         route_detail = export.get("route_detail") or {}
         route_summary = route_detail.get("summary") or {}
+        routes = route_detail.get("routes") or []
+        derived_route_count = len(routes)
+        derived_example_count = sum(len(route.get("examples") or []) for route in routes)
+        summary_route_count = route_summary.get("route_count", 0)
+        summary_example_count = route_summary.get("example_count", 0)
         lines.extend(
             [
                 f"## {index}. {preset.get('label') or preset.get('preset_id') or 'Route detail preset'}",
@@ -10427,11 +10432,12 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
                 f"- Preset ID：`{preset.get('preset_id') or ''}`",
                 f"- Move / route / repo：`{selectors.get('profile_path_move') or ''}` / `{selectors.get('profile_path_route') or ''}` / `{selectors.get('profile_path_repo') or ''}`",
                 f"- Route / example：{route_summary.get('route_count', 0)} / {route_summary.get('example_count', 0)}",
+                f"- Route/example count consistency：route {derived_route_count} / summary {summary_route_count} / matches summary {derived_route_count == summary_route_count}; example {derived_example_count} / summary {summary_example_count} / matches summary {derived_example_count == summary_example_count}",
                 f"- Repository / unique evidence：{route_summary.get('repository_count', 0)} / {route_summary.get('unique_evidence_count', 0)}",
                 "",
             ]
         )
-        for route in route_detail.get("routes") or []:
+        for route in routes:
             evidence_ids = [
                 example.get("evidence_stable_id") or example.get("evidence_id")
                 for example in route.get("examples") or []

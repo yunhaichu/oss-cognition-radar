@@ -90,6 +90,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Selected preset count consistency Markdown coverage: route detail preset export Markdown now renders whether validation selected preset count matches summary preset count, with regression coverage for matching and mismatched counts.
 - Expected route/example count consistency Markdown coverage: route detail preset export Markdown now renders whether validation expected route/example counts match summary route/example counts, with regression coverage for matching and mismatched counts.
 - Repository/evidence count consistency Markdown coverage: route detail preset export Markdown now derives repository and evidence counts from exported routes and renders whether they match summary repository/evidence counts, with regression coverage for matching and mismatched counts.
+- Per-export route/example count consistency Markdown coverage: each route detail preset export section now derives route/example counts from its own routes and renders whether they match that export's summary counts, with regression coverage for matching and mismatched counts.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -114,4 +115,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add per-export Markdown route/example count consistency coverage.
+Add per-export Markdown repository/evidence count consistency coverage.

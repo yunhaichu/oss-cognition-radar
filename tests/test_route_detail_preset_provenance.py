@@ -461,6 +461,56 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_renders_per_export_route_example_count_consistency(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "summary": {
+                        "route_count": 2,
+                        "example_count": 3,
+                    },
+                    "routes": [
+                        {"examples": [{"evidence_stable_id": "ev_repo"}, {"evidence_id": "ev_second"}]},
+                        {"examples": [{"evidence_stable_id": "ev_third"}]},
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn(
+            "- Route/example count consistency\uff1aroute 2 / summary 2 / matches summary True; example 3 / summary 3 / matches summary True",
+            lines,
+        )
+
+    def test_preset_export_markdown_flags_per_export_route_example_count_mismatch(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "summary": {
+                        "route_count": 1,
+                        "example_count": 4,
+                    },
+                    "routes": [
+                        {"examples": [{"evidence_stable_id": "ev_repo"}, {"evidence_id": "ev_second"}]},
+                        {"examples": [{"evidence_stable_id": "ev_third"}]},
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn(
+            "- Route/example count consistency\uff1aroute 2 / summary 1 / matches summary False; example 3 / summary 4 / matches summary False",
+            lines,
+        )
+
     def test_preset_export_markdown_uses_source_fixture_status_fallback_when_filters_empty(self):
         markdown = radar.render_archive_route_detail_preset_exports(
             preset_exports_payload({"source_fixture_status_filter": "ready"})
