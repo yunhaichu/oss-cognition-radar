@@ -350,6 +350,26 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertIn("\u5f53\u524d preset \u8303\u56f4\u6ca1\u6709\u53ef\u5bfc\u51fa\u7684 route detail\u3002", lines)
         self.assertFalse(any("bad payload" in line for line in lines))
 
+    def test_preset_export_markdown_renders_empty_payload_baseline(self):
+        markdown = radar.render_archive_route_detail_preset_exports({})
+        lines = markdown.splitlines()
+
+        self.assertIn("- Schema\uff1aroute_detail_preset_exports_v1", lines)
+        self.assertIn("- \u6570\u636e\u5e93\uff1aunknown", lines)
+        self.assertIn("- \u751f\u6210\u65f6\u95f4\uff1aunknown", lines)
+        self.assertIn("- Preset source\uff1a\u65e0", lines)
+        self.assertIn("- Requested preset IDs\uff1a\u65e0", lines)
+        self.assertIn("- Source schema\uff1aunknown", lines)
+        self.assertIn("- Source fixture\uff1a\u65e0", lines)
+        self.assertIn("- Source selector filters\uff1a\u65e0", lines)
+        self.assertIn("- Source fixture validation\uff1aunknown / matches expected unknown", lines)
+        self.assertIn("- Source fixture count\uff1aunknown / unfiltered unknown", lines)
+        self.assertIn("- Expected validation status\uff1a\u65e0", lines)
+        self.assertIn("- Preset / route / example\uff1a0 / 0 / 0", lines)
+        self.assertIn("- Repository / unique evidence\uff1a0 / 0", lines)
+        self.assertNotIn("## Preset Validation", lines)
+        self.assertIn("\u5f53\u524d preset \u8303\u56f4\u6ca1\u6709\u53ef\u5bfc\u51fa\u7684 route detail\u3002", lines)
+
     def test_preset_export_markdown_renders_string_duplicate_preset_id_as_single_id(self):
         payload = preset_exports_payload({})
         payload["preset_validation"]["duplicate_preset_ids"] = "duplicate"
