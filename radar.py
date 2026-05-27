@@ -10582,6 +10582,9 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
                 for example in route_examples
                 if example.get("evidence_stable_id") or example.get("evidence_id")
             ]
+            route_id_text = string_value_text(route.get("route_id"), fallback="")
+            route_design_move_text = string_value_text(route.get("design_move"), fallback="Design move")
+            route_label_text = string_value_text(route.get("route_label"), fallback="route")
             derived_route_repository_count = len(set(route_repositories))
             derived_route_example_count = len(route_examples)
             derived_route_evidence_count = len(set(evidence_ids))
@@ -10602,7 +10605,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
             )
             lines.extend(
                 [
-                    f"- `{route.get('route_id') or ''}` {route.get('design_move') or 'Design move'} / {route.get('route_label') or 'route'}",
+                    f"- `{route_id_text}` {route_design_move_text} / {route_label_text}",
                     f"  - Repositories：{', '.join(route_repositories) or '无'}",
                     f"  - Repository count consistency：repository {derived_route_repository_count} / route {route_repository_count} / matches route {derived_route_repository_count == route_repository_count}",
                     f"  - Paths / high / avg：{route.get('path_count', 0)} / {route.get('high_confidence_paths', 0)} / {route.get('average_confidence') if route.get('average_confidence') is not None else 'unknown'}",

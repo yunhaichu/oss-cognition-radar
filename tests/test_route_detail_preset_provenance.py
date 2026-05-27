@@ -1191,6 +1191,32 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_renders_malformed_route_identity_as_fallbacks(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "routes": [
+                        {
+                            "route_id": {"bad": "route"},
+                            "design_move": ["move"],
+                            "route_label": {"bad": "label"},
+                            "repositories": [],
+                            "examples": [],
+                        }
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- `` Design move / route", lines)
+        self.assertFalse(any("{'bad': 'route'}" in line for line in lines))
+        self.assertFalse(any("['move']" in line for line in lines))
+        self.assertFalse(any("{'bad': 'label'}" in line for line in lines))
+
     def test_preset_export_markdown_flags_per_route_evidence_example_count_mismatch(self):
         payload = preset_exports_payload({})
         payload["exports"] = [
