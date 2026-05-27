@@ -994,6 +994,15 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertNotIn("- `` unknown\uff1amoves 0\uff1broutes 0\uff1brepos 0\uff1bexamples 0\uff1b", lines)
         self.assertFalse(any("more preset statuses in JSON" in line for line in lines))
 
+    def test_preset_export_markdown_renders_malformed_validation_payload_without_validation_section(self):
+        payload = preset_exports_payload({})
+        payload["preset_validation"] = ["bad validation"]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertNotIn("## Preset Validation", lines)
+        self.assertFalse(any("bad validation" in line for line in lines))
+
     def test_preset_export_markdown_renders_repository_evidence_count_consistency(self):
         payload = preset_exports_payload({})
         payload["summary"]["repository_count"] = 2

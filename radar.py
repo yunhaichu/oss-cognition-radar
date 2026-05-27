@@ -10390,6 +10390,8 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
     if not isinstance(summary, dict):
         summary = {}
     validation = payload.get("preset_validation") or {}
+    if not isinstance(validation, dict):
+        validation = {}
     raw_source_selector_filters = payload.get("source_selector_filters") or {}
     if isinstance(raw_source_selector_filters, dict):
         source_selector_filters = {
