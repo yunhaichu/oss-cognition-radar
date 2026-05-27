@@ -1658,6 +1658,77 @@ CLAIM_GAP_REASONS = {
     "source_backed": "该判断已有源码证据，但还缺少测试或 benchmark 来确认行为边界。",
     "source_and_validation": "该判断已覆盖源码和验证层，暂不属于高优先级 gap。",
 }
+COGNITION_FIELD_PROFILES = {
+    "作者如何重新定义问题": {
+        "category": "problem_framing",
+        "label": "问题重定义",
+        "move": "先重写问题边界，再选择工程形态",
+        "transfer_rule": "先确认项目把什么问题改写成了更小、更可执行的工程对象，再评估技术方案。",
+    },
+    "关键抽象": {
+        "category": "abstraction_design",
+        "label": "关键抽象设计",
+        "move": "把复杂能力压进少数可组合抽象",
+        "transfer_rule": "优先寻找公共 API、核心类型和测试中反复出现的抽象，而不是只看功能列表。",
+    },
+    "架构边界": {
+        "category": "boundary_design",
+        "label": "架构边界设计",
+        "move": "用边界、配置和验证把可承诺范围固定下来",
+        "transfer_rule": "观察项目明确支持什么、不支持什么，以及这些边界是否被源码和测试固定。",
+    },
+    "复杂度藏处": {
+        "category": "complexity_management",
+        "label": "复杂度管理",
+        "move": "把难点集中在可测试、可替换、可观测的位置",
+        "transfer_rule": "优先检查错误处理、性能、状态、并发和兼容性证据，判断复杂度是否被有意收拢。",
+    },
+    "治理模式": {
+        "category": "governance_design",
+        "label": "治理设计",
+        "move": "用配置、流程和协作痕迹维持长期演化",
+        "transfer_rule": "看贡献规范、CI、issue/PR 和 release 是否形成稳定维护机制。",
+    },
+    "可复用思想": {
+        "category": "transferable_principle",
+        "label": "可迁移思想",
+        "move": "把可迁移部分沉淀为示例、源码、测试和协作模式",
+        "transfer_rule": "只迁移被源码、测试或真实协作反复支撑的思想，避免迁移项目势能本身。",
+    },
+    "不可复制条件": {
+        "category": "context_constraint",
+        "label": "不可复制条件",
+        "move": "把项目势能与上下文依赖拆开看",
+        "transfer_rule": "把社区、生态、发布节奏和维护者结构当作条件变量，而不是默认可复制资产。",
+    },
+    "实现层复核线索": {
+        "category": "implementation_grounding",
+        "label": "实现层复核",
+        "move": "把高层判断回落到源码、测试、benchmark 和配置",
+        "transfer_rule": "高层设计判断必须能被实现层 artifact 复核，否则只能作为研究提示。",
+    },
+    "领域": {
+        "category": "domain_positioning",
+        "label": "领域定位",
+        "move": "通过工程 artifact 重新确认项目实际所在的问题域",
+        "transfer_rule": "不要只按 README 定位项目，需用 API、源码和使用面确认真实领域边界。",
+    },
+}
+DEFAULT_COGNITION_FIELD_PROFILE = {
+    "category": "general_engineering_move",
+    "label": "通用工程动作",
+    "move": "把项目主张转成可复核工程证据",
+    "transfer_rule": "只保留能被 archive evidence 重复支撑的工程动作。",
+}
+COGNITION_LAYER_ACTIONS = {
+    "source": "用源码或公共 API 复核机制",
+    "tests": "用测试验证行为边界",
+    "benchmarks": "用 benchmark 约束性能和复杂度判断",
+    "configuration": "用配置、CI 或 package metadata 固化流程",
+    "collaboration": "用 issue/PR 协作痕迹观察真实摩擦",
+    "release": "用 release/changelog 验证演化轨迹",
+    "narrative": "用叙事材料提出初始假设",
+}
 
 
 def claim_value(claim: Claim | dict, key: str, default=None):
@@ -4501,6 +4572,182 @@ def build_archive_acquisition_patterns(rows: list[dict], limit: int) -> list[dic
     return patterns[: max(limit, 1)]
 
 
+def cognition_field_profile(field: str | None) -> dict:
+    return COGNITION_FIELD_PROFILES.get(field or "", DEFAULT_COGNITION_FIELD_PROFILE)
+
+
+def cognition_summary_score(patterns: list[dict], repo_count: int, binding_count: int) -> int:
+    pattern_scores = [
+        item.get("pattern_score")
+        for item in patterns
+        if isinstance(item.get("pattern_score"), (int, float))
+    ]
+    confidence_scores = [
+        item.get("average_binding_confidence")
+        for item in patterns
+        if isinstance(item.get("average_binding_confidence"), (int, float))
+    ]
+    signal_scores = [
+        item.get("signal_group_score")
+        for item in patterns
+        if isinstance(item.get("signal_group_score"), (int, float))
+    ]
+    pattern_part = (mean_number(pattern_scores) or 0) * 0.42
+    confidence_part = (mean_number(confidence_scores) or 0) * 0.22
+    signal_part = (mean_number(signal_scores) or 0) * 1.15
+    repeat_part = min(repo_count * 5 + binding_count * 1.5, 24)
+    return int(clamp(round(pattern_part + confidence_part + signal_part + repeat_part), 0, 100))
+
+
+def cognition_summary_confidence(score: int, repo_count: int) -> str:
+    if score >= 78 and repo_count >= 3:
+        return "high"
+    if score >= 58 and repo_count >= 2:
+        return "medium"
+    return "low"
+
+
+def build_archive_cognition_summaries(patterns: list[dict], limit: int) -> list[dict]:
+    groups: dict[str, dict] = {}
+    for pattern in patterns:
+        profile = cognition_field_profile(pattern.get("field"))
+        category = profile["category"]
+        group = groups.setdefault(
+            category,
+            {
+                "summary_id": stable_id("cognition", category),
+                "category": category,
+                "label": profile["label"],
+                "move": profile["move"],
+                "transfer_rule": profile["transfer_rule"],
+                "_patterns": [],
+                "_repositories": set(),
+                "_layer_counts": {},
+                "_layer_action_counts": {},
+                "_signal_group_counts": {},
+                "_signal_label_counts": {},
+                "_confidence_scores": [],
+                "_pattern_scores": [],
+                "_signal_scores": [],
+                "_binding_count": 0,
+            },
+        )
+        group["_patterns"].append(pattern)
+        group["_binding_count"] += int(pattern.get("binding_count") or 0)
+        for repo in pattern.get("repositories") or []:
+            group["_repositories"].add(repo)
+        missing_layer = pattern.get("missing_layer")
+        missing_layer_label = (
+            pattern.get("missing_layer_label")
+            or SUPPORT_LAYER_LABELS.get(missing_layer, missing_layer)
+        )
+        count_value(
+            group["_layer_counts"],
+            missing_layer_label,
+        )
+        count_value(
+            group["_layer_action_counts"],
+            COGNITION_LAYER_ACTIONS.get(missing_layer, missing_layer_label),
+        )
+        for item in pattern.get("signal_groups") or []:
+            value = item.get("value")
+            if value:
+                group["_signal_group_counts"][value] = group["_signal_group_counts"].get(value, 0) + int(item.get("count") or 0)
+        for item in pattern.get("signal_labels") or []:
+            value = item.get("value")
+            if value:
+                group["_signal_label_counts"][value] = group["_signal_label_counts"].get(value, 0) + int(item.get("count") or 0)
+        if isinstance(pattern.get("average_binding_confidence"), (int, float)):
+            group["_confidence_scores"].append(pattern["average_binding_confidence"])
+        if isinstance(pattern.get("pattern_score"), (int, float)):
+            group["_pattern_scores"].append(pattern["pattern_score"])
+        if isinstance(pattern.get("signal_group_score"), (int, float)):
+            group["_signal_scores"].append(pattern["signal_group_score"])
+
+    summaries = []
+    for group in groups.values():
+        patterns_for_group = sorted(
+            group.pop("_patterns"),
+            key=lambda item: (
+                -(item.get("pattern_score") or 0),
+                -(item.get("signal_group_score") or 0),
+                -(item.get("repository_count") or 0),
+                item.get("field") or "",
+                item.get("missing_layer") or "",
+            ),
+        )
+        repositories = sorted(repo for repo in group.pop("_repositories") if repo)
+        layer_counts = top_count_items(group.pop("_layer_counts"), limit=5)
+        layer_actions = top_count_items(group.pop("_layer_action_counts"), limit=5)
+        signal_groups = top_count_items(group.pop("_signal_group_counts"), limit=6)
+        signal_labels = top_count_items(group.pop("_signal_label_counts"), limit=8)
+        confidence_scores = group.pop("_confidence_scores")
+        pattern_scores = group.pop("_pattern_scores")
+        signal_scores = group.pop("_signal_scores")
+        binding_count = group.pop("_binding_count")
+        score = cognition_summary_score(patterns_for_group, len(repositories), binding_count)
+        top_layers = "、".join(item["value"] for item in layer_counts[:3]) or "归档证据"
+        top_actions = "；".join(item["value"] for item in layer_actions[:3]) or "用 archive evidence 复核高层判断"
+        top_signals = "、".join(item["value"] for item in signal_groups[:3]) or "archive signals"
+        top_fields = unique_ordered([item.get("field") or "" for item in patterns_for_group if item.get("field")])[:4]
+        field_text = "、".join(top_fields) or group["label"]
+        summaries.append(
+            {
+                **group,
+                "score": score,
+                "confidence": cognition_summary_confidence(score, len(repositories)),
+                "repository_count": len(repositories),
+                "repositories": repositories[:12],
+                "pattern_count": len(patterns_for_group),
+                "binding_count": binding_count,
+                "average_pattern_score": mean_number(pattern_scores),
+                "average_binding_confidence": mean_number(confidence_scores),
+                "average_signal_group_score": mean_number(signal_scores),
+                "layer_counts": layer_counts,
+                "layer_actions": layer_actions,
+                "signal_groups": signal_groups,
+                "signal_labels": signal_labels,
+                "summary": (
+                    f"{field_text} 在 {len(repositories)} 个仓库中反复需要 {top_layers} 证据补强；"
+                    f"可观察工程动作是：{group['move']}；复核路径是：{top_actions}。"
+                ),
+                "evidence_basis": (
+                    f"{len(patterns_for_group)} 个 patterns、{binding_count} 条 bindings、"
+                    f"平均 pattern score {mean_number(pattern_scores) if pattern_scores else 'unknown'}、"
+                    f"平均 binding confidence {mean_number(confidence_scores) if confidence_scores else 'unknown'}、"
+                    f"主要自动信号 {top_signals}。"
+                ),
+                "supporting_patterns": [
+                    {
+                        "pattern_id": item.get("pattern_id"),
+                        "field": item.get("field"),
+                        "missing_layer": item.get("missing_layer"),
+                        "missing_layer_label": item.get("missing_layer_label"),
+                        "pattern_score": item.get("pattern_score"),
+                        "signal_group_score": item.get("signal_group_score"),
+                        "average_binding_confidence": item.get("average_binding_confidence"),
+                        "repository_count": item.get("repository_count"),
+                        "binding_count": item.get("binding_count"),
+                        "repositories": item.get("repositories") or [],
+                        "signal_groups": item.get("signal_groups") or [],
+                        "missing_layer_action": COGNITION_LAYER_ACTIONS.get(item.get("missing_layer")),
+                    }
+                    for item in patterns_for_group[:5]
+                ],
+            }
+        )
+
+    summaries.sort(
+        key=lambda item: (
+            -item["score"],
+            -item["repository_count"],
+            -item["binding_count"],
+            item["category"],
+        )
+    )
+    return summaries[: max(limit, 1)]
+
+
 def archive_message_payload(mode: str, args: argparse.Namespace, message: str) -> dict:
     return {
         "schema_version": 1,
@@ -4583,6 +4830,7 @@ def archive_patterns_payload(conn: sqlite3.Connection, args: argparse.Namespace)
     )
     rows = filter_archive_pattern_rows_by_signal_group(rows, signal_group)
     patterns = build_archive_acquisition_patterns(rows, args.limit)
+    cognition_summaries = build_archive_cognition_summaries(patterns, args.limit)
     repositories = sorted({row.get("repo_full_name") for row in rows if row.get("repo_full_name")})
     pattern_confidences = [
         item.get("average_binding_confidence")
@@ -4599,6 +4847,8 @@ def archive_patterns_payload(conn: sqlite3.Connection, args: argparse.Namespace)
         "statistics": {
             "bindings": len(rows),
             "patterns": len(patterns),
+            "cognition_summaries": len(cognition_summaries),
+            "high_confidence_cognition_summaries": sum(1 for item in cognition_summaries if item.get("confidence") == "high"),
             "repositories": len(repositories),
             "cross_project_patterns": sum(1 for item in patterns if item.get("repository_count", 0) >= 2),
             "average_pattern_confidence": round(sum(pattern_confidences) / len(pattern_confidences), 1) if pattern_confidences else None,
@@ -4607,6 +4857,7 @@ def archive_patterns_payload(conn: sqlite3.Connection, args: argparse.Namespace)
             ),
             "signal_groups": aggregate_pattern_count_items(patterns, "signal_groups"),
         },
+        "cognition_summaries": cognition_summaries,
         "patterns": patterns,
     }
 
@@ -4643,6 +4894,7 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
         }
 
     patterns = build_archive_acquisition_patterns(pattern_rows, args.limit)
+    cognition_summaries = build_archive_cognition_summaries(patterns, args.limit)
     scores = [
         (summary.get("track_score") or {}).get("score")
         for summary in repositories
@@ -4677,6 +4929,8 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
             "acquisition_bindings": sum((item.get("evidence_acquisition") or {}).get("binding_count", 0) for item in dossiers.values()),
             "evidence": sum(len(item["evidence"]) for item in dossiers.values()),
             "acquisition_patterns": len(patterns),
+            "cognition_summaries": len(cognition_summaries),
+            "high_confidence_cognition_summaries": sum(1 for item in cognition_summaries if item.get("confidence") == "high"),
             "cross_project_patterns": sum(1 for item in patterns if item.get("repository_count", 0) >= 2),
             "average_pattern_confidence": round(sum(pattern_confidences) / len(pattern_confidences), 1) if pattern_confidences else None,
             "average_pattern_signal_score": mean_number(
@@ -4689,6 +4943,7 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
         },
         "repositories": repositories,
         "dossiers": dossiers,
+        "cognition_summaries": cognition_summaries,
         "patterns": patterns,
     }
 
@@ -4874,6 +5129,12 @@ def render_archive_dashboard(payload: dict) -> str:
       margin: 0 0 8px;
       font-size: 14px;
       line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+
+    .pattern-card p {
+      margin: 8px 0;
+      color: #2d3640;
       overflow-wrap: anywhere;
     }
 
@@ -5141,6 +5402,7 @@ def render_archive_dashboard(payload: dict) -> str:
     const state = { query: "", track: "all", confidenceSource: "all", signalGroup: DATA.filters?.signal_group || "all", minScore: 0, selected: null };
     const repos = DATA.repositories || [];
     const dossiers = DATA.dossiers || {};
+    const cognitionSummaries = DATA.cognition_summaries || [];
     const patterns = DATA.patterns || [];
 
     const searchInput = document.getElementById("searchInput");
@@ -5288,6 +5550,39 @@ def render_archive_dashboard(payload: dict) -> str:
     function patternMatchesSignalGroup(pattern) {
       if (state.signalGroup === "all") return true;
       return (pattern.signal_groups || []).some((item) => item.value === state.signalGroup);
+    }
+
+    function cognitionSummaryMatchesSignalGroup(summary) {
+      if (state.signalGroup === "all") return true;
+      return (summary.signal_groups || []).some((item) => item.value === state.signalGroup);
+    }
+
+    function cognitionSummaryCorpus(summary) {
+      const parts = [
+        summary.category,
+        summary.label,
+        summary.move,
+        summary.summary,
+        summary.evidence_basis,
+        summary.transfer_rule,
+        summary.confidence,
+        summary.score,
+        (summary.repositories || []).join(" "),
+        ...(summary.layer_counts || []).map((item) => item.value),
+        ...(summary.layer_actions || []).map((item) => item.value),
+        ...(summary.signal_groups || []).map((item) => item.value),
+        ...(summary.signal_labels || []).map((item) => item.value),
+        ...(summary.supporting_patterns || []).flatMap((pattern) => [
+          pattern.field,
+          pattern.missing_layer,
+          pattern.missing_layer_label,
+          pattern.pattern_id,
+          pattern.pattern_score,
+          (pattern.repositories || []).join(" "),
+          ...(pattern.signal_groups || []).map((item) => item.value),
+        ]),
+      ];
+      return parts.filter(Boolean).join(" ").toLowerCase();
     }
 
     function patternCorpus(pattern) {
@@ -5483,6 +5778,7 @@ def render_archive_dashboard(payload: dict) -> str:
     function renderSignalGroupOptions() {
       const groups = Array.from(new Set([
         ...(DATA.statistics?.signal_groups || []).map((item) => item.value),
+        ...cognitionSummaries.flatMap((summary) => (summary.signal_groups || []).map((item) => item.value)),
         ...patterns.flatMap((pattern) => (pattern.signal_groups || []).map((item) => item.value)),
         ...repos.flatMap((repo) => {
           const dossier = dossierOf(repo);
@@ -5559,14 +5855,47 @@ def render_archive_dashboard(payload: dict) -> str:
       });
     }
 
+    function filteredCognitionSummaries() {
+      const query = state.query.trim().toLowerCase();
+      return cognitionSummaries.filter((summary) => {
+        if (!cognitionSummaryMatchesSignalGroup(summary)) return false;
+        if (query && !cognitionSummaryCorpus(summary).includes(query)) return false;
+        return true;
+      });
+    }
+
     function renderPatterns() {
       const items = filteredPatterns().slice(0, 6);
-      if (!patterns.length) {
+      const summaries = filteredCognitionSummaries().slice(0, 4);
+      if (!patterns.length && !cognitionSummaries.length) {
         patternsPanel.innerHTML = "";
         return;
       }
       const averageConfidence = DATA.statistics?.average_pattern_confidence;
       const averageSignal = DATA.statistics?.average_pattern_signal_score;
+      const summaryCards = summaries.map((summary) => {
+        const topLayers = (summary.layer_counts || []).slice(0, 3);
+        const topActions = (summary.layer_actions || []).slice(0, 2);
+        const topSignals = (summary.signal_groups || []).slice(0, 4);
+        return `
+          <article class="pattern-card">
+            <h2>${escapeHtml(summary.label || summary.category || "Cognition summary")}</h2>
+            <div class="chips">
+              <span class="chip ${summary.confidence === "high" ? "support" : ""}">${escapeHtml(summary.confidence || "unknown")} ${escapeHtml(summary.score ?? 0)}</span>
+              <span class="chip">Repos ${escapeHtml(summary.repository_count || 0)}</span>
+              <span class="chip">Patterns ${escapeHtml(summary.pattern_count || 0)}</span>
+              <span class="chip">Bindings ${escapeHtml(summary.binding_count || 0)}</span>
+            </div>
+            <p>${escapeHtml(compact(summary.summary || "", 180))}</p>
+            <p class="subtle">${escapeHtml(compact(summary.transfer_rule || "", 160))}</p>
+            <div class="chips">
+              ${topLayers.map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
+              ${topActions.map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
+              ${topSignals.map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
+            </div>
+          </article>
+        `;
+      }).join("");
       const cards = items.map((pattern) => {
         const topKeyword = (pattern.keywords || [])[0]?.value;
         const topEvidenceType = (pattern.evidence_types || [])[0]?.value;
@@ -5597,6 +5926,13 @@ def render_archive_dashboard(payload: dict) -> str:
         `;
       }).join("");
       patternsPanel.innerHTML = `
+        ${cognitionSummaries.length ? `
+          <div class="patterns-head">
+            <div class="section-title">Cognition Summaries</div>
+            <div class="count">${escapeHtml(summaries.length)} / ${escapeHtml(cognitionSummaries.length)}</div>
+          </div>
+          <div class="patterns-grid">${summaryCards || '<div class="empty">No matching cognition summaries.</div>'}</div>
+        ` : ""}
         <div class="patterns-head">
           <div class="section-title">Cross-project Patterns</div>
           <div class="count">${escapeHtml(items.length)} / ${escapeHtml(patterns.length)}${averageConfidence ? " · avg confidence " + escapeHtml(averageConfidence) : ""}${averageSignal ? " · avg signal " + escapeHtml(averageSignal) : ""}</div>
@@ -6014,6 +6350,42 @@ def confidence_signal_breakdown_text(confidence: dict | None, group_limit: int =
     return "；".join(parts) or "无"
 
 
+def render_archive_cognition_summaries(summaries: list[dict]) -> list[str]:
+    if not summaries:
+        return []
+    lines = ["## Automatic Cognition Summaries", ""]
+    for index, summary in enumerate(summaries, 1):
+        lines.extend(
+            [
+                f"### {index}. {summary.get('label') or summary.get('category')}",
+                "",
+                f"- Summary ID：`{summary.get('summary_id')}`",
+                f"- Confidence：{summary.get('confidence') or 'unknown'} / {summary.get('score', 0)}/100",
+                f"- 仓库数 / pattern 数 / binding 数：{summary.get('repository_count', 0)} / {summary.get('pattern_count', 0)} / {summary.get('binding_count', 0)}",
+                f"- 摘要：{summary.get('summary') or '无'}",
+                f"- 证据依据：{summary.get('evidence_basis') or '无'}",
+                f"- 可迁移规则：{summary.get('transfer_rule') or '无'}",
+                f"- 证据层：{count_items_text(summary.get('layer_counts') or [])}",
+                f"- 自动复核动作：{count_items_text(summary.get('layer_actions') or [])}",
+                f"- Signal groups：{count_items_text(summary.get('signal_groups') or [])}",
+                f"- Signal labels：{count_items_text(summary.get('signal_labels') or [], limit=8)}",
+                "",
+            ]
+        )
+        supporting = summary.get("supporting_patterns") or []
+        if supporting:
+            lines.extend(["支撑 patterns：", ""])
+            for pattern in supporting[:4]:
+                lines.append(
+                    f"- `{pattern.get('pattern_id')}` {pattern.get('field')} -> "
+                    f"{pattern.get('missing_layer_label') or pattern.get('missing_layer')}；"
+                    f"score {pattern.get('pattern_score', 0)}；repos {pattern.get('repository_count', 0)}；"
+                    f"bindings {pattern.get('binding_count', 0)}"
+                )
+            lines.append("")
+    return lines
+
+
 def render_archive_patterns(payload: dict) -> str:
     if payload.get("message"):
         return "\n".join(["# OSS Cognition Archive Patterns", "", payload["message"], ""])
@@ -6030,6 +6402,8 @@ def render_archive_patterns(payload: dict) -> str:
         f"- 参与绑定数：{stats.get('bindings', 0)}",
         f"- 参与仓库数：{stats.get('repositories', 0)}",
         f"- 模式数：{stats.get('patterns', 0)}",
+        f"- 自动认知摘要数：{stats.get('cognition_summaries', 0)}",
+        f"- 高置信摘要数：{stats.get('high_confidence_cognition_summaries', 0)}",
         f"- 跨项目重复模式：{stats.get('cross_project_patterns', 0)}",
         f"- 平均模式可靠度：{stats.get('average_pattern_confidence') if stats.get('average_pattern_confidence') is not None else '未记录'}",
         f"- 平均信号结构分：{stats.get('average_pattern_signal_score') if stats.get('average_pattern_signal_score') is not None else '未记录'}",
@@ -6039,6 +6413,8 @@ def render_archive_patterns(payload: dict) -> str:
     if not payload.get("patterns"):
         lines.extend(["当前 archive 中没有可聚合的 evidence acquisition bindings。", ""])
         return "\n".join(lines)
+
+    lines.extend(render_archive_cognition_summaries(payload.get("cognition_summaries") or []))
 
     for index, pattern in enumerate(payload["patterns"], 1):
         lines.extend(

@@ -83,7 +83,7 @@ python3 radar.py --archive-patterns \
   --limit 20
 ```
 
-自动校准 archive 中的 acquisition binding confidence。该步骤不需要人工标注，会根据跨项目重复性、同仓库跨版本稳定性、release/issue/PR 时间序列、证据类型、证据极性、稳定链接和关键词稀疏度等归档信号生成 `archive_auto_v1` confidence：
+自动校准 archive 中的 acquisition binding confidence。该步骤只使用归档内信号，会根据跨项目重复性、同仓库跨版本稳定性、release/issue/PR 时间序列、证据类型、证据极性、稳定链接和关键词稀疏度等归档信号生成 `archive_auto_v1` confidence：
 
 ```bash
 python3 radar.py \
@@ -212,7 +212,7 @@ SQLite 当前会保存：
 - `--archive-show owner/name`：优先展示最新 deep dossier，没有 deep 快照时回退到最新 discovery 快照
 - `--archive-patterns`：聚合最新 deep dossiers 中的 evidence acquisition bindings，按 claim 字段和缺口证据层输出跨项目重复模式、例子仓库和 evidence
 - `--archive-signal-group GROUP`：仅用于 `--archive-patterns` / `--archive-dashboard`，按自动 confidence signal group 过滤，例如 `time_series`、`drift`、`pattern`、`evidence`
-- `--archive-auto-calibrate`：不依赖人工标注，按 archive 内部信号自动重算 acquisition binding confidence，并重建 archive search index
+- `--archive-auto-calibrate`：按 archive 内部信号自动重算 acquisition binding confidence，并重建 archive search index
 - `--archive-dashboard [PATH]`：生成一个可直接打开的静态 HTML dashboard，包含搜索、track 过滤、confidence source 过滤、最低分过滤、跨项目 patterns、项目详情、claims、claim gaps、evidence acquisition bindings 和 evidence 摘要
 
 `star_growth` 只有在数据库里存在对应窗口附近的历史快照时才会显示真实增量；否则会标记为 `insufficient history`。当前匹配窗口为：1d 使用 1–2 天前快照，7d 使用 7–10 天前快照，30d 使用 30–45 天前快照。这避免把几分钟前的重复运行或过旧快照误当作 1 天增长。
@@ -255,6 +255,8 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 `--archive-patterns` 的 `pattern_score` 现在会同时考虑重复度、平均绑定可靠度和 `signal_breakdown` 的结构分。含有 `time_series`、`drift`、`pattern`、`evidence` 等自动信号的模式会在 JSON、Markdown 和 dashboard 中暴露 `signal_group_score`、`signal_groups` 和 `signal_labels`，并可用 `--archive-signal-group` 或 dashboard 的 Signal group 过滤器筛选。
 
+`--archive-patterns` 还会从 signal-ranked patterns 自动派生 `cognition_summaries`。每条摘要包含稳定 `summary_id`、认知动作类别、可迁移规则、证据依据、自动复核动作、置信度和支撑 patterns，用于把“哪些 claim-gap 修补模式反复出现”提升为“哪些可观察设计/认知动作反复出现”。该摘要完全来自 archive evidence 和自动信号。
+
 实现层证据会从 Git tree 中限量抽取：
 
 - 核心源码入口：`src`、`lib`、`packages`、`pkg`、`crates` 等目录中的主要源码文件
@@ -278,4 +280,4 @@ claim 现在会记录 `template`、`rationale` 和 `support_coverage`，并把�
 
 ## 下一步
 
-- 基于 signal-ranked archive patterns 生成跨项目认知模式摘要，让系统自动解释“哪些设计动作在强证据结构中反复出现”
+- 修正 `archive_auto_v1` 在热门真实项目上的 confidence 饱和问题，让自动摘要的置信度区分度更强
