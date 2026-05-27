@@ -87,6 +87,12 @@ python3 radar.py --archive-patterns \
 
 ```bash
 python3 radar.py \
+  --archive-route-selectors \
+  --db data/radar.sqlite \
+  --archive-output reports/route-selectors.md \
+  --json-output reports/route-selectors.json
+
+python3 radar.py \
   --archive-route-detail \
   --db data/radar.sqlite \
   --profile-path-move 架构边界设计 \
@@ -225,7 +231,8 @@ SQLite 当前会保存：
 - `--archive-show owner/name`：优先展示最新 deep dossier，没有 deep 快照时回退到最新 discovery 快照；存在跨项目语义模式时会同时显示该仓库的 Repository Cognition Profile
 - `--archive-patterns`：聚合最新 deep dossiers 中的 evidence acquisition bindings，按 claim 字段和缺口证据层输出跨项目重复模式、例子仓库和 evidence
 - `--archive-route-detail`：批量导出 profile path route detail，下钻到具体设计动作、证据路线、仓库样例、path/pattern ID 和 evidence stable ID
-- `--archive-signal-group GROUP`：用于 `--archive-patterns` / `--archive-dashboard` / `--archive-route-detail`，按自动 confidence signal group 过滤，例如 `time_series`、`drift`、`pattern`、`evidence`
+- `--archive-route-selectors`：列出可用于 `--archive-route-detail` 的 design move、evidence route 和 repository selector 候选
+- `--archive-signal-group GROUP`：用于 `--archive-patterns` / `--archive-dashboard` / `--archive-route-detail` / `--archive-route-selectors`，按自动 confidence signal group 过滤，例如 `time_series`、`drift`、`pattern`、`evidence`
 - `--archive-auto-calibrate`：按 archive 内部信号自动重算 acquisition binding confidence，并重建 archive search index
 - `--archive-dashboard [PATH]`：生成一个可直接打开的静态 HTML dashboard，包含搜索、track 过滤、confidence source 过滤、最低分过滤、跨项目 patterns、项目详情、claims、claim gaps、evidence acquisition bindings 和 evidence 摘要
 
@@ -273,7 +280,7 @@ patterns 现在会先做 `semantic_v1` 归并：claim 字段会归一到问题�
 
 `--archive-patterns` 还会从 signal-ranked semantic patterns 自动派生 `cognition_summaries`。每条摘要包含稳定 `summary_id`、认知动作类别、可迁移规则、证据依据、自动复核动作、置信度、原始字段/证据层分布和支撑 patterns，用于把“哪些 claim-gap 修补模式反复出现”提升为“哪些可观察设计/认知动作反复出现”。该摘要完全来自 archive evidence 和自动信号。
 
-系统还会从 `semantic_v1` patterns 自动派生 `repository_cognition_profiles`。每个仓库画像会显示该项目最强体现的跨项目设计动作、证据族、原始 claim 字段/证据层分布、支撑 semantic patterns 和 evidence examples；`--archive-show` 和 dashboard 的仓库详情页会直接展示 Repository Cognition Profile，`--archive-search` 和 dashboard 搜索也会纳入画像内容。CLI 搜索和 dashboard 仓库详情都会输出 profile-to-claim/evidence explanation paths，把设计动作连接到具体 claim gap、采集原因和 evidence stable ID，并按设计动作、缺口层和 evidence type 汇总 path-level 统计。`--archive-patterns` 和 dashboard 还会输出 `repository_cognition_profile_path_comparisons`，按同一设计动作跨仓库比较不同 claim gap layer 与 evidence type 组成的证据路线；dashboard 可以继续按设计动作、证据路线和仓库下钻这些 comparisons，并在 route detail 面板中展开完整仓库样例、confidence 信号和 evidence stable ID。route detail 面板和 `--archive-route-detail` 都可以按当前过滤范围导出 `route_detail_drilldown_v1` JSON 或 Markdown，把 evidence route、仓库样例、path/pattern ID 和 evidence stable ID 保存为可复用研究材料；同一 dashboard 过滤状态会写入 URL hash，Permalink 可以直接恢复搜索、track、confidence、signal、score、设计动作、证据路线和仓库范围。
+系统还会从 `semantic_v1` patterns 自动派生 `repository_cognition_profiles`。每个仓库画像会显示该项目最强体现的跨项目设计动作、证据族、原始 claim 字段/证据层分布、支撑 semantic patterns 和 evidence examples；`--archive-show` 和 dashboard 的仓库详情页会直接展示 Repository Cognition Profile，`--archive-search` 和 dashboard 搜索也会纳入画像内容。CLI 搜索和 dashboard 仓库详情都会输出 profile-to-claim/evidence explanation paths，把设计动作连接到具体 claim gap、采集原因和 evidence stable ID，并按设计动作、缺口层和 evidence type 汇总 path-level 统计。`--archive-patterns` 和 dashboard 还会输出 `repository_cognition_profile_path_comparisons`，按同一设计动作跨仓库比较不同 claim gap layer 与 evidence type 组成的证据路线；dashboard 可以继续按设计动作、证据路线和仓库下钻这些 comparisons，并在 route detail 面板中展开完整仓库样例、confidence 信号和 evidence stable ID。route detail 面板和 `--archive-route-detail` 都可以按当前过滤范围导出 `route_detail_drilldown_v1` JSON 或 Markdown，把 evidence route、仓库样例、path/pattern ID 和 evidence stable ID 保存为可复用研究材料；`--archive-route-selectors` 可以先导出 `route_detail_selectors_v1`，列出批处理可用的设计动作、证据路线和仓库 selector；同一 dashboard 过滤状态会写入 URL hash，Permalink 可以直接恢复搜索、track、confidence、signal、score、设计动作、证据路线和仓库范围。
 
 实现层证据会从 Git tree 中限量抽取：
 
@@ -298,4 +305,4 @@ patterns 现在会先做 `semantic_v1` 归并：claim 字段会归一到问题�
 
 ## 下一步
 
-- 为 profile path route detail 增加可发现的 selector 列表，便于批处理前枚举设计动作和证据路线
+- 将 route detail selector 列表接入 dashboard 下钻控件的数据导出，统一 CLI 和浏览器可见 selector 结构

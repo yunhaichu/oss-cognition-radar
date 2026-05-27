@@ -246,6 +246,11 @@ def parse_args() -> argparse.Namespace:
         help="Export profile path route detail drilldowns from the SQLite archive.",
     )
     parser.add_argument(
+        "--archive-route-selectors",
+        action="store_true",
+        help="List available profile path route detail selector values from the SQLite archive.",
+    )
+    parser.add_argument(
         "--archive-track",
         choices=sorted(TRACK_WEIGHTS),
         help="Archive mode: filter repositories by project track.",
@@ -5982,7 +5987,7 @@ def route_detail_example_matches(example: dict, args: argparse.Namespace) -> boo
     return True
 
 
-def archive_route_detail_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
+def archive_route_detail_comparisons(conn: sqlite3.Connection, args: argparse.Namespace) -> list[dict]:
     signal_group = getattr(args, "archive_signal_group", None)
     confidence_source = getattr(args, "profile_path_confidence_source", None)
     rows = query_archive_pattern_bindings(
@@ -5994,7 +5999,11 @@ def archive_route_detail_payload(conn: sqlite3.Connection, args: argparse.Namesp
     rows = filter_archive_pattern_rows_by_confidence_source(rows, confidence_source)
     patterns = build_archive_acquisition_patterns(rows, args.limit)
     repository_cognition_profiles = build_repository_cognition_profiles(patterns, rows, args.limit)
-    comparisons = build_repository_cognition_path_comparisons(repository_cognition_profiles, args.limit)
+    return build_repository_cognition_path_comparisons(repository_cognition_profiles, args.limit)
+
+
+def archive_route_detail_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
+    comparisons = archive_route_detail_comparisons(conn, args)
     route_payloads = []
     comparison_ids = set()
     repository_names = set()
@@ -6099,6 +6108,155 @@ def archive_route_detail_payload(conn: sqlite3.Connection, args: argparse.Namesp
             "average_confidence": mean_number(confidence_scores),
         },
         "routes": route_payloads,
+    }
+
+
+def archive_route_selectors_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
+    comparisons = archive_route_detail_comparisons(conn, args)
+    move_payloads = []
+    route_count = 0
+    example_count = 0
+    repository_names = set()
+    evidence_refs = set()
+    for comparison in comparisons:
+        move_key = f"{comparison.get('design_move_category') or 'unknown'}::{comparison.get('design_move') or comparison.get('design_move_category') or 'Design move'}"
+        if not route_detail_selector_matches(
+            getattr(args, "profile_path_move", None),
+            [
+                comparison.get("comparison_id"),
+                comparison.get("design_move_category"),
+                comparison.get("design_move"),
+                move_key,
+            ],
+        ):
+            continue
+        move_routes = []
+        move_repositories = set()
+        move_example_count = 0
+        for route in comparison.get("evidence_routes") or []:
+            route_key = profile_path_route_key(route)
+            route_label = profile_path_route_label(route)
+            if not route_detail_selector_matches(
+                getattr(args, "profile_path_route", None),
+                [
+                    route.get("route_id"),
+                    route_key,
+                    route_label,
+                    route.get("claim_gap_layer"),
+                    route.get("evidence_type"),
+                ],
+            ):
+                continue
+            examples = [
+                example
+                for example in route.get("examples") or []
+                if route_detail_example_matches(example, args)
+            ]
+            if not examples:
+                continue
+            repo_counts = {}
+            for example in examples:
+                repo = example.get("repo_full_name")
+                if repo:
+                    count_value(repo_counts, repo)
+                    move_repositories.add(repo)
+                    repository_names.add(repo)
+                evidence_ref = example.get("evidence_stable_id") or example.get("evidence_id")
+                if evidence_ref:
+                    evidence_refs.add(evidence_ref)
+            move_example_count += len(examples)
+            route_count += 1
+            example_count += len(examples)
+            move_routes.append(
+                {
+                    "route_id": route.get("route_id") or route_key,
+                    "route_key": route_key,
+                    "route_label": route_label,
+                    "claim_gap_layer": route.get("claim_gap_layer"),
+                    "evidence_type": route.get("evidence_type"),
+                    "selector_values": [
+                        value
+                        for value in [
+                            route.get("route_id"),
+                            route_key,
+                            route_label,
+                            route.get("claim_gap_layer"),
+                            route.get("evidence_type"),
+                        ]
+                        if value
+                    ],
+                    "repository_count": len(repo_counts),
+                    "example_count": len(examples),
+                    "high_confidence_examples": sum(1 for example in examples if example.get("confidence") == "high"),
+                    "average_confidence": mean_number(
+                        [
+                            example.get("confidence_score")
+                            for example in examples
+                            if isinstance(example.get("confidence_score"), (int, float))
+                        ]
+                    ),
+                    "repository_options": top_count_items(repo_counts, limit=12),
+                    "confidence_sources": route.get("confidence_sources") or [],
+                    "signal_groups": route.get("signal_groups") or [],
+                }
+            )
+        if not move_routes:
+            continue
+        move_routes.sort(
+            key=lambda item: (
+                -item["repository_count"],
+                -item["example_count"],
+                item.get("route_label") or "",
+            )
+        )
+        move_payloads.append(
+            {
+                "comparison_id": comparison.get("comparison_id"),
+                "move_key": move_key,
+                "design_move_category": comparison.get("design_move_category"),
+                "design_move": comparison.get("design_move"),
+                "selector_values": [
+                    value
+                    for value in [
+                        comparison.get("comparison_id"),
+                        move_key,
+                        comparison.get("design_move_category"),
+                        comparison.get("design_move"),
+                    ]
+                    if value
+                ],
+                "comparison_confidence": comparison.get("confidence"),
+                "comparison_score": comparison.get("score"),
+                "repository_count": len(move_repositories),
+                "route_count": len(move_routes),
+                "example_count": move_example_count,
+                "cognition_move": comparison.get("cognition_move"),
+                "transfer_rule": comparison.get("transfer_rule"),
+                "routes": move_routes,
+            }
+        )
+    move_payloads.sort(
+        key=lambda item: (
+            -item["repository_count"],
+            -item["example_count"],
+            item.get("design_move") or "",
+        )
+    )
+    return {
+        "schema_version": "route_detail_selectors_v1",
+        "mode": "archive_route_selectors",
+        "generated_at": utc_now().isoformat(),
+        "db": args.db,
+        "filters": archive_route_detail_filters_payload(args),
+        "scope": "latest_deep_dossiers",
+        "summary": {
+            "move_count": len(move_payloads),
+            "route_count": route_count,
+            "example_count": example_count,
+            "repository_count": len(repository_names),
+            "unique_evidence_count": len(evidence_refs),
+        },
+        "moves": move_payloads,
     }
 
 
@@ -8844,6 +9002,68 @@ def render_archive_route_detail(payload: dict) -> str:
     return "\n".join(lines)
 
 
+def render_archive_route_selectors(payload: dict) -> str:
+    if payload.get("message"):
+        return "\n".join(["# OSS Cognition Route Detail Selectors", "", payload["message"], ""])
+    filters = payload.get("filters") or {}
+    summary = payload.get("summary") or {}
+    lines = [
+        "# OSS Cognition Route Detail Selectors",
+        "",
+        f"- Schema：{payload.get('schema_version') or 'route_detail_selectors_v1'}",
+        f"- 数据库：{payload.get('db')}",
+        f"- 生成时间：{payload.get('generated_at')}",
+        f"- 数据范围：{payload.get('scope') or 'latest_deep_dossiers'}",
+        f"- Track 过滤：{filters.get('track') or '无'}",
+        f"- 最低 track score：{filters.get('min_track_score') or 0}",
+        f"- Signal group 过滤：{filters.get('signal_group') or '无'}",
+        f"- Confidence source 过滤：{filters.get('profile_path_confidence_source') or '无'}",
+        f"- 设计动作过滤：{filters.get('profile_path_move') or '无'}",
+        f"- 证据路线过滤：{filters.get('profile_path_route') or '无'}",
+        f"- 仓库过滤：{filters.get('profile_path_repo') or '无'}",
+        f"- Move / route / example：{summary.get('move_count', 0)} / {summary.get('route_count', 0)} / {summary.get('example_count', 0)}",
+        f"- Repository / unique evidence：{summary.get('repository_count', 0)} / {summary.get('unique_evidence_count', 0)}",
+        "",
+    ]
+    if not payload.get("moves"):
+        lines.extend(["当前过滤范围没有可列出的 route detail selectors。", ""])
+        return "\n".join(lines)
+
+    for index, move in enumerate(payload["moves"], 1):
+        lines.extend(
+            [
+                f"## {index}. {move.get('design_move') or move.get('design_move_category') or 'Design move'}",
+                "",
+                f"- Comparison ID：`{move.get('comparison_id') or ''}`",
+                f"- Move key：`{move.get('move_key') or ''}`",
+                f"- Selector values：{', '.join('`' + value + '`' for value in move.get('selector_values') or [])}",
+                f"- Confidence：{move.get('comparison_confidence') or 'unknown'} / {move.get('comparison_score') if move.get('comparison_score') is not None else 'unknown'}",
+                f"- Repository / route / example：{move.get('repository_count', 0)} / {move.get('route_count', 0)} / {move.get('example_count', 0)}",
+                f"- 设计动作：{move.get('cognition_move') or '无'}",
+                f"- 迁移规则：{move.get('transfer_rule') or '无'}",
+                "",
+            ]
+        )
+        for route in move.get("routes") or []:
+            repos = ", ".join(
+                f"{item.get('value')} ({item.get('count')})"
+                for item in (route.get("repository_options") or [])[:6]
+            ) or "无"
+            lines.extend(
+                [
+                    f"- `{route.get('route_id') or ''}` {route.get('route_label') or 'route'}",
+                    f"  - Selector values：{', '.join('`' + value + '`' for value in route.get('selector_values') or [])}",
+                    f"  - Repository / example / high：{route.get('repository_count', 0)} / {route.get('example_count', 0)} / {route.get('high_confidence_examples', 0)}",
+                    f"  - Average confidence：{route.get('average_confidence') if route.get('average_confidence') is not None else '未记录'}",
+                    f"  - Repositories：{repos}",
+                    f"  - Confidence sources：{count_items_text(route.get('confidence_sources') or [])}",
+                    f"  - Signal groups：{count_items_text(route.get('signal_groups') or [])}",
+                ]
+            )
+        lines.append("")
+    return "\n".join(lines)
+
+
 def render_repository_cognition_profile(profile: dict | None, context: dict | None = None) -> list[str]:
     if not profile:
         return []
@@ -9147,24 +9367,25 @@ def handle_archive(args: argparse.Namespace) -> None:
         bool(args.archive_auto_calibrate),
         args.archive_dashboard is not None,
         bool(args.archive_route_detail),
+        bool(args.archive_route_selectors),
     ]
     if sum(modes) != 1:
         raise SystemExit(
-            "Choose exactly one archive mode: --archive-list, --archive-search, --archive-show, --archive-patterns, --archive-auto-calibrate, --archive-dashboard, or --archive-route-detail."
+            "Choose exactly one archive mode: --archive-list, --archive-search, --archive-show, --archive-patterns, --archive-auto-calibrate, --archive-dashboard, --archive-route-detail, or --archive-route-selectors."
         )
     if args.archive_search is not None and not args.archive_search.strip():
         raise SystemExit("--archive-search requires non-empty text.")
     signal_group = getattr(args, "archive_signal_group", None)
-    if signal_group and not (args.archive_patterns or args.archive_dashboard is not None or args.archive_route_detail):
-        raise SystemExit("--archive-signal-group is only supported with --archive-patterns, --archive-dashboard, or --archive-route-detail.")
+    if signal_group and not (args.archive_patterns or args.archive_dashboard is not None or args.archive_route_detail or args.archive_route_selectors):
+        raise SystemExit("--archive-signal-group is only supported with --archive-patterns, --archive-dashboard, --archive-route-detail, or --archive-route-selectors.")
     profile_path_filters = [
         args.profile_path_move,
         args.profile_path_route,
         args.profile_path_repo,
         args.profile_path_confidence_source,
     ]
-    if any(profile_path_filters) and not args.archive_route_detail:
-        raise SystemExit("--profile-path-* filters are only supported with --archive-route-detail.")
+    if any(profile_path_filters) and not (args.archive_route_detail or args.archive_route_selectors):
+        raise SystemExit("--profile-path-* filters are only supported with --archive-route-detail or --archive-route-selectors.")
 
     conn = connect_archive_db(args.db)
     if conn is None:
@@ -9192,6 +9413,9 @@ def handle_archive(args: argparse.Namespace) -> None:
             elif args.archive_route_detail:
                 payload = archive_route_detail_payload(conn, args)
                 markdown = render_archive_route_detail(payload)
+            elif args.archive_route_selectors:
+                payload = archive_route_selectors_payload(conn, args)
+                markdown = render_archive_route_selectors(payload)
             else:
                 payload = archive_dashboard_payload(conn, args)
                 write_dashboard(args.archive_dashboard, payload)
@@ -9542,6 +9766,7 @@ def main() -> None:
         or args.archive_auto_calibrate
         or args.archive_dashboard is not None
         or args.archive_route_detail
+        or args.archive_route_selectors
     ):
         handle_archive(args)
         return
