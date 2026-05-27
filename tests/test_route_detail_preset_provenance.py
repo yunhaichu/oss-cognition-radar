@@ -340,6 +340,13 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertIn("duplicate", markdown)
         self.assert_common_markdown(markdown, "duplicate_ids", 1, 1, "duplicate_ids=1")
 
+    def test_preset_export_markdown_renders_empty_source_selector_filters(self):
+        markdown = radar.render_archive_route_detail_preset_exports(preset_exports_payload({}))
+        lines = markdown.splitlines()
+
+        self.assertIn("- Source selector fixture filter\uff1a\u65e0", lines)
+        self.assertIn("- Source selector filters\uff1a\u65e0", lines)
+
     def test_missing_fixture_id_reports_available_fixture_ids(self):
         with self.assertRaises(SystemExit) as raised:
             radar.route_detail_preset_bundle_from_payload(
