@@ -371,6 +371,20 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertIn("- Source fixture status counts\uff1a\u65e0", lines)
         self.assertIn("- Source all fixture status counts\uff1a\u65e0", lines)
 
+    def test_preset_export_markdown_orders_fixture_status_counts(self):
+        markdown = radar.render_archive_route_detail_preset_exports(
+            preset_exports_payload(
+                {
+                    "source_fixture_status_counts": {"ready": 2, "blocked": 1, "duplicate_ids": 1},
+                    "source_all_fixture_status_counts": {"ready": 3, "blocked": 2, "duplicate_ids": 1},
+                }
+            )
+        )
+        lines = markdown.splitlines()
+
+        self.assertIn("- Source fixture status counts\uff1ablocked=1, duplicate_ids=1, ready=2", lines)
+        self.assertIn("- Source all fixture status counts\uff1ablocked=2, duplicate_ids=1, ready=3", lines)
+
     def test_missing_fixture_id_reports_available_fixture_ids(self):
         with self.assertRaises(SystemExit) as raised:
             radar.route_detail_preset_bundle_from_payload(
