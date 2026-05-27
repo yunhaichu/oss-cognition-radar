@@ -10353,7 +10353,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
     source_filter_value = (
         source_selector_filters.get("validation_fixture_status")
         or source_selector_filters.get("fixture_validation_status")
-        or payload.get("source_fixture_status_filter")
+        or string_value_text(payload.get("source_fixture_status_filter"), fallback="")
         or "无"
     )
     source_filters_text = count_map_text(source_selector_filters)
@@ -10418,7 +10418,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         f"- Requested preset IDs：{requested_preset_ids_text}",
         f"- Source schema：{payload.get('source_bundle_schema') or 'unknown'}",
         f"- Source fixture：{payload.get('source_fixture_id') or '无'}",
-        f"- Source fixture status filter：{payload.get('source_fixture_status_filter') or '无'}",
+        f"- Source fixture status filter：{string_value_text(payload.get('source_fixture_status_filter'), fallback='无')}",
         f"- Source selector fixture filter：{source_filter_value}",
         f"- Source selector filters：{source_filters_text}",
         f"- Source fixture validation：{string_value_text(payload.get('source_fixture_validation_status'))} / matches expected {bool_value_text(payload.get('source_fixture_validation_matches_expected'))}",
