@@ -96,6 +96,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Per-route repository count consistency Markdown coverage: each route entry inside preset export Markdown now derives unique repository counts from route repositories and renders whether they match route-level repository counts, with regression coverage for matching and mismatched counts.
 - Missing route count fallback Markdown coverage: `tests/test_route_detail_preset_provenance.py` verifies route-level consistency rendering falls back to path count or derived repository/evidence counts when explicit route counts are missing.
 - Missing export summary count fallback Markdown coverage: route detail preset export Markdown now falls back to per-export derived route/example/repository/evidence counts when export summary counts are missing, with regression coverage for fully and partially missing export summaries.
+- Missing top-level summary count fallback Markdown coverage: route detail preset export Markdown now falls back to derived preset/route/example/repository/evidence counts when top-level summary counts are missing, with regression coverage for fully and partially missing top-level summaries.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -120,4 +121,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add preset export Markdown consistency fallback coverage for missing top-level summary counts.
+Add preset export Markdown explicit zero summary count coverage.

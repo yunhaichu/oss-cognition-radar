@@ -10339,11 +10339,17 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
     source_all_status_text = ", ".join(
         f"{status}={count}" for status, count in sorted(source_all_status_counts.items())
     ) or "无"
+    exports = payload.get("exports") or []
+    derived_preset_count = len(exports)
+    derived_route_count = 0
+    derived_example_count = 0
     export_repository_names = set()
     export_evidence_refs = set()
-    for export in payload.get("exports") or []:
+    for export in exports:
         route_detail = export.get("route_detail") or {}
         for route in route_detail.get("routes") or []:
+            derived_route_count += 1
+            derived_example_count += len(route.get("examples") or [])
             for repo in route.get("repositories") or []:
                 if repo:
                     export_repository_names.add(repo)
@@ -10353,8 +10359,25 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
                     export_evidence_refs.add(evidence_ref)
     derived_repository_count = len(export_repository_names)
     derived_evidence_count = len(export_evidence_refs)
-    summary_repository_count = summary.get("repository_count", 0)
-    summary_evidence_count = summary.get("unique_evidence_count", 0)
+    summary_preset_count = (
+        summary.get("preset_count") if summary.get("preset_count") is not None else derived_preset_count
+    )
+    summary_route_count = (
+        summary.get("route_count") if summary.get("route_count") is not None else derived_route_count
+    )
+    summary_example_count = (
+        summary.get("example_count") if summary.get("example_count") is not None else derived_example_count
+    )
+    summary_repository_count = (
+        summary.get("repository_count")
+        if summary.get("repository_count") is not None
+        else derived_repository_count
+    )
+    summary_evidence_count = (
+        summary.get("unique_evidence_count")
+        if summary.get("unique_evidence_count") is not None
+        else derived_evidence_count
+    )
     lines = [
         "# OSS Cognition Route Detail Preset Exports",
         "",
@@ -10374,15 +10397,12 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         f"- Source fixture status counts：{source_status_text}",
         f"- Source all fixture status counts：{source_all_status_text}",
         f"- Expected validation status：{payload.get('expected_validation_status') or '无'}",
-        f"- Preset / route / example：{summary.get('preset_count', 0)} / {summary.get('route_count', 0)} / {summary.get('example_count', 0)}",
-        f"- Repository / unique evidence：{summary.get('repository_count', 0)} / {summary.get('unique_evidence_count', 0)}",
+        f"- Preset / route / example：{summary_preset_count} / {summary_route_count} / {summary_example_count}",
+        f"- Repository / unique evidence：{summary_repository_count} / {summary_evidence_count}",
         f"- Repository/evidence count consistency：repository {derived_repository_count} / summary {summary_repository_count} / matches summary {derived_repository_count == summary_repository_count}; evidence {derived_evidence_count} / summary {summary_evidence_count} / matches summary {derived_evidence_count == summary_evidence_count}",
         "",
     ]
     if validation:
-        summary_preset_count = summary.get("preset_count", 0)
-        summary_route_count = summary.get("route_count", 0)
-        summary_example_count = summary.get("example_count", 0)
         selected_preset_count = validation.get("selected_preset_count", 0)
         expected_route_count = validation.get("expected_route_count", 0)
         expected_example_count = validation.get("expected_example_count", 0)
@@ -10411,11 +10431,11 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         if len(validation.get("preset_statuses") or []) > 12:
             lines.append(f"- ... {len(validation.get('preset_statuses') or []) - 12} more preset statuses in JSON")
         lines.append("")
-    if not payload.get("exports"):
+    if not exports:
         lines.extend(["当前 preset 范围没有可导出的 route detail。", ""])
         return "\n".join(lines)
 
-    for index, export in enumerate(payload.get("exports") or [], 1):
+    for index, export in enumerate(exports, 1):
         preset = export.get("preset") or {}
         selectors = preset.get("selectors") or {}
         route_detail = export.get("route_detail") or {}
