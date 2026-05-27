@@ -403,6 +403,61 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertIn("Preset / route / example", markdown)
         self.assertIn("2 / 2 / 3", markdown)
 
+    def test_fixture_driven_preset_batch_honors_preset_id_scope(self):
+        source_payload = fixture_batch_selector_payload()
+        detail_calls = []
+
+        def archive_detail_stub(conn, args):
+            detail_calls.append(
+                {
+                    "move": args.profile_path_move,
+                    "route": args.profile_path_route,
+                    "repo": args.profile_path_repo,
+                }
+            )
+            return fake_route_detail_payload(args)
+
+        with mock.patch.object(radar, "read_json_payload", return_value=source_payload), \
+            mock.patch.object(radar, "archive_route_selectors_payload", return_value=source_payload), \
+            mock.patch.object(radar, "archive_route_detail_payload", side_effect=archive_detail_stub):
+            payload = radar.archive_route_detail_preset_exports_payload(
+                None,
+                preset_export_args(preset_ids=["batch_second"]),
+            )
+
+        self.assertEqual(payload["source_fixture_id"], "ready_batch")
+        self.assertEqual(payload["requested_preset_ids"], ["batch_second"])
+        self.assertEqual(payload["source_fixture_status_filter"], "ready")
+        self.assertEqual(payload["source_fixture_count"], 2)
+        self.assertEqual(payload["source_unfiltered_fixture_count"], 4)
+        self.assertEqual(payload["preset_validation"]["status"], "ready")
+        self.assertEqual(payload["preset_validation"]["selected_preset_count"], 1)
+        self.assertEqual(payload["preset_validation"]["ready_preset_count"], 1)
+        self.assertEqual(payload["preset_validation"]["expected_route_count"], 1)
+        self.assertEqual(payload["preset_validation"]["expected_example_count"], 1)
+        self.assertEqual(payload["summary"]["preset_count"], 1)
+        self.assertEqual(payload["summary"]["route_count"], 1)
+        self.assertEqual(payload["summary"]["example_count"], 1)
+        self.assertEqual(payload["summary"]["repository_count"], 1)
+        self.assertEqual(payload["summary"]["unique_evidence_count"], 1)
+        self.assertEqual(detail_calls, [
+            {
+                "move": "boundary_design::Architecture boundary",
+                "route": "validation::tests",
+                "repo": "owner/second",
+            }
+        ])
+        self.assertEqual([export["preset"]["preset_id"] for export in payload["exports"]], ["batch_second"])
+
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        self.assertIn("ready_batch", markdown)
+        self.assertIn("Source fixture count", markdown)
+        self.assertIn("2 / unfiltered 4", markdown)
+        self.assertIn("Selected / ready / unmatched", markdown)
+        self.assertIn("1 / 1 / 0", markdown)
+        self.assertIn("Preset / route / example", markdown)
+        self.assertIn("1 / 1 / 1", markdown)
+
 
 if __name__ == "__main__":
     unittest.main()
