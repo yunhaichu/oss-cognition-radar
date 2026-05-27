@@ -91,7 +91,7 @@ def dashboard_fixture_bundle():
     }
 
 
-def fixture_batch_selector_payload(extra_unselected_preset=False):
+def fixture_batch_selector_payload(extra_unselected_preset=False, source_filters=None):
     fixture_presets = [
         preset("batch_repo", "owner/repo"),
         preset("batch_second", "owner/second"),
@@ -101,7 +101,7 @@ def fixture_batch_selector_payload(extra_unselected_preset=False):
     return {
         "schema_version": "route_detail_selectors_v1",
         "generated_at": "2026-05-27T00:00:00+00:00",
-        "filters": {"validation_fixture_status": "ready"},
+        "filters": source_filters or {"validation_fixture_status": "ready"},
         "summary": {
             "move_count": 1,
             "route_count": 1,
@@ -510,6 +510,57 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertIn("batch_repo", markdown)
         self.assertIn("batch_second", markdown)
         self.assertNotIn("batch_unselected", markdown)
+
+    def test_fixture_source_filters_are_carried_into_preset_args(self):
+        source_filters = {
+            "validation_fixture_status": "ready",
+            "confidence_source": "auto",
+            "signal_group": "evidence",
+            "track": "agent",
+            "min_score": 72,
+            "path_move": "all",
+            "path_route": "all",
+            "path_repo": "all",
+        }
+        source_payload = fixture_batch_selector_payload(source_filters=source_filters)
+        detail_calls = []
+
+        def archive_detail_stub(conn, args):
+            detail_calls.append(
+                {
+                    "move": args.profile_path_move,
+                    "route": args.profile_path_route,
+                    "repo": args.profile_path_repo,
+                    "confidence_source": args.profile_path_confidence_source,
+                    "signal_group": args.archive_signal_group,
+                    "track": args.archive_track,
+                    "min_track_score": args.min_track_score,
+                }
+            )
+            return fake_route_detail_payload(args)
+
+        with mock.patch.object(radar, "read_json_payload", return_value=source_payload), \
+            mock.patch.object(radar, "archive_route_selectors_payload", return_value=source_payload), \
+            mock.patch.object(radar, "archive_route_detail_payload", side_effect=archive_detail_stub):
+            payload = radar.archive_route_detail_preset_exports_payload(
+                None,
+                preset_export_args(preset_ids=["batch_repo"]),
+            )
+
+        self.assertEqual(payload["source_selector_filters"], source_filters)
+        self.assertEqual(payload["source_fixture_id"], "ready_batch")
+        self.assertEqual(payload["summary"]["preset_count"], 1)
+        self.assertEqual(detail_calls, [
+            {
+                "move": "boundary_design::Architecture boundary",
+                "route": "validation::tests",
+                "repo": "owner/repo",
+                "confidence_source": "auto",
+                "signal_group": "evidence",
+                "track": "agent",
+                "min_track_score": 72,
+            }
+        ])
 
 
 if __name__ == "__main__":

@@ -6768,9 +6768,12 @@ def selected_route_detail_presets(bundle: dict, args: argparse.Namespace) -> lis
     return selected
 
 
-def route_detail_args_for_preset(args: argparse.Namespace, preset: dict) -> argparse.Namespace:
-    preset_args = argparse.Namespace(**vars(args))
-    selectors = preset.get("selectors") or {}
+def apply_route_detail_selector_args(
+    preset_args: argparse.Namespace,
+    selectors: dict | None,
+    *,
+    source_filter: bool = False,
+) -> None:
     mapping = {
         "profile_path_move": "profile_path_move",
         "profile_path_route": "profile_path_route",
@@ -6781,10 +6784,33 @@ def route_detail_args_for_preset(args: argparse.Namespace, preset: dict) -> argp
         "min_track_score": "min_track_score",
         "limit": "limit",
     }
+    if source_filter:
+        mapping.update(
+            {
+                "path_move": "profile_path_move",
+                "path_route": "profile_path_route",
+                "path_repo": "profile_path_repo",
+                "confidence_source": "profile_path_confidence_source",
+                "signal_group": "archive_signal_group",
+                "track": "archive_track",
+                "min_score": "min_track_score",
+            }
+        )
+    selectors = selectors or {}
     for selector_key, attr in mapping.items():
         value = selectors.get(selector_key)
-        if value is not None and value != "":
+        if value is not None and value != "" and value != "all":
             setattr(preset_args, attr, value)
+
+
+def route_detail_args_for_preset(
+    args: argparse.Namespace,
+    preset: dict,
+    source_selector_filters: dict | None = None,
+) -> argparse.Namespace:
+    preset_args = argparse.Namespace(**vars(args))
+    apply_route_detail_selector_args(preset_args, source_selector_filters, source_filter=True)
+    apply_route_detail_selector_args(preset_args, preset.get("selectors") or {})
     return preset_args
 
 
@@ -6798,7 +6824,7 @@ def archive_route_detail_preset_exports_payload(conn: sqlite3.Connection, args: 
     repository_names = set()
     evidence_refs = set()
     for preset in presets:
-        detail_args = route_detail_args_for_preset(args, preset)
+        detail_args = route_detail_args_for_preset(args, preset, bundle.get("source_selector_filters") or {})
         route_detail = archive_route_detail_payload(conn, detail_args)
         for route in route_detail.get("routes") or []:
             for repo in route.get("repositories") or []:
