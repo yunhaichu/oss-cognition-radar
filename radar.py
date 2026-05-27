@@ -7090,6 +7090,18 @@ def render_archive_dashboard(payload: dict) -> str:
       display: none;
     }
 
+    .route-detail-fixture-preview {
+      margin-bottom: 10px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #f8fafc;
+    }
+
+    .route-detail-fixture-preview[hidden] {
+      display: none;
+    }
+
     .route-detail-export-head {
       display: flex;
       align-items: center;
@@ -8744,6 +8756,153 @@ def render_archive_dashboard(payload: dict) -> str:
       return bundle;
     }
 
+    function routeDetailPresetValidationSelectorMatches(selector, values) {
+      const needle = String(selector || "").trim().toLowerCase();
+      if (!needle) return true;
+      return (values || []).some((value) => {
+        const candidate = String(value ?? "").toLowerCase();
+        return candidate === needle || candidate.includes(needle);
+      });
+    }
+
+    function routeDetailRouteRepoExampleCount(route, repo) {
+      const count = (route.examples || []).filter((example) => example.repo_full_name === repo).length;
+      return count || ((route.repositories || []).includes(repo) ? 1 : 0);
+    }
+
+    function routeDetailPresetValidationStatus(payload, preset) {
+      const selectors = preset.selectors || {};
+      const moveSelector = selectors.profile_path_move;
+      const routeSelector = selectors.profile_path_route;
+      const repoSelector = selectors.profile_path_repo;
+      const matchedMoveKeys = new Set();
+      const matchedRoutes = [];
+      (payload.routes || []).forEach((route) => {
+        const moveMatches = routeDetailPresetValidationSelectorMatches(moveSelector, [
+          route.comparison_id,
+          route.move_key,
+          route.design_move_category,
+          route.design_move,
+        ]);
+        if (!moveMatches) return;
+        matchedMoveKeys.add(route.move_key || route.comparison_id || route.design_move || "");
+        const routeMatches = routeDetailPresetValidationSelectorMatches(routeSelector, [
+          route.route_id,
+          route.route_label,
+          route.claim_gap_layer,
+          route.evidence_type,
+        ]);
+        if (routeMatches) matchedRoutes.push(route);
+      });
+      const repositoryMatches = new Set();
+      let expectedExamples = 0;
+      matchedRoutes.forEach((route) => {
+        const repositories = route.repositories || [];
+        if (repoSelector) {
+          if (repositories.includes(repoSelector)) {
+            repositoryMatches.add(repoSelector);
+            expectedExamples += routeDetailRouteRepoExampleCount(route, repoSelector);
+          }
+          return;
+        }
+        repositories.forEach((repo) => repositoryMatches.add(repo));
+        expectedExamples += (route.examples || []).length || route.path_count || 0;
+      });
+      const messages = [];
+      if (!matchedMoveKeys.size) messages.push("profile_path_move does not match current route detail scope");
+      if (matchedMoveKeys.size && !matchedRoutes.length) messages.push("profile_path_route does not match current route detail scope");
+      if (matchedRoutes.length && repoSelector && !repositoryMatches.size) messages.push("profile_path_repo does not match current route detail scope");
+      if (!messages.length) messages.push("preset selectors match current route detail scope");
+      const canRun = Boolean(matchedRoutes.length) && (!repoSelector || Boolean(repositoryMatches.size));
+      return {
+        preset_id: preset.preset_id,
+        label: preset.label,
+        selectors,
+        status: canRun ? "ready" : "unmatched",
+        can_run: canRun,
+        matched_move_count: matchedMoveKeys.size,
+        matched_route_count: matchedRoutes.length,
+        matched_repository_count: repositoryMatches.size,
+        expected_example_count: expectedExamples,
+        messages,
+      };
+    }
+
+    function routeDetailPresetValidationSummary(payload, bundle) {
+      const presets = bundle.presets || [];
+      const seenIds = new Set();
+      const duplicateIds = new Set();
+      presets.forEach((preset) => {
+        if (!preset.preset_id) return;
+        if (seenIds.has(preset.preset_id)) duplicateIds.add(preset.preset_id);
+        seenIds.add(preset.preset_id);
+      });
+      const statuses = presets.map((preset) => routeDetailPresetValidationStatus(payload, preset));
+      const readyStatuses = statuses.filter((item) => item.can_run);
+      const readyCount = readyStatuses.length;
+      const missingCount = statuses.length - readyCount;
+      let status = "ready";
+      if (duplicateIds.size) status = "duplicate_ids";
+      if (missingCount) status = readyCount ? "partial" : "blocked";
+      return {
+        schema_version: "route_detail_preset_validation_v1",
+        status,
+        source_bundle_schema: bundle.schema_version,
+        source_bundle_preset_count: bundle.preset_count ?? presets.length,
+        selected_preset_count: presets.length,
+        ready_preset_count: readyCount,
+        unmatched_preset_count: missingCount,
+        duplicate_preset_ids: Array.from(duplicateIds).sort(),
+        expected_route_count: readyStatuses.reduce((sum, item) => sum + (item.matched_route_count || 0), 0),
+        expected_example_count: readyStatuses.reduce((sum, item) => sum + (item.expected_example_count || 0), 0),
+        preset_statuses: statuses,
+      };
+    }
+
+    function routeDetailFixtureValidationPreviewHtml(payload, fixture) {
+      if (!fixture) return "";
+      const bundle = routeDetailFixtureBundlePayload(payload, fixture);
+      const validation = routeDetailPresetValidationSummary(payload, bundle);
+      const statusClass = validation.status === "ready" ? "support" : (validation.status === "blocked" || validation.status === "duplicate_ids" ? "risk-mid" : "");
+      const duplicateText = validation.duplicate_preset_ids.length ? validation.duplicate_preset_ids.join(", ") : "none";
+      const statusRows = validation.preset_statuses.slice(0, 3).map((item) => `
+        <div class="subtle">${escapeHtml(item.preset_id || "preset")} ${escapeHtml(item.status || "unknown")} · moves ${escapeHtml(item.matched_move_count || 0)} · routes ${escapeHtml(item.matched_route_count || 0)} · repos ${escapeHtml(item.matched_repository_count || 0)} · examples ${escapeHtml(item.expected_example_count || 0)} · ${escapeHtml((item.messages || []).join("; "))}</div>
+      `).join("");
+      return `
+        <div class="route-detail-export-head">
+          <div class="section-title">Fixture Validation Preview</div>
+          <div class="subtle">${escapeHtml(bundle.fixture_id || "fixture")}</div>
+        </div>
+        <div class="chips">
+          <span class="chip ${statusClass}">Status ${escapeHtml(validation.status)}</span>
+          <span class="chip">Expected ${escapeHtml(bundle.expected_validation_status || "unknown")}</span>
+          <span class="chip">Selected ${escapeHtml(validation.selected_preset_count)}</span>
+          <span class="chip">Ready ${escapeHtml(validation.ready_preset_count)}</span>
+          <span class="chip">Unmatched ${escapeHtml(validation.unmatched_preset_count)}</span>
+          <span class="chip">Routes ${escapeHtml(validation.expected_route_count)}</span>
+          <span class="chip">Examples ${escapeHtml(validation.expected_example_count)}</span>
+        </div>
+        <p class="subtle">Duplicate IDs: ${escapeHtml(duplicateText)}</p>
+        ${statusRows || '<div class="subtle">No preset statuses.</div>'}
+      `;
+    }
+
+    function renderRouteDetailFixturePreview() {
+      const preview = document.getElementById("routeDetailFixturePreview");
+      if (!preview) return;
+      const payload = routeDetailExportPayload();
+      const fixtureSelect = document.getElementById("routeDetailFixtureSelect");
+      const fixtureId = fixtureSelect?.value || "";
+      const fixture = (payload.validation_fixtures?.fixtures || []).find((item) => item.fixture_id === fixtureId);
+      if (!fixture) {
+        preview.hidden = true;
+        preview.innerHTML = "";
+        return;
+      }
+      preview.hidden = false;
+      preview.innerHTML = routeDetailFixtureValidationPreviewHtml(payload, fixture);
+    }
+
     function routeDetailFixtureMarkdown(fixture, bundle) {
       const lines = [
         "# Route Detail Validation Fixture Bundle",
@@ -9029,14 +9188,17 @@ def render_archive_dashboard(payload: dict) -> str:
             <button id="routeDetailFixtureMarkdownButton" type="button" ${fixtureControlsDisabled}>Fixture MD</button>
           </div>
         </div>
+        <div class="route-detail-fixture-preview" id="routeDetailFixturePreview" hidden></div>
         <div class="route-detail-export" id="routeDetailExportBlock" hidden></div>
         <div class="route-detail-grid">${cards || '<div class="empty">No matching route details.</div>'}</div>
       `;
       document.getElementById("routeDetailPermalinkButton")?.addEventListener("click", showRouteDetailPermalink);
       document.getElementById("routeDetailJsonButton")?.addEventListener("click", () => downloadRouteDetail("json"));
       document.getElementById("routeDetailMarkdownButton")?.addEventListener("click", () => downloadRouteDetail("markdown"));
+      document.getElementById("routeDetailFixtureSelect")?.addEventListener("change", renderRouteDetailFixturePreview);
       document.getElementById("routeDetailFixtureJsonButton")?.addEventListener("click", () => exportRouteDetailFixture("json"));
       document.getElementById("routeDetailFixtureMarkdownButton")?.addEventListener("click", () => exportRouteDetailFixture("markdown"));
+      renderRouteDetailFixturePreview();
     }
 
     function renderPatterns() {
