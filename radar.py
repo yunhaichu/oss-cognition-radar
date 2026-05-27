@@ -10397,8 +10397,11 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         for route in route_detail.get("routes") or []:
             derived_route_count += 1
             derived_example_count += len(route.get("examples") or [])
-            for repo in route.get("repositories") or []:
-                if repo:
+            route_repositories = route.get("repositories") or []
+            if not isinstance(route_repositories, list):
+                route_repositories = []
+            for repo in route_repositories:
+                if isinstance(repo, str) and repo:
                     export_repository_names.add(repo)
             for example in route.get("examples") or []:
                 evidence_ref = example.get("evidence_stable_id") or example.get("evidence_id")
@@ -10532,8 +10535,11 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         export_repository_names = set()
         export_evidence_refs = set()
         for route in routes:
-            for repo in route.get("repositories") or []:
-                if repo:
+            route_repositories = route.get("repositories") or []
+            if not isinstance(route_repositories, list):
+                route_repositories = []
+            for repo in route_repositories:
+                if isinstance(repo, str) and repo:
                     export_repository_names.add(repo)
             for example in route.get("examples") or []:
                 evidence_ref = example.get("evidence_stable_id") or example.get("evidence_id")
@@ -10576,7 +10582,12 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         )
         for route in routes:
             route_examples = route.get("examples") or []
-            route_repositories = [repo for repo in route.get("repositories") or [] if repo]
+            raw_route_repositories = route.get("repositories") or []
+            if not isinstance(raw_route_repositories, list):
+                raw_route_repositories = []
+            route_repositories = [
+                repo for repo in raw_route_repositories if isinstance(repo, str) and repo
+            ]
             evidence_ids = [
                 example.get("evidence_stable_id") or example.get("evidence_id")
                 for example in route_examples

@@ -1294,6 +1294,67 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_filters_malformed_route_repository_list_entries(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "routes": [
+                        {
+                            "route_id": "validation::tests",
+                            "repository_count": 2,
+                            "repositories": [
+                                "owner/repo",
+                                {"bad": "repo"},
+                                ["owner/nested"],
+                                None,
+                                "owner/second",
+                            ],
+                        }
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("  - Repositories\uff1aowner/repo, owner/second", lines)
+        self.assertIn(
+            "  - Repository count consistency\uff1arepository 2 / route 2 / matches route True",
+            lines,
+        )
+        self.assertIn("- Repository / unique evidence\uff1a2 / 0", lines)
+        self.assertFalse(any("{'bad': 'repo'}" in line for line in lines))
+        self.assertFalse(any("['owner/nested']" in line for line in lines))
+
+    def test_preset_export_markdown_renders_malformed_route_repository_payload_as_empty(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "routes": [
+                        {
+                            "route_id": "validation::tests",
+                            "repository_count": 0,
+                            "repositories": {"bad": "repo"},
+                        }
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("  - Repositories\uff1a\u65e0", lines)
+        self.assertIn(
+            "  - Repository count consistency\uff1arepository 0 / route 0 / matches route True",
+            lines,
+        )
+        self.assertIn("- Repository / unique evidence\uff1a0 / 0", lines)
+        self.assertFalse(any("{'bad': 'repo'}" in line for line in lines))
+
     def test_preset_export_markdown_uses_route_count_fallbacks_when_counts_missing(self):
         payload = preset_exports_payload({})
         payload["exports"] = [
