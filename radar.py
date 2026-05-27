@@ -6598,7 +6598,14 @@ def route_detail_preset_bundle_from_payload(payload: dict, args: argparse.Namesp
         bundle["fixture_id"] = fixture.get("fixture_id")
         bundle["fixture_description"] = fixture.get("description")
         bundle["expected_validation_status"] = fixture.get("expected_validation_status")
+        bundle["source_selector_filters"] = payload.get("filters") or {}
         bundle["source_fixture_status_filter"] = validation_fixtures.get("fixture_status_filter") or "all"
+        bundle["source_fixture_count"] = validation_fixtures.get("fixture_count")
+        bundle["source_unfiltered_fixture_count"] = validation_fixtures.get("unfiltered_fixture_count")
+        bundle["source_fixture_matching_expected_count"] = validation_fixtures.get("matching_expected_count")
+        bundle["source_fixture_unfiltered_matching_expected_count"] = validation_fixtures.get(
+            "unfiltered_matching_expected_count"
+        )
         bundle["source_fixture_status_counts"] = validation_fixtures.get("fixture_status_counts") or {}
         bundle["source_all_fixture_status_counts"] = validation_fixtures.get("all_fixture_status_counts") or {}
         bundle["validation_status"] = fixture.get("validation_status")
@@ -6816,7 +6823,14 @@ def archive_route_detail_preset_exports_payload(conn: sqlite3.Connection, args: 
         "source_bundle_generated_at": bundle.get("generated_at"),
         "source_fixture_id": bundle.get("fixture_id"),
         "source_fixture_description": bundle.get("fixture_description"),
+        "source_selector_filters": bundle.get("source_selector_filters") or {},
         "source_fixture_status_filter": bundle.get("source_fixture_status_filter"),
+        "source_fixture_count": bundle.get("source_fixture_count"),
+        "source_unfiltered_fixture_count": bundle.get("source_unfiltered_fixture_count"),
+        "source_fixture_matching_expected_count": bundle.get("source_fixture_matching_expected_count"),
+        "source_fixture_unfiltered_matching_expected_count": bundle.get(
+            "source_fixture_unfiltered_matching_expected_count"
+        ),
         "source_fixture_status_counts": bundle.get("source_fixture_status_counts") or {},
         "source_all_fixture_status_counts": bundle.get("source_all_fixture_status_counts") or {},
         "source_fixture_validation_status": bundle.get("validation_status"),
@@ -10232,6 +10246,21 @@ def render_archive_route_detail(payload: dict) -> str:
 def render_archive_route_detail_preset_exports(payload: dict) -> str:
     summary = payload.get("summary") or {}
     validation = payload.get("preset_validation") or {}
+    source_selector_filters = payload.get("source_selector_filters") or {}
+    source_filter_value = (
+        source_selector_filters.get("validation_fixture_status")
+        or source_selector_filters.get("fixture_validation_status")
+        or payload.get("source_fixture_status_filter")
+        or "无"
+    )
+    source_status_counts = payload.get("source_fixture_status_counts") or {}
+    source_all_status_counts = payload.get("source_all_fixture_status_counts") or {}
+    source_status_text = ", ".join(
+        f"{status}={count}" for status, count in sorted(source_status_counts.items())
+    ) or "无"
+    source_all_status_text = ", ".join(
+        f"{status}={count}" for status, count in sorted(source_all_status_counts.items())
+    ) or "无"
     lines = [
         "# OSS Cognition Route Detail Preset Exports",
         "",
@@ -10242,7 +10271,12 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         f"- Source schema：{payload.get('source_bundle_schema') or 'unknown'}",
         f"- Source fixture：{payload.get('source_fixture_id') or '无'}",
         f"- Source fixture status filter：{payload.get('source_fixture_status_filter') or '无'}",
+        f"- Source selector fixture filter：{source_filter_value}",
         f"- Source fixture validation：{payload.get('source_fixture_validation_status') or 'unknown'} / matches expected {payload.get('source_fixture_validation_matches_expected') if payload.get('source_fixture_validation_matches_expected') is not None else 'unknown'}",
+        f"- Source fixture count：{payload.get('source_fixture_count') if payload.get('source_fixture_count') is not None else 'unknown'} / unfiltered {payload.get('source_unfiltered_fixture_count') if payload.get('source_unfiltered_fixture_count') is not None else 'unknown'}",
+        f"- Source fixture matching expected：{payload.get('source_fixture_matching_expected_count') if payload.get('source_fixture_matching_expected_count') is not None else 'unknown'} / unfiltered {payload.get('source_fixture_unfiltered_matching_expected_count') if payload.get('source_fixture_unfiltered_matching_expected_count') is not None else 'unknown'}",
+        f"- Source fixture status counts：{source_status_text}",
+        f"- Source all fixture status counts：{source_all_status_text}",
         f"- Expected validation status：{payload.get('expected_validation_status') or '无'}",
         f"- Preset / route / example：{summary.get('preset_count', 0)} / {summary.get('route_count', 0)} / {summary.get('example_count', 0)}",
         f"- Repository / unique evidence：{summary.get('repository_count', 0)} / {summary.get('unique_evidence_count', 0)}",
