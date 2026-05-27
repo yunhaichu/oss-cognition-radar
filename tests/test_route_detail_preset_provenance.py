@@ -522,6 +522,25 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_defaults_missing_validation_preset_status_identity(self):
+        payload = preset_exports_payload({})
+        payload["preset_validation"]["preset_statuses"] = [
+            {
+                "matched_move_count": 1,
+                "matched_route_count": 2,
+                "matched_repository_count": 3,
+                "expected_example_count": 4,
+                "messages": ["identity fallback"],
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn(
+            "- `` unknown\uff1amoves 1\uff1broutes 2\uff1brepos 3\uff1bexamples 4\uff1bidentity fallback",
+            lines,
+        )
+
     def test_preset_export_markdown_renders_repository_evidence_count_consistency(self):
         payload = preset_exports_payload({})
         payload["summary"]["repository_count"] = 2
