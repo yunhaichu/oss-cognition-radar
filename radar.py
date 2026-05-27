@@ -10573,7 +10573,11 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
 
     for index, export in enumerate(exports, 1):
         preset = export.get("preset") or {}
+        if not isinstance(preset, dict):
+            preset = {}
         selectors = preset.get("selectors") or {}
+        if not isinstance(selectors, dict):
+            selectors = {}
         route_detail = export.get("route_detail") or {}
         if not isinstance(route_detail, dict):
             route_detail = {}

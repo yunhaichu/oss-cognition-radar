@@ -1818,6 +1818,58 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertFalse(any("['route']" in line for line in lines))
         self.assertFalse(any("{'bad': 'repo'}" in line for line in lines))
 
+    def test_preset_export_markdown_renders_malformed_export_preset_payload_as_fallbacks(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": ["bad preset"],
+                "route_detail": {
+                    "summary": {
+                        "route_count": 0,
+                        "example_count": 0,
+                        "repository_count": 0,
+                        "unique_evidence_count": 0,
+                    },
+                    "routes": [],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("## 1. Route detail preset", lines)
+        self.assertIn("- Preset ID\uff1a``", lines)
+        self.assertIn("- Move / route / repo\uff1a`` / `` / ``", lines)
+        self.assertFalse(any("bad preset" in line for line in lines))
+
+    def test_preset_export_markdown_renders_malformed_export_selector_payload_as_fallbacks(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": {
+                    "label": "Preset batch_repo",
+                    "preset_id": "batch_repo",
+                    "selectors": ["bad selectors"],
+                },
+                "route_detail": {
+                    "summary": {
+                        "route_count": 0,
+                        "example_count": 0,
+                        "repository_count": 0,
+                        "unique_evidence_count": 0,
+                    },
+                    "routes": [],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("## 1. Preset batch_repo", lines)
+        self.assertIn("- Preset ID\uff1a`batch_repo`", lines)
+        self.assertIn("- Move / route / repo\uff1a`` / `` / ``", lines)
+        self.assertFalse(any("bad selectors" in line for line in lines))
+
     def test_preset_export_markdown_preserves_explicit_zero_export_summary_counts(self):
         payload = preset_exports_payload({})
         payload["exports"] = [
