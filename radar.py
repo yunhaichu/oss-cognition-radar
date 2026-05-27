@@ -5491,6 +5491,236 @@ def aggregate_repository_cognition_profile_path_statistics(profiles: list[dict])
     return repository_cognition_profile_path_statistics(paths)
 
 
+def repository_cognition_profile_path_comparison_score(
+    path_count: int,
+    repository_count: int,
+    high_confidence_paths: int,
+    average_confidence: int | float | None,
+    route_count: int,
+) -> int:
+    repeat_score = min(repository_count * 13, 45)
+    depth_score = min(path_count * 4, 22)
+    confidence_score = min((average_confidence or 0) * 0.22, 22)
+    route_score = min(route_count * 3, 11)
+    high_score = min(high_confidence_paths * 2, 8)
+    return int(clamp(round(repeat_score + depth_score + confidence_score + route_score + high_score), 0, 100))
+
+
+def repository_cognition_profile_path_comparison_confidence(score: int, repository_count: int) -> str:
+    if score >= 78 and repository_count >= 3:
+        return "high"
+    if score >= 58 and repository_count >= 2:
+        return "medium"
+    return "low"
+
+
+def repository_cognition_path_example_payload(path: dict) -> dict:
+    return {
+        "repo_full_name": path.get("repo_full_name"),
+        "profile_id": path.get("profile_id"),
+        "path_id": path.get("path_id"),
+        "pattern_id": path.get("pattern_id"),
+        "claim_id": path.get("claim_id"),
+        "claim_field": path.get("claim_field"),
+        "claim_gap_layer": path.get("claim_gap_layer"),
+        "claim_gap_layer_label": path.get("claim_gap_layer_label"),
+        "acquisition_reason": path.get("acquisition_reason"),
+        "evidence_id": path.get("evidence_id"),
+        "evidence_stable_id": path.get("evidence_stable_id"),
+        "evidence_kind": path.get("evidence_kind"),
+        "evidence_title": path.get("evidence_title"),
+        "evidence_url": path.get("evidence_url"),
+        "evidence_type": path.get("evidence_type"),
+        "confidence": path.get("confidence"),
+        "confidence_score": path.get("confidence_score"),
+        "confidence_source": path.get("confidence_source"),
+        "confidence_signal_groups": path.get("confidence_signal_groups") or [],
+    }
+
+
+def build_repository_cognition_path_comparisons(profiles: list[dict], limit: int) -> list[dict]:
+    groups: dict[tuple[str, str], dict] = {}
+    for profile in profiles:
+        for path in profile.get("explanation_paths") or []:
+            category = path.get("semantic_field_category") or "unknown"
+            label = path.get("semantic_field_label") or category
+            key = (category, label)
+            group = groups.setdefault(
+                key,
+                {
+                    "comparison_id": stable_id("profile_path_comparison", category, label),
+                    "schema_version": "profile_path_comparison_v1",
+                    "design_move_category": category,
+                    "design_move": label,
+                    "cognition_move": path.get("cognition_move"),
+                    "transfer_rule": path.get("transfer_rule"),
+                    "_paths": [],
+                    "_repositories": set(),
+                    "_evidence_refs": set(),
+                    "_claim_gap_layer_counts": {},
+                    "_evidence_type_counts": {},
+                    "_evidence_kind_counts": {},
+                    "_confidence_label_counts": {},
+                    "_confidence_source_counts": {},
+                    "_signal_group_counts": {},
+                    "_confidence_scores": [],
+                    "_routes": {},
+                },
+            )
+            group["_paths"].append(path)
+            repo = path.get("repo_full_name")
+            if repo:
+                group["_repositories"].add(repo)
+            evidence_ref = path.get("evidence_stable_id") or path.get("evidence_id")
+            if evidence_ref:
+                group["_evidence_refs"].add(evidence_ref)
+            if isinstance(path.get("confidence_score"), (int, float)):
+                group["_confidence_scores"].append(path["confidence_score"])
+            count_value(group["_claim_gap_layer_counts"], path.get("claim_gap_layer_label") or path.get("claim_gap_layer"))
+            count_value(group["_evidence_type_counts"], path.get("evidence_type"))
+            count_value(group["_evidence_kind_counts"], path.get("evidence_kind"))
+            count_value(group["_confidence_label_counts"], path.get("confidence"))
+            count_value(group["_confidence_source_counts"], path.get("confidence_source"))
+            for signal_group in path.get("confidence_signal_groups") or []:
+                count_value(group["_signal_group_counts"], signal_group)
+
+            route_key = (
+                path.get("claim_gap_layer_label") or path.get("claim_gap_layer") or "unknown",
+                path.get("evidence_type") or "general",
+            )
+            route = group["_routes"].setdefault(
+                route_key,
+                {
+                    "route_id": stable_id("profile_path_route", category, label, route_key[0], route_key[1]),
+                    "claim_gap_layer": route_key[0],
+                    "evidence_type": route_key[1],
+                    "_paths": [],
+                    "_repositories": set(),
+                    "_evidence_refs": set(),
+                    "_confidence_scores": [],
+                    "_confidence_label_counts": {},
+                    "_confidence_source_counts": {},
+                    "_signal_group_counts": {},
+                },
+            )
+            route["_paths"].append(path)
+            if repo:
+                route["_repositories"].add(repo)
+            if evidence_ref:
+                route["_evidence_refs"].add(evidence_ref)
+            if isinstance(path.get("confidence_score"), (int, float)):
+                route["_confidence_scores"].append(path["confidence_score"])
+            count_value(route["_confidence_label_counts"], path.get("confidence"))
+            count_value(route["_confidence_source_counts"], path.get("confidence_source"))
+            for signal_group in path.get("confidence_signal_groups") or []:
+                count_value(route["_signal_group_counts"], signal_group)
+
+    comparisons = []
+    for group in groups.values():
+        paths = sorted(
+            group.pop("_paths"),
+            key=lambda item: (
+                -(item.get("confidence_score") or 0),
+                -(item.get("pattern_score") or 0),
+                item.get("repo_full_name") or "",
+                item.get("evidence_stable_id") or item.get("evidence_id") or "",
+            ),
+        )
+        repositories = sorted(repo for repo in group.pop("_repositories") if repo)
+        evidence_refs = group.pop("_evidence_refs")
+        confidence_scores = group.pop("_confidence_scores")
+        routes = []
+        for route in group.pop("_routes").values():
+            route_paths = sorted(
+                route.pop("_paths"),
+                key=lambda item: (
+                    -(item.get("confidence_score") or 0),
+                    -(item.get("pattern_score") or 0),
+                    item.get("repo_full_name") or "",
+                    item.get("evidence_stable_id") or item.get("evidence_id") or "",
+                ),
+            )
+            route_repositories = sorted(repo for repo in route.pop("_repositories") if repo)
+            route_evidence_refs = route.pop("_evidence_refs")
+            route_confidence_scores = route.pop("_confidence_scores")
+            route_confidence_labels = route.pop("_confidence_label_counts")
+            route_confidence_sources = route.pop("_confidence_source_counts")
+            route_signal_groups = route.pop("_signal_group_counts")
+            routes.append(
+                {
+                    **route,
+                    "path_count": len(route_paths),
+                    "repository_count": len(route_repositories),
+                    "repositories": route_repositories[:12],
+                    "unique_evidence_count": len(route_evidence_refs),
+                    "high_confidence_paths": sum(1 for item in route_paths if item.get("confidence") == "high"),
+                    "average_confidence": mean_number(route_confidence_scores),
+                    "confidence_labels": top_count_items(route_confidence_labels, limit=6),
+                    "confidence_sources": top_count_items(route_confidence_sources, limit=6),
+                    "signal_groups": top_count_items(route_signal_groups, limit=8),
+                    "examples": [repository_cognition_path_example_payload(item) for item in route_paths[:3]],
+                }
+            )
+        routes.sort(
+            key=lambda item: (
+                -item["repository_count"],
+                -item["path_count"],
+                -(item.get("average_confidence") or 0),
+                item["claim_gap_layer"],
+                item["evidence_type"],
+            )
+        )
+        average_confidence = mean_number(confidence_scores)
+        score = repository_cognition_profile_path_comparison_score(
+            len(paths),
+            len(repositories),
+            sum(1 for item in paths if item.get("confidence") == "high"),
+            average_confidence,
+            len(routes),
+        )
+        if len(repositories) < 2:
+            continue
+        claim_gap_layer_counts = group.pop("_claim_gap_layer_counts")
+        evidence_type_counts = group.pop("_evidence_type_counts")
+        evidence_kind_counts = group.pop("_evidence_kind_counts")
+        confidence_label_counts = group.pop("_confidence_label_counts")
+        confidence_source_counts = group.pop("_confidence_source_counts")
+        signal_group_counts = group.pop("_signal_group_counts")
+        comparisons.append(
+            {
+                **group,
+                "score": score,
+                "confidence": repository_cognition_profile_path_comparison_confidence(score, len(repositories)),
+                "path_count": len(paths),
+                "repository_count": len(repositories),
+                "repositories": repositories[:12],
+                "unique_evidence_count": len(evidence_refs),
+                "high_confidence_paths": sum(1 for item in paths if item.get("confidence") == "high"),
+                "average_confidence": average_confidence,
+                "route_count": len(routes),
+                "claim_gap_layers": top_count_items(claim_gap_layer_counts, limit=8),
+                "evidence_types": top_count_items(evidence_type_counts, limit=8),
+                "evidence_kinds": top_count_items(evidence_kind_counts, limit=8),
+                "confidence_labels": top_count_items(confidence_label_counts, limit=6),
+                "confidence_sources": top_count_items(confidence_source_counts, limit=6),
+                "signal_groups": top_count_items(signal_group_counts, limit=8),
+                "evidence_routes": routes[:6],
+                "repository_examples": [repository_cognition_path_example_payload(item) for item in paths[:8]],
+            }
+        )
+
+    comparisons.sort(
+        key=lambda item: (
+            -item["score"],
+            -item["repository_count"],
+            -item["path_count"],
+            item["design_move_category"],
+            item["design_move"],
+        )
+    )
+    return comparisons[: max(limit, 1)]
+
+
 def repository_cognition_profile_match_payload(profile: dict, relevance: dict) -> dict:
     explanation_paths = profile.get("explanation_paths") or repository_cognition_profile_explanation_paths(profile)
     return {
@@ -5634,6 +5864,7 @@ def archive_patterns_payload(conn: sqlite3.Connection, args: argparse.Namespace)
     cognition_summaries = build_archive_cognition_summaries(patterns, args.limit)
     repository_cognition_profiles = build_repository_cognition_profiles(patterns, rows, args.limit)
     profile_path_statistics = aggregate_repository_cognition_profile_path_statistics(repository_cognition_profiles)
+    profile_path_comparisons = build_repository_cognition_path_comparisons(repository_cognition_profiles, args.limit)
     repositories = sorted({row.get("repo_full_name") for row in rows if row.get("repo_full_name")})
     pattern_confidences = [
         item.get("average_binding_confidence")
@@ -5656,6 +5887,8 @@ def archive_patterns_payload(conn: sqlite3.Connection, args: argparse.Namespace)
             "high_confidence_repository_profiles": sum(1 for item in repository_cognition_profiles if item.get("confidence") == "high"),
             "repository_cognition_profile_paths": profile_path_statistics.get("path_count", 0),
             "high_confidence_repository_profile_paths": profile_path_statistics.get("high_confidence_paths", 0),
+            "repository_cognition_profile_path_comparisons": len(profile_path_comparisons),
+            "cross_repository_profile_path_comparisons": sum(1 for item in profile_path_comparisons if item.get("repository_count", 0) >= 2),
             "repositories": len(repositories),
             "cross_project_patterns": sum(1 for item in patterns if item.get("repository_count", 0) >= 2),
             "average_pattern_confidence": round(sum(pattern_confidences) / len(pattern_confidences), 1) if pattern_confidences else None,
@@ -5666,6 +5899,7 @@ def archive_patterns_payload(conn: sqlite3.Connection, args: argparse.Namespace)
             "repository_cognition_profile_path_statistics": profile_path_statistics,
         },
         "repository_cognition_profile_path_statistics": profile_path_statistics,
+        "repository_cognition_profile_path_comparisons": profile_path_comparisons,
         "cognition_summaries": cognition_summaries,
         "repository_cognition_profiles": repository_cognition_profiles,
         "patterns": patterns,
@@ -5707,6 +5941,7 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
     cognition_summaries = build_archive_cognition_summaries(patterns, args.limit)
     repository_cognition_profiles = build_repository_cognition_profiles(patterns, pattern_rows, args.limit)
     profile_path_statistics = aggregate_repository_cognition_profile_path_statistics(repository_cognition_profiles)
+    profile_path_comparisons = build_repository_cognition_path_comparisons(repository_cognition_profiles, args.limit)
     scores = [
         (summary.get("track_score") or {}).get("score")
         for summary in repositories
@@ -5747,6 +5982,8 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
             "high_confidence_repository_profiles": sum(1 for item in repository_cognition_profiles if item.get("confidence") == "high"),
             "repository_cognition_profile_paths": profile_path_statistics.get("path_count", 0),
             "high_confidence_repository_profile_paths": profile_path_statistics.get("high_confidence_paths", 0),
+            "repository_cognition_profile_path_comparisons": len(profile_path_comparisons),
+            "cross_repository_profile_path_comparisons": sum(1 for item in profile_path_comparisons if item.get("repository_count", 0) >= 2),
             "cross_project_patterns": sum(1 for item in patterns if item.get("repository_count", 0) >= 2),
             "average_pattern_confidence": round(sum(pattern_confidences) / len(pattern_confidences), 1) if pattern_confidences else None,
             "average_pattern_signal_score": mean_number(
@@ -5763,6 +6000,7 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
         "cognition_summaries": cognition_summaries,
         "repository_cognition_profiles": repository_cognition_profiles,
         "repository_cognition_profile_path_statistics": profile_path_statistics,
+        "repository_cognition_profile_path_comparisons": profile_path_comparisons,
         "patterns": patterns,
     }
 
@@ -6183,7 +6421,7 @@ def render_archive_dashboard(payload: dict) -> str:
     </header>
 
     <section class="toolbar" aria-label="Archive filters">
-      <input id="searchInput" type="search" placeholder="Search repositories, patterns, claims, gaps, bindings, evidence" autocomplete="off">
+      <input id="searchInput" type="search" placeholder="Search repositories, profiles, path comparisons, claims, gaps, evidence" autocomplete="off">
       <select id="trackSelect" aria-label="Track"></select>
       <select id="confidenceSourceSelect" aria-label="Confidence source"></select>
       <select id="signalGroupSelect" aria-label="Signal group"></select>
@@ -6223,6 +6461,7 @@ def render_archive_dashboard(payload: dict) -> str:
     const dossiers = DATA.dossiers || {};
     const cognitionSummaries = DATA.cognition_summaries || [];
     const repositoryCognitionProfiles = DATA.repository_cognition_profiles || [];
+    const repositoryCognitionPathComparisons = DATA.repository_cognition_profile_path_comparisons || [];
     const patterns = DATA.patterns || [];
 
     const searchInput = document.getElementById("searchInput");
@@ -6387,6 +6626,89 @@ def render_archive_dashboard(payload: dict) -> str:
       if (!profile) return false;
       if (state.signalGroup === "all") return true;
       return (profile.signal_groups || []).some((item) => item.value === state.signalGroup);
+    }
+
+    function pathComparisonMatchesConfidenceSource(comparison) {
+      if (state.confidenceSource === "all") return true;
+      return (comparison.confidence_sources || []).some((item) => item.value === state.confidenceSource)
+        || (comparison.evidence_routes || []).some((route) => (route.confidence_sources || []).some((item) => item.value === state.confidenceSource));
+    }
+
+    function pathComparisonMatchesSignalGroup(comparison) {
+      if (state.signalGroup === "all") return true;
+      return (comparison.signal_groups || []).some((item) => item.value === state.signalGroup)
+        || (comparison.evidence_routes || []).some((route) => (route.signal_groups || []).some((item) => item.value === state.signalGroup));
+    }
+
+    function pathComparisonCorpus(comparison) {
+      const parts = [
+        "profile_path_comparison",
+        comparison.comparison_id,
+        comparison.schema_version,
+        comparison.design_move_category,
+        comparison.design_move,
+        comparison.cognition_move,
+        comparison.transfer_rule,
+        comparison.confidence,
+        comparison.score,
+        (comparison.repositories || []).join(" "),
+        ...(comparison.claim_gap_layers || []).map((item) => item.value),
+        ...(comparison.evidence_types || []).map((item) => item.value),
+        ...(comparison.evidence_kinds || []).map((item) => item.value),
+        ...(comparison.confidence_labels || []).map((item) => item.value),
+        ...(comparison.confidence_sources || []).map((item) => item.value),
+        ...(comparison.signal_groups || []).map((item) => item.value),
+        ...(comparison.evidence_routes || []).flatMap((route) => [
+          route.route_id,
+          route.claim_gap_layer,
+          route.evidence_type,
+          (route.repositories || []).join(" "),
+          ...(route.confidence_labels || []).map((item) => item.value),
+          ...(route.confidence_sources || []).map((item) => item.value),
+          ...(route.signal_groups || []).map((item) => item.value),
+          ...(route.examples || []).flatMap((example) => [
+            example.repo_full_name,
+            example.path_id,
+            example.pattern_id,
+            example.claim_id,
+            example.claim_field,
+            example.claim_gap_layer,
+            example.claim_gap_layer_label,
+            example.acquisition_reason,
+            example.evidence_id,
+            example.evidence_stable_id,
+            example.evidence_kind,
+            example.evidence_title,
+            example.evidence_url,
+            example.evidence_type,
+            example.confidence,
+            example.confidence_score,
+            example.confidence_source,
+            (example.confidence_signal_groups || []).join(" "),
+          ]),
+        ]),
+        ...(comparison.repository_examples || []).flatMap((example) => [
+          example.repo_full_name,
+          example.path_id,
+          example.pattern_id,
+          example.claim_id,
+          example.claim_field,
+          example.claim_gap_layer,
+          example.claim_gap_layer_label,
+          example.acquisition_reason,
+          example.evidence_id,
+          example.evidence_stable_id,
+          example.evidence_kind,
+          example.evidence_title,
+          example.evidence_url,
+          example.evidence_type,
+          example.confidence,
+          example.confidence_score,
+          example.confidence_source,
+          (example.confidence_signal_groups || []).join(" "),
+        ]),
+      ];
+      return parts.filter(Boolean).join(" ").toLowerCase();
     }
 
     function cognitionProfileCorpus(profile) {
@@ -6702,6 +7024,10 @@ def render_archive_dashboard(payload: dict) -> str:
     function renderConfidenceSourceOptions() {
       const sources = Array.from(new Set([
         ...(DATA.statistics?.confidence_sources || []).map((item) => item.value),
+        ...repositoryCognitionPathComparisons.flatMap((comparison) => [
+          ...(comparison.confidence_sources || []).map((item) => item.value),
+          ...(comparison.evidence_routes || []).flatMap((route) => (route.confidence_sources || []).map((item) => item.value)),
+        ]),
         ...patterns.flatMap((pattern) => (pattern.confidence_sources || []).map((item) => item.value)),
         ...repos.flatMap((repo) => {
           const dossier = dossierOf(repo);
@@ -6722,6 +7048,10 @@ def render_archive_dashboard(payload: dict) -> str:
         ...(DATA.statistics?.signal_groups || []).map((item) => item.value),
         ...cognitionSummaries.flatMap((summary) => (summary.signal_groups || []).map((item) => item.value)),
         ...repositoryCognitionProfiles.flatMap((profile) => (profile.signal_groups || []).map((item) => item.value)),
+        ...repositoryCognitionPathComparisons.flatMap((comparison) => [
+          ...(comparison.signal_groups || []).map((item) => item.value),
+          ...(comparison.evidence_routes || []).flatMap((route) => (route.signal_groups || []).map((item) => item.value)),
+        ]),
         ...patterns.flatMap((pattern) => (pattern.signal_groups || []).map((item) => item.value)),
         ...repos.flatMap((repo) => {
           const dossier = dossierOf(repo);
@@ -6753,6 +7083,7 @@ def render_archive_dashboard(payload: dict) -> str:
       const patternCount = filteredPatterns().length;
       const profileCount = items.filter((repo) => cognitionProfileOf(repo)).length;
       const profilePathCount = items.reduce((sum, repo) => sum + ((cognitionProfileOf(repo)?.explanation_path_statistics || {}).path_count || 0), 0);
+      const comparisonCount = filteredPathComparisons().length;
       const evidenceCount = items.reduce((sum, repo) => sum + (dossierOf(repo).evidence || []).length, 0);
       const average = items.length
         ? items.reduce((sum, repo) => sum + scoreOf(repo), 0) / items.length
@@ -6774,6 +7105,7 @@ def render_archive_dashboard(payload: dict) -> str:
         ["Patterns", patternCount],
         ["Profiles", profileCount],
         ["Paths", profilePathCount],
+        ["Comparisons", comparisonCount],
         ["Evidence", evidenceCount],
         ["Avg score", average ? average.toFixed(1) : "0.0"],
       ];
@@ -6811,15 +7143,56 @@ def render_archive_dashboard(payload: dict) -> str:
       });
     }
 
+    function filteredPathComparisons() {
+      const query = state.query.trim().toLowerCase();
+      return repositoryCognitionPathComparisons.filter((comparison) => {
+        if (!pathComparisonMatchesConfidenceSource(comparison)) return false;
+        if (!pathComparisonMatchesSignalGroup(comparison)) return false;
+        if (query && !pathComparisonCorpus(comparison).includes(query)) return false;
+        return true;
+      });
+    }
+
     function renderPatterns() {
       const items = filteredPatterns().slice(0, 6);
       const summaries = filteredCognitionSummaries().slice(0, 4);
-      if (!patterns.length && !cognitionSummaries.length) {
+      const comparisons = filteredPathComparisons().slice(0, 4);
+      if (!patterns.length && !cognitionSummaries.length && !repositoryCognitionPathComparisons.length) {
         patternsPanel.innerHTML = "";
         return;
       }
       const averageConfidence = DATA.statistics?.average_pattern_confidence;
       const averageSignal = DATA.statistics?.average_pattern_signal_score;
+      const comparisonCards = comparisons.map((comparison) => {
+        const topRoutes = (comparison.evidence_routes || []).slice(0, 3);
+        const routeText = topRoutes.map((route) =>
+          `${route.claim_gap_layer || "gap"} / ${route.evidence_type || "evidence"}: ${route.repository_count || 0} repos, ${route.path_count || 0} paths`
+        ).join(" | ");
+        const topLayers = (comparison.claim_gap_layers || []).slice(0, 3);
+        const topEvidenceTypes = (comparison.evidence_types || []).slice(0, 3);
+        const topSignals = (comparison.signal_groups || []).slice(0, 4);
+        return `
+          <article class="pattern-card">
+            <h2>${escapeHtml(comparison.design_move || "Design move")}</h2>
+            <div class="chips">
+              <span class="chip ${comparison.confidence === "high" ? "support" : ""}">${escapeHtml(comparison.confidence || "unknown")} ${escapeHtml(comparison.score ?? 0)}</span>
+              <span class="chip">Repos ${escapeHtml(comparison.repository_count || 0)}</span>
+              <span class="chip">Paths ${escapeHtml(comparison.path_count || 0)}</span>
+              <span class="chip">Routes ${escapeHtml(comparison.route_count || 0)}</span>
+              <span class="chip">High ${escapeHtml(comparison.high_confidence_paths || 0)}</span>
+              <span class="chip">${escapeHtml(comparison.schema_version || "profile_path_comparison_v1")}</span>
+            </div>
+            <p>${escapeHtml(compact(comparison.cognition_move || comparison.transfer_rule || "", 180))}</p>
+            <p class="subtle">Evidence routes: ${escapeHtml(compact(routeText, 180))}</p>
+            <div class="chips">
+              <span class="chip">Avg confidence ${escapeHtml(comparison.average_confidence ?? "unknown")}</span>
+              ${topLayers.map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
+              ${topEvidenceTypes.map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
+              ${topSignals.map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
+            </div>
+          </article>
+        `;
+      }).join("");
       const summaryCards = summaries.map((summary) => {
         const topLayers = (summary.layer_counts || []).slice(0, 3);
         const topActions = (summary.layer_actions || []).slice(0, 2);
@@ -6880,6 +7253,13 @@ def render_archive_dashboard(payload: dict) -> str:
         `;
       }).join("");
       patternsPanel.innerHTML = `
+        ${repositoryCognitionPathComparisons.length ? `
+          <div class="patterns-head">
+            <div class="section-title">Profile Path Comparisons</div>
+            <div class="count">${escapeHtml(comparisons.length)} / ${escapeHtml(repositoryCognitionPathComparisons.length)}</div>
+          </div>
+          <div class="patterns-grid">${comparisonCards || '<div class="empty">No matching profile path comparisons.</div>'}</div>
+        ` : ""}
         ${cognitionSummaries.length ? `
           <div class="patterns-head">
             <div class="section-title">Cognition Summaries</div>
@@ -7493,6 +7873,50 @@ def render_repository_cognition_profiles(profiles: list[dict]) -> list[str]:
     return lines
 
 
+def render_repository_cognition_path_comparisons(comparisons: list[dict]) -> list[str]:
+    if not comparisons:
+        return []
+    lines = ["## Profile Path Comparisons", ""]
+    for index, comparison in enumerate(comparisons, 1):
+        lines.extend(
+            [
+                f"### {index}. {comparison.get('design_move') or comparison.get('design_move_category')}",
+                "",
+                f"- Comparison ID：`{comparison.get('comparison_id')}`",
+                f"- Schema：{comparison.get('schema_version') or 'profile_path_comparison_v1'}",
+                f"- Confidence：{comparison.get('confidence') or 'unknown'} / {comparison.get('score', 0)}/100",
+                f"- 仓库数 / path 数 / route 数：{comparison.get('repository_count', 0)} / {comparison.get('path_count', 0)} / {comparison.get('route_count', 0)}",
+                f"- 高置信 path 数：{comparison.get('high_confidence_paths', 0)}；平均可靠度 {comparison.get('average_confidence') if comparison.get('average_confidence') is not None else 'unknown'}",
+                f"- 设计动作：{comparison.get('cognition_move') or '无'}",
+                f"- 迁移规则：{comparison.get('transfer_rule') or '无'}",
+                f"- 参与仓库：{', '.join(comparison.get('repositories') or []) or '无'}",
+                f"- Claim gap layers：{count_items_text(comparison.get('claim_gap_layers') or [], limit=6)}",
+                f"- Evidence types：{count_items_text(comparison.get('evidence_types') or [], limit=6)}",
+                f"- Signal groups：{count_items_text(comparison.get('signal_groups') or [], limit=6)}",
+                "",
+            ]
+        )
+        routes = comparison.get("evidence_routes") or []
+        if routes:
+            lines.extend(["证据路线：", ""])
+            for route in routes[:4]:
+                lines.append(
+                    f"- `{route.get('route_id')}` {route.get('claim_gap_layer') or 'gap'} / {route.get('evidence_type') or 'evidence'}："
+                    f"repos {route.get('repository_count', 0)}；paths {route.get('path_count', 0)}；"
+                    f"high {route.get('high_confidence_paths', 0)}；avg confidence {route.get('average_confidence') if route.get('average_confidence') is not None else 'unknown'}；"
+                    f"signals {count_items_text(route.get('signal_groups') or [], limit=4)}"
+                )
+                for example in (route.get("examples") or [])[:2]:
+                    stable_ref = example.get("evidence_stable_id") or example.get("evidence_id") or "no-evidence-id"
+                    lines.append(
+                        f"  - {example.get('repo_full_name') or 'repo'}：`{stable_ref}` "
+                        f"{example.get('claim_field') or 'claim'} -> {example.get('claim_gap_layer_label') or example.get('claim_gap_layer') or 'gap'}；"
+                        f"{example.get('evidence_title') or 'Evidence'}；confidence {example.get('confidence') or 'unknown'} {example.get('confidence_score') if example.get('confidence_score') is not None else 'unknown'}"
+                    )
+            lines.append("")
+    return lines
+
+
 def render_repository_cognition_profile(profile: dict | None, context: dict | None = None) -> list[str]:
     if not profile:
         return []
@@ -7579,6 +8003,7 @@ def render_archive_patterns(payload: dict) -> str:
         f"- 高置信仓库画像数：{stats.get('high_confidence_repository_profiles', 0)}",
         f"- 画像解释路径数：{stats.get('repository_cognition_profile_paths', path_stats.get('path_count', 0))}",
         f"- 高置信画像解释路径数：{stats.get('high_confidence_repository_profile_paths', path_stats.get('high_confidence_paths', 0))}",
+        f"- 跨仓库画像路径对比数：{stats.get('repository_cognition_profile_path_comparisons', 0)}",
         f"- 跨项目重复模式：{stats.get('cross_project_patterns', 0)}",
         f"- 平均模式可靠度：{stats.get('average_pattern_confidence') if stats.get('average_pattern_confidence') is not None else '未记录'}",
         f"- 平均信号结构分：{stats.get('average_pattern_signal_score') if stats.get('average_pattern_signal_score') is not None else '未记录'}",
@@ -7593,6 +8018,7 @@ def render_archive_patterns(payload: dict) -> str:
         return "\n".join(lines)
 
     lines.extend(render_archive_cognition_summaries(payload.get("cognition_summaries") or []))
+    lines.extend(render_repository_cognition_path_comparisons(payload.get("repository_cognition_profile_path_comparisons") or []))
     lines.extend(render_repository_cognition_profiles(payload.get("repository_cognition_profiles") or []))
 
     for index, pattern in enumerate(payload["patterns"], 1):

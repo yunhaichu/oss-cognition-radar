@@ -42,6 +42,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Profile explanation paths: Repository Cognition Profile evidence examples now carry claim gap fields, acquisition reasons, confidence signals, and evidence references; CLI `--archive-search` renders explanation paths from matched profiles to concrete claim gaps and evidence stable IDs.
 - Dashboard profile paths: dashboard repository detail now renders Profile Explanation Paths inside Repository Cognition Profile, linking design moves to claim gap layers, acquisition reasons, confidence signals, and evidence stable IDs.
 - Profile path statistics: repository profiles and archive pattern/dashboard payloads now include path-level aggregate statistics grouped by design move, claim gap layer, evidence type, evidence kind, confidence label, and signal group.
+- Profile path comparisons: `--archive-patterns` and `--archive-dashboard` now include cross-repository comparison views for profile explanation paths, grouping the same design move by evidence route across claim gap layer and evidence type.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -58,7 +59,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Star growth depends on repeated snapshots; fresh databases correctly show insufficient history.
 - Repository health release/contributor fields are first-pass API samples, not complete longitudinal analytics.
 - Track classification is heuristic and should be refined with stronger automatic repository behavior signals.
-- Dashboard search is currently client-side weighted matching over exported JSON; CLI archive search uses SQLite FTS5 ranking plus profile-aware LIKE fallback.
+- Dashboard search is currently client-side weighted matching over exported JSON and now includes profile path comparison cards; CLI archive search uses SQLite FTS5 ranking plus profile-aware LIKE fallback.
 
 ## Release Policy
 
@@ -66,4 +67,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add cross-repository comparison views for profile explanation paths so the same design move can be compared across projects by evidence route.
+Add drilldown filters for profile path comparisons so the same design move can be narrowed by evidence route, repository, and signal group.
