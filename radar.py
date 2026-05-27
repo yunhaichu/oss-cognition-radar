@@ -6199,6 +6199,7 @@ def build_route_detail_selectors_payload(
                             if isinstance(example.get("confidence_score"), (int, float))
                         ]
                     ),
+                    "repositories": sorted(repo_counts),
                     "repository_options": top_count_items(repo_counts, limit=12),
                     "confidence_sources": route.get("confidence_sources") or [],
                     "signal_groups": route.get("signal_groups") or [],
@@ -6973,6 +6974,7 @@ def render_archive_dashboard(payload: dict) -> str:
     const cognitionSummaries = DATA.cognition_summaries || [];
     const repositoryCognitionProfiles = DATA.repository_cognition_profiles || [];
     const repositoryCognitionPathComparisons = DATA.repository_cognition_profile_path_comparisons || [];
+    const routeDetailSelectors = DATA.route_detail_selectors || { moves: [] };
     const patterns = DATA.patterns || [];
 
     const searchInput = document.getElementById("searchInput");
@@ -7171,6 +7173,84 @@ def render_archive_dashboard(payload: dict) -> str:
       return `${route.claim_gap_layer || "gap"} / ${route.evidence_type || "evidence"}`;
     }
 
+    function routeDetailSelectorMoves() {
+      return routeDetailSelectors.moves || [];
+    }
+
+    function routeDetailSelectorMoveKey(move) {
+      return move.move_key || `${move.design_move_category || "unknown"}::${move.design_move || move.design_move_category || "Design move"}`;
+    }
+
+    function routeDetailSelectorRouteKey(route) {
+      return route.route_id || route.route_key || `${route.claim_gap_layer || "gap"}::${route.evidence_type || "evidence"}`;
+    }
+
+    function routeDetailSelectorRouteLabel(route) {
+      return route.route_label || `${route.claim_gap_layer || "gap"} / ${route.evidence_type || "evidence"}`;
+    }
+
+    function routeDetailSelectorRouteRepositories(route) {
+      return Array.from(new Set([
+        ...(route.repositories || []),
+        ...(route.repository_options || []).map((item) => item.value),
+      ].filter(Boolean)));
+    }
+
+    function routeDetailSelectorMovesForComparisons(comparisons) {
+      const allowedMoveKeys = new Set(comparisons.map(pathComparisonMoveKey));
+      return routeDetailSelectorMoves().filter((move) => allowedMoveKeys.has(routeDetailSelectorMoveKey(move)));
+    }
+
+    function routeDetailSelectorRouteMatchesConfidenceSource(route) {
+      if (state.confidenceSource === "all") return true;
+      return (route.confidence_sources || []).some((item) => item.value === state.confidenceSource);
+    }
+
+    function routeDetailSelectorRouteMatchesSignalGroup(route) {
+      if (state.signalGroup === "all") return true;
+      return (route.signal_groups || []).some((item) => item.value === state.signalGroup);
+    }
+
+    function routeDetailSelectorRouteMatchesRepo(route) {
+      if (state.pathRepo === "all") return true;
+      return routeDetailSelectorRouteRepositories(route).includes(state.pathRepo);
+    }
+
+    function routeDetailSelectorRouteCount(route) {
+      if (state.pathRepo === "all") return route.example_count || route.path_count || 1;
+      const repoOption = (route.repository_options || []).find((item) => item.value === state.pathRepo);
+      return repoOption?.count || 1;
+    }
+
+    function routeDetailSelectorCorpusForComparison(comparison) {
+      const moveKey = pathComparisonMoveKey(comparison);
+      const move = routeDetailSelectorMoves().find((item) => routeDetailSelectorMoveKey(item) === moveKey);
+      if (!move) return "";
+      return [
+        "route_detail_selectors",
+        routeDetailSelectors.schema_version,
+        move.move_key,
+        move.comparison_id,
+        move.design_move_category,
+        move.design_move,
+        move.cognition_move,
+        move.transfer_rule,
+        ...(move.selector_values || []),
+        ...(move.routes || []).flatMap((route) => [
+          route.route_id,
+          route.route_key,
+          route.route_label,
+          route.claim_gap_layer,
+          route.evidence_type,
+          ...(route.selector_values || []),
+          ...(route.repositories || []),
+          ...(route.confidence_sources || []).map((item) => item.value),
+          ...(route.signal_groups || []).map((item) => item.value),
+          ...(route.repository_options || []).map((item) => item.value),
+        ]),
+      ].filter(Boolean).join(" ").toLowerCase();
+    }
+
     function routeMatchesConfidenceSource(route) {
       if (state.confidenceSource === "all") return true;
       return (route.confidence_sources || []).some((item) => item.value === state.confidenceSource);
@@ -7304,6 +7384,7 @@ def render_archive_dashboard(payload: dict) -> str:
           example.confidence_source,
           (example.confidence_signal_groups || []).join(" "),
         ]),
+        routeDetailSelectorCorpusForComparison(comparison),
       ];
       return parts.filter(Boolean).join(" ").toLowerCase();
     }
@@ -7697,24 +7778,50 @@ def render_archive_dashboard(payload: dict) -> str:
       }
       pathComparisonToolbar.hidden = false;
       const baseComparisons = repositoryCognitionPathComparisons.filter(pathComparisonMatchesBaseFilters);
+      const selectorMoves = routeDetailSelectorMovesForComparisons(baseComparisons);
       const moveOptions = new Map();
-      baseComparisons.forEach((comparison) => {
-        countOption(moveOptions, pathComparisonMoveKey(comparison), comparison.design_move || comparison.design_move_category || "Design move", comparison.path_count || 1);
-      });
+      if (selectorMoves.length) {
+        selectorMoves.forEach((move) => {
+          countOption(
+            moveOptions,
+            routeDetailSelectorMoveKey(move),
+            move.design_move || move.design_move_category || "Design move",
+            move.example_count || move.route_count || 1
+          );
+        });
+      } else {
+        baseComparisons.forEach((comparison) => {
+          countOption(moveOptions, pathComparisonMoveKey(comparison), comparison.design_move || comparison.design_move_category || "Design move", comparison.path_count || 1);
+        });
+      }
       state.pathMove = setFilterOptions(pathMoveSelect, Array.from(moveOptions.values()), state.pathMove, "All design moves");
 
       const moveComparisons = baseComparisons.filter((comparison) =>
         state.pathMove === "all" || pathComparisonMoveKey(comparison) === state.pathMove
       );
       const routeOptions = new Map();
-      moveComparisons.forEach((comparison) => {
-        (comparison.evidence_routes || []).forEach((route) => {
-          if (!routeMatchesConfidenceSource(route)) return;
-          if (!routeMatchesSignalGroup(route)) return;
-          if (state.pathRepo !== "all" && !(route.repositories || []).includes(state.pathRepo)) return;
-          countOption(routeOptions, pathComparisonRouteKey(route), pathComparisonRouteLabel(route), route.path_count || 1);
+      const moveSelectorOptions = selectorMoves.filter((move) =>
+        state.pathMove === "all" || routeDetailSelectorMoveKey(move) === state.pathMove
+      );
+      if (moveSelectorOptions.length) {
+        moveSelectorOptions.forEach((move) => {
+          (move.routes || []).forEach((route) => {
+            if (!routeDetailSelectorRouteMatchesConfidenceSource(route)) return;
+            if (!routeDetailSelectorRouteMatchesSignalGroup(route)) return;
+            if (!routeDetailSelectorRouteMatchesRepo(route)) return;
+            countOption(routeOptions, routeDetailSelectorRouteKey(route), routeDetailSelectorRouteLabel(route), routeDetailSelectorRouteCount(route));
+          });
         });
-      });
+      } else {
+        moveComparisons.forEach((comparison) => {
+          (comparison.evidence_routes || []).forEach((route) => {
+            if (!routeMatchesConfidenceSource(route)) return;
+            if (!routeMatchesSignalGroup(route)) return;
+            if (state.pathRepo !== "all" && !(route.repositories || []).includes(state.pathRepo)) return;
+            countOption(routeOptions, pathComparisonRouteKey(route), pathComparisonRouteLabel(route), route.path_count || 1);
+          });
+        });
+      }
       state.pathRoute = setFilterOptions(pathRouteSelect, Array.from(routeOptions.values()), state.pathRoute, "All evidence routes");
 
       const routeComparisons = moveComparisons.filter((comparison) => {
@@ -7722,14 +7829,28 @@ def render_archive_dashboard(payload: dict) -> str:
         return (comparison.evidence_routes || []).some((route) => pathComparisonRouteKey(route) === state.pathRoute);
       });
       const repoOptions = new Map();
-      routeComparisons.forEach((comparison) => {
-        (comparison.evidence_routes || []).forEach((route) => {
-          if (!routeMatchesConfidenceSource(route)) return;
-          if (!routeMatchesSignalGroup(route)) return;
-          if (state.pathRoute !== "all" && pathComparisonRouteKey(route) !== state.pathRoute) return;
-          (route.repositories || []).forEach((repo) => countOption(repoOptions, repo, repo, 1));
+      if (moveSelectorOptions.length) {
+        moveSelectorOptions.forEach((move) => {
+          (move.routes || []).forEach((route) => {
+            if (!routeDetailSelectorRouteMatchesConfidenceSource(route)) return;
+            if (!routeDetailSelectorRouteMatchesSignalGroup(route)) return;
+            if (state.pathRoute !== "all" && routeDetailSelectorRouteKey(route) !== state.pathRoute) return;
+            (route.repository_options || []).forEach((item) => countOption(repoOptions, item.value, item.value, item.count || 1));
+            if (!(route.repository_options || []).length) {
+              routeDetailSelectorRouteRepositories(route).forEach((repo) => countOption(repoOptions, repo, repo, 1));
+            }
+          });
         });
-      });
+      } else {
+        routeComparisons.forEach((comparison) => {
+          (comparison.evidence_routes || []).forEach((route) => {
+            if (!routeMatchesConfidenceSource(route)) return;
+            if (!routeMatchesSignalGroup(route)) return;
+            if (state.pathRoute !== "all" && pathComparisonRouteKey(route) !== state.pathRoute) return;
+            (route.repositories || []).forEach((repo) => countOption(repoOptions, repo, repo, 1));
+          });
+        });
+      }
       state.pathRepo = setFilterOptions(pathRepoSelect, Array.from(repoOptions.values()), state.pathRepo, "All repositories");
 
       pathComparisonDrilldownCount.textContent = `${filteredPathComparisons().length} / ${baseComparisons.length}`;
