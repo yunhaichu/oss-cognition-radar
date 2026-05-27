@@ -2350,6 +2350,22 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertFalse(any("{'bad': 'status'}" in line for line in lines))
         self.assertFalse(any("['bad']" in line for line in lines))
 
+    def test_preset_export_markdown_derives_malformed_source_fixture_validation_from_summary(self):
+        payload = preset_exports_payload(
+            {
+                "validation_status": "ready",
+                "expected_validation_status": "ready",
+            }
+        )
+        payload["source_fixture_validation_status"] = {"bad": "status"}
+        payload["source_fixture_validation_matches_expected"] = ["bad"]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Source fixture validation\uff1aready / matches expected True", lines)
+        self.assertFalse(any("{'bad': 'status'}" in line for line in lines))
+        self.assertFalse(any("['bad']" in line for line in lines))
+
     def test_preset_export_markdown_renders_missing_fixture_counts_as_unknown(self):
         markdown = radar.render_archive_route_detail_preset_exports(preset_exports_payload({}))
         lines = markdown.splitlines()
