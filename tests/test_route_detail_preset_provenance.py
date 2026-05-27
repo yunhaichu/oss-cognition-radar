@@ -634,6 +634,30 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         )
         self.assertIn("- ... 2 more preset statuses in JSON", lines)
 
+    def test_preset_export_markdown_does_not_truncate_twelve_validation_preset_statuses(self):
+        payload = preset_exports_payload({})
+        payload["preset_validation"]["preset_statuses"] = [
+            {
+                "preset_id": f"preset_{index}",
+                "status": "ready",
+                "matched_move_count": 1,
+                "matched_route_count": 1,
+                "matched_repository_count": 1,
+                "expected_example_count": 1,
+                "messages": [f"status {index}"],
+            }
+            for index in range(12)
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn(
+            "- `preset_11` ready\uff1amoves 1\uff1broutes 1\uff1brepos 1\uff1bexamples 1\uff1bstatus 11",
+            lines,
+        )
+        self.assertNotIn("- ... 0 more preset statuses in JSON", lines)
+        self.assertNotIn("- ... 1 more preset statuses in JSON", lines)
+
     def test_preset_export_markdown_renders_repository_evidence_count_consistency(self):
         payload = preset_exports_payload({})
         payload["summary"]["repository_count"] = 2
