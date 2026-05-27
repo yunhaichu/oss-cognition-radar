@@ -340,6 +340,41 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertIn("duplicate", markdown)
         self.assert_common_markdown(markdown, "duplicate_ids", 1, 1, "duplicate_ids=1")
 
+    def test_preset_export_markdown_renders_string_duplicate_preset_id_as_single_id(self):
+        payload = preset_exports_payload({})
+        payload["preset_validation"]["duplicate_preset_ids"] = "duplicate"
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Duplicate preset IDs\uff1aduplicate", lines)
+        self.assertNotIn("- Duplicate preset IDs\uff1ad, u, p, l, i, c, a, t, e", lines)
+
+    def test_preset_export_markdown_filters_malformed_duplicate_preset_ids(self):
+        payload = preset_exports_payload({})
+        payload["preset_validation"]["duplicate_preset_ids"] = [
+            "duplicate",
+            {"bad": "id"},
+            None,
+            ["nested"],
+            "duplicate_second",
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Duplicate preset IDs\uff1aduplicate, duplicate_second", lines)
+        self.assertFalse(any("{'bad': 'id'}" in line for line in lines))
+        self.assertFalse(any("['nested']" in line for line in lines))
+
+    def test_preset_export_markdown_renders_malformed_duplicate_preset_id_payload_as_empty(self):
+        for duplicate_preset_ids in ({"bad": "id"}, 7):
+            with self.subTest(duplicate_preset_ids=duplicate_preset_ids):
+                payload = preset_exports_payload({})
+                payload["preset_validation"]["duplicate_preset_ids"] = duplicate_preset_ids
+                markdown = radar.render_archive_route_detail_preset_exports(payload)
+                lines = markdown.splitlines()
+
+                self.assertIn("- Duplicate preset IDs\uff1a\u65e0", lines)
+
     def test_preset_export_markdown_renders_empty_source_selector_filters(self):
         markdown = radar.render_archive_route_detail_preset_exports(preset_exports_payload({}))
         lines = markdown.splitlines()

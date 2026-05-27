@@ -114,6 +114,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Null validation preset status list Markdown coverage: route detail preset export Markdown now has regression coverage that null validation preset status lists render no status rows and no overflow notice.
 - Malformed validation preset status list Markdown coverage: route detail preset export Markdown now filters malformed validation preset status inputs to list entries that are dictionaries, preventing malformed status payloads from crashing Markdown rendering.
 - Malformed validation preset message Markdown coverage: route detail preset export Markdown now treats string preset status messages as single messages, filters non-string message list entries, and renders non-list message payloads as empty message suffixes.
+- Malformed duplicate preset ID Markdown coverage: route detail preset export Markdown now treats string duplicate preset IDs as single IDs, filters non-string duplicate ID list entries, and renders malformed duplicate ID payloads as empty provenance.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -138,4 +139,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add preset export Markdown malformed duplicate preset ID coverage.
+Add preset export Markdown malformed requested preset ID coverage.

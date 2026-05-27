@@ -10406,6 +10406,15 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         selected_preset_count = validation.get("selected_preset_count", 0)
         expected_route_count = validation.get("expected_route_count", 0)
         expected_example_count = validation.get("expected_example_count", 0)
+        raw_duplicate_preset_ids = validation.get("duplicate_preset_ids") or []
+        if isinstance(raw_duplicate_preset_ids, str):
+            duplicate_preset_ids = [raw_duplicate_preset_ids]
+        elif isinstance(raw_duplicate_preset_ids, list):
+            duplicate_preset_ids = [
+                preset_id for preset_id in raw_duplicate_preset_ids if isinstance(preset_id, str)
+            ]
+        else:
+            duplicate_preset_ids = []
         lines.extend(
             [
                 "## Preset Validation",
@@ -10417,7 +10426,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
                 f"- Selected preset count consistency：{selected_preset_count} / summary {summary_preset_count} / matches summary {selected_preset_count == summary_preset_count}",
                 f"- Expected route / example：{validation.get('expected_route_count', 0)} / {validation.get('expected_example_count', 0)}",
                 f"- Expected route/example consistency：route {expected_route_count} / summary {summary_route_count} / matches summary {expected_route_count == summary_route_count}; example {expected_example_count} / summary {summary_example_count} / matches summary {expected_example_count == summary_example_count}",
-                f"- Duplicate preset IDs：{', '.join(validation.get('duplicate_preset_ids') or []) or '无'}",
+                f"- Duplicate preset IDs：{', '.join(duplicate_preset_ids) or '无'}",
                 "",
             ]
         )
