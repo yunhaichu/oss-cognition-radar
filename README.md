@@ -127,6 +127,12 @@ python3 radar.py \
   --json-output reports/archive-auto-calibration.json
 ```
 
+运行本地回归测试：
+
+```bash
+python3 -m unittest discover -s tests
+```
+
 归档查询默认输出到终端；如需保存 Markdown：
 
 ```bash
