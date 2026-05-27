@@ -603,6 +603,60 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_renders_string_validation_preset_status_message_as_single_message(self):
+        payload = preset_exports_payload({})
+        payload["preset_validation"]["preset_statuses"] = [
+            {
+                "preset_id": "batch_repo",
+                "status": "ready",
+                "matched_move_count": 1,
+                "matched_route_count": 2,
+                "matched_repository_count": 3,
+                "expected_example_count": 4,
+                "messages": "single message",
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn(
+            "- `batch_repo` ready\uff1amoves 1\uff1broutes 2\uff1brepos 3\uff1bexamples 4\uff1bsingle message",
+            lines,
+        )
+        self.assertNotIn(
+            "- `batch_repo` ready\uff1amoves 1\uff1broutes 2\uff1brepos 3\uff1bexamples 4\uff1bs; i; n; g; l; e;  ; m; e; s; s; a; g; e",
+            lines,
+        )
+
+    def test_preset_export_markdown_filters_malformed_validation_preset_status_messages(self):
+        payload = preset_exports_payload({})
+        payload["preset_validation"]["preset_statuses"] = [
+            {
+                "preset_id": "batch_repo",
+                "status": "ready",
+                "matched_move_count": 1,
+                "matched_route_count": 2,
+                "matched_repository_count": 3,
+                "expected_example_count": 4,
+                "messages": ["first match", {"bad": "message"}, None, ["bad"], "second match"],
+            },
+            {
+                "preset_id": "batch_second",
+                "status": "blocked",
+                "messages": {"bad": "message"},
+            },
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn(
+            "- `batch_repo` ready\uff1amoves 1\uff1broutes 2\uff1brepos 3\uff1bexamples 4\uff1bfirst match; second match",
+            lines,
+        )
+        self.assertIn("- `batch_second` blocked\uff1amoves 0\uff1broutes 0\uff1brepos 0\uff1bexamples 0\uff1b", lines)
+        self.assertFalse(any("{'bad': 'message'}" in line for line in lines))
+        self.assertFalse(any("['bad']" in line for line in lines))
+
     def test_preset_export_markdown_truncates_validation_preset_statuses_after_twelve(self):
         payload = preset_exports_payload({})
         payload["preset_validation"]["preset_statuses"] = [

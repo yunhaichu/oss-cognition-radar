@@ -10426,7 +10426,13 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
             raw_preset_statuses = []
         preset_statuses = [status for status in raw_preset_statuses if isinstance(status, dict)]
         for status in preset_statuses[:12]:
-            messages = "; ".join(status.get("messages") or [])
+            raw_messages = status.get("messages") or []
+            if isinstance(raw_messages, str):
+                messages = raw_messages
+            elif isinstance(raw_messages, list):
+                messages = "; ".join(message for message in raw_messages if isinstance(message, str))
+            else:
+                messages = ""
             lines.append(
                 f"- `{status.get('preset_id') or ''}` {status.get('status') or 'unknown'}："
                 f"moves {status.get('matched_move_count', 0)}；routes {status.get('matched_route_count', 0)}；"
