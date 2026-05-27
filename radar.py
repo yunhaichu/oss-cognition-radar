@@ -278,6 +278,16 @@ def parse_args() -> argparse.Namespace:
         choices=["heuristic", "auto"],
         help="Archive route detail mode: filter route examples by binding confidence source.",
     )
+    parser.add_argument(
+        "--profile-path-preset",
+        metavar="PATH",
+        help="Archive route detail mode: load a route detail selector preset bundle JSON.",
+    )
+    parser.add_argument(
+        "--profile-path-preset-id",
+        action="append",
+        help="Archive route detail mode: run one preset ID from --profile-path-preset. Repeat to run several.",
+    )
     parser.add_argument("--archive-output", help="Archive mode: optional Markdown output path. Defaults to stdout.")
     return parser.parse_args()
 
@@ -6111,6 +6121,76 @@ def archive_route_detail_payload(conn: sqlite3.Connection, args: argparse.Namesp
     }
 
 
+def route_detail_selector_preset_repo_count(route: dict, repo: str) -> int:
+    for item in route.get("repository_options") or []:
+        if item.get("value") == repo:
+            return item.get("count") or 1
+    return 1
+
+
+def build_route_detail_selector_preset_bundle(
+    move_payloads: list[dict],
+    args: argparse.Namespace,
+    *,
+    generated_at: str | None = None,
+) -> dict:
+    presets = []
+    for move in move_payloads:
+        move_key = move.get("move_key") or ""
+        for route in move.get("routes") or []:
+            route_id = route.get("route_id") or route.get("route_key") or ""
+            route_repositories = route.get("repositories") or [item.get("value") for item in route.get("repository_options") or []]
+            for repo in sorted({item for item in route_repositories if item}):
+                preset_id = stable_id("route_preset", move_key, route_id, repo)
+                selectors = {
+                    "profile_path_move": move_key,
+                    "profile_path_route": route_id,
+                    "profile_path_repo": repo,
+                }
+                if getattr(args, "profile_path_confidence_source", None):
+                    selectors["profile_path_confidence_source"] = args.profile_path_confidence_source
+                if getattr(args, "archive_signal_group", None):
+                    selectors["archive_signal_group"] = args.archive_signal_group
+                if getattr(args, "archive_track", None):
+                    selectors["archive_track"] = args.archive_track
+                if getattr(args, "min_track_score", 0.0):
+                    selectors["min_track_score"] = args.min_track_score
+                presets.append(
+                    {
+                        "preset_id": preset_id,
+                        "label": f"{move.get('design_move') or move.get('design_move_category') or 'Design move'} / {route.get('route_label') or 'route'} / {repo}",
+                        "design_move": move.get("design_move"),
+                        "design_move_category": move.get("design_move_category"),
+                        "route_label": route.get("route_label"),
+                        "claim_gap_layer": route.get("claim_gap_layer"),
+                        "evidence_type": route.get("evidence_type"),
+                        "repo_full_name": repo,
+                        "selectors": selectors,
+                        "summary": {
+                            "example_count": route_detail_selector_preset_repo_count(route, repo),
+                            "route_example_count": route.get("example_count", 0),
+                            "route_repository_count": route.get("repository_count", 0),
+                            "route_average_confidence": route.get("average_confidence"),
+                        },
+                    }
+                )
+    presets.sort(
+        key=lambda item: (
+            -(item.get("summary") or {}).get("example_count", 0),
+            item.get("design_move") or "",
+            item.get("route_label") or "",
+            item.get("repo_full_name") or "",
+        )
+    )
+    return {
+        "schema_version": "route_detail_selector_preset_bundle_v1",
+        "generated_at": generated_at or utc_now().isoformat(),
+        "filters": archive_route_detail_filters_payload(args),
+        "preset_count": len(presets),
+        "presets": presets,
+    }
+
+
 def build_route_detail_selectors_payload(
     comparisons: list[dict],
     args: argparse.Namespace,
@@ -6247,10 +6327,16 @@ def build_route_detail_selectors_payload(
             item.get("design_move") or "",
         )
     )
+    generated_at_value = generated_at or utc_now().isoformat()
+    preset_bundle = build_route_detail_selector_preset_bundle(
+        move_payloads,
+        args,
+        generated_at=generated_at_value,
+    )
     return {
         "schema_version": "route_detail_selectors_v1",
         "mode": "archive_route_selectors",
-        "generated_at": generated_at or utc_now().isoformat(),
+        "generated_at": generated_at_value,
         "db": args.db,
         "filters": archive_route_detail_filters_payload(args),
         "scope": "latest_deep_dossiers",
@@ -6260,7 +6346,9 @@ def build_route_detail_selectors_payload(
             "example_count": example_count,
             "repository_count": len(repository_names),
             "unique_evidence_count": len(evidence_refs),
+            "preset_count": preset_bundle.get("preset_count", 0),
         },
+        "preset_bundle": preset_bundle,
         "moves": move_payloads,
     }
 
@@ -6268,6 +6356,110 @@ def build_route_detail_selectors_payload(
 def archive_route_selectors_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
     comparisons = archive_route_detail_comparisons(conn, args)
     return build_route_detail_selectors_payload(comparisons, args)
+
+
+def read_json_payload(path: str) -> dict:
+    try:
+        return json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise SystemExit(f"Preset file not found: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Preset file is not valid JSON: {path}") from exc
+
+
+def route_detail_preset_bundle_from_payload(payload: dict, args: argparse.Namespace) -> dict:
+    if payload.get("schema_version") == "route_detail_selector_preset_bundle_v1":
+        return payload
+    if isinstance(payload.get("preset_bundle"), dict):
+        return payload["preset_bundle"]
+    if payload.get("schema_version") == "route_detail_selectors_v1":
+        return build_route_detail_selector_preset_bundle(payload.get("moves") or [], args, generated_at=payload.get("generated_at"))
+    if isinstance(payload.get("presets"), list):
+        return {
+            "schema_version": payload.get("schema_version") or "route_detail_selector_preset_bundle_v1",
+            "generated_at": payload.get("generated_at"),
+            "filters": payload.get("filters") or {},
+            "preset_count": len(payload.get("presets") or []),
+            "presets": payload.get("presets") or [],
+        }
+    raise SystemExit("Preset JSON must contain route_detail_selector_preset_bundle_v1 or route_detail_selectors_v1.")
+
+
+def selected_route_detail_presets(bundle: dict, args: argparse.Namespace) -> list[dict]:
+    presets = bundle.get("presets") or []
+    selected_ids = set(args.profile_path_preset_id or [])
+    if not selected_ids:
+        return presets
+    selected = [preset for preset in presets if preset.get("preset_id") in selected_ids]
+    found_ids = {preset.get("preset_id") for preset in selected}
+    missing = sorted(selected_ids - found_ids)
+    if missing:
+        raise SystemExit(f"Preset ID not found: {', '.join(missing)}")
+    return selected
+
+
+def route_detail_args_for_preset(args: argparse.Namespace, preset: dict) -> argparse.Namespace:
+    preset_args = argparse.Namespace(**vars(args))
+    selectors = preset.get("selectors") or {}
+    mapping = {
+        "profile_path_move": "profile_path_move",
+        "profile_path_route": "profile_path_route",
+        "profile_path_repo": "profile_path_repo",
+        "profile_path_confidence_source": "profile_path_confidence_source",
+        "archive_signal_group": "archive_signal_group",
+        "archive_track": "archive_track",
+        "min_track_score": "min_track_score",
+        "limit": "limit",
+    }
+    for selector_key, attr in mapping.items():
+        value = selectors.get(selector_key)
+        if value is not None and value != "":
+            setattr(preset_args, attr, value)
+    return preset_args
+
+
+def archive_route_detail_preset_exports_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
+    source_payload = read_json_payload(args.profile_path_preset)
+    bundle = route_detail_preset_bundle_from_payload(source_payload, args)
+    presets = selected_route_detail_presets(bundle, args)
+    exports = []
+    repository_names = set()
+    evidence_refs = set()
+    for preset in presets:
+        detail_args = route_detail_args_for_preset(args, preset)
+        route_detail = archive_route_detail_payload(conn, detail_args)
+        for route in route_detail.get("routes") or []:
+            for repo in route.get("repositories") or []:
+                repository_names.add(repo)
+            for example in route.get("examples") or []:
+                evidence_ref = example.get("evidence_stable_id") or example.get("evidence_id")
+                if evidence_ref:
+                    evidence_refs.add(evidence_ref)
+        exports.append(
+            {
+                "preset": preset,
+                "route_detail": route_detail,
+            }
+        )
+    return {
+        "schema_version": "route_detail_preset_exports_v1",
+        "mode": "archive_route_detail_preset_exports",
+        "generated_at": utc_now().isoformat(),
+        "db": args.db,
+        "source_preset_path": args.profile_path_preset,
+        "source_bundle_schema": bundle.get("schema_version"),
+        "source_bundle_generated_at": bundle.get("generated_at"),
+        "requested_preset_ids": args.profile_path_preset_id or [],
+        "filters": archive_route_detail_filters_payload(args),
+        "summary": {
+            "preset_count": len(exports),
+            "route_count": sum((export.get("route_detail") or {}).get("summary", {}).get("route_count", 0) for export in exports),
+            "example_count": sum((export.get("route_detail") or {}).get("summary", {}).get("example_count", 0) for export in exports),
+            "repository_count": len(repository_names),
+            "unique_evidence_count": len(evidence_refs),
+        },
+        "exports": exports,
+    }
 
 
 def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
@@ -9143,6 +9335,58 @@ def render_archive_route_detail(payload: dict) -> str:
     return "\n".join(lines)
 
 
+def render_archive_route_detail_preset_exports(payload: dict) -> str:
+    summary = payload.get("summary") or {}
+    lines = [
+        "# OSS Cognition Route Detail Preset Exports",
+        "",
+        f"- Schema：{payload.get('schema_version') or 'route_detail_preset_exports_v1'}",
+        f"- 数据库：{payload.get('db')}",
+        f"- 生成时间：{payload.get('generated_at')}",
+        f"- Preset source：{payload.get('source_preset_path') or '无'}",
+        f"- Source schema：{payload.get('source_bundle_schema') or 'unknown'}",
+        f"- Preset / route / example：{summary.get('preset_count', 0)} / {summary.get('route_count', 0)} / {summary.get('example_count', 0)}",
+        f"- Repository / unique evidence：{summary.get('repository_count', 0)} / {summary.get('unique_evidence_count', 0)}",
+        "",
+    ]
+    if not payload.get("exports"):
+        lines.extend(["当前 preset 范围没有可导出的 route detail。", ""])
+        return "\n".join(lines)
+
+    for index, export in enumerate(payload.get("exports") or [], 1):
+        preset = export.get("preset") or {}
+        selectors = preset.get("selectors") or {}
+        route_detail = export.get("route_detail") or {}
+        route_summary = route_detail.get("summary") or {}
+        lines.extend(
+            [
+                f"## {index}. {preset.get('label') or preset.get('preset_id') or 'Route detail preset'}",
+                "",
+                f"- Preset ID：`{preset.get('preset_id') or ''}`",
+                f"- Move / route / repo：`{selectors.get('profile_path_move') or ''}` / `{selectors.get('profile_path_route') or ''}` / `{selectors.get('profile_path_repo') or ''}`",
+                f"- Route / example：{route_summary.get('route_count', 0)} / {route_summary.get('example_count', 0)}",
+                f"- Repository / unique evidence：{route_summary.get('repository_count', 0)} / {route_summary.get('unique_evidence_count', 0)}",
+                "",
+            ]
+        )
+        for route in route_detail.get("routes") or []:
+            evidence_ids = [
+                example.get("evidence_stable_id") or example.get("evidence_id")
+                for example in route.get("examples") or []
+                if example.get("evidence_stable_id") or example.get("evidence_id")
+            ]
+            lines.extend(
+                [
+                    f"- `{route.get('route_id') or ''}` {route.get('design_move') or 'Design move'} / {route.get('route_label') or 'route'}",
+                    f"  - Repositories：{', '.join(route.get('repositories') or []) or '无'}",
+                    f"  - Paths / high / avg：{route.get('path_count', 0)} / {route.get('high_confidence_paths', 0)} / {route.get('average_confidence') if route.get('average_confidence') is not None else 'unknown'}",
+                    f"  - Evidence stable IDs：{', '.join(evidence_ids[:6]) or '无'}",
+                ]
+            )
+        lines.append("")
+    return "\n".join(lines)
+
+
 def render_archive_route_selectors(payload: dict) -> str:
     if payload.get("message"):
         return "\n".join(["# OSS Cognition Route Detail Selectors", "", payload["message"], ""])
@@ -9164,6 +9408,7 @@ def render_archive_route_selectors(payload: dict) -> str:
         f"- 仓库过滤：{filters.get('profile_path_repo') or '无'}",
         f"- Move / route / example：{summary.get('move_count', 0)} / {summary.get('route_count', 0)} / {summary.get('example_count', 0)}",
         f"- Repository / unique evidence：{summary.get('repository_count', 0)} / {summary.get('unique_evidence_count', 0)}",
+        f"- Presets：{summary.get('preset_count', 0)}",
         "",
     ]
     if not payload.get("moves"):
@@ -9201,6 +9446,22 @@ def render_archive_route_selectors(payload: dict) -> str:
                     f"  - Signal groups：{count_items_text(route.get('signal_groups') or [])}",
                 ]
             )
+        lines.append("")
+    preset_bundle = payload.get("preset_bundle") or {}
+    presets = preset_bundle.get("presets") or []
+    if presets:
+        lines.extend(["## Preset Bundle", ""])
+        lines.append(f"- Schema：{preset_bundle.get('schema_version') or 'route_detail_selector_preset_bundle_v1'}")
+        lines.append(f"- Preset count：{preset_bundle.get('preset_count', len(presets))}")
+        lines.append("")
+        for preset in presets[:12]:
+            selectors = preset.get("selectors") or {}
+            lines.append(
+                f"- `{preset.get('preset_id') or ''}` {preset.get('label') or ''} "
+                f"move=`{selectors.get('profile_path_move') or ''}` route=`{selectors.get('profile_path_route') or ''}` repo=`{selectors.get('profile_path_repo') or ''}`"
+            )
+        if len(presets) > 12:
+            lines.append(f"- ... {len(presets) - 12} more presets in JSON")
         lines.append("")
     return "\n".join(lines)
 
@@ -9519,6 +9780,10 @@ def handle_archive(args: argparse.Namespace) -> None:
     signal_group = getattr(args, "archive_signal_group", None)
     if signal_group and not (args.archive_patterns or args.archive_dashboard is not None or args.archive_route_detail or args.archive_route_selectors):
         raise SystemExit("--archive-signal-group is only supported with --archive-patterns, --archive-dashboard, --archive-route-detail, or --archive-route-selectors.")
+    if args.profile_path_preset and not args.archive_route_detail:
+        raise SystemExit("--profile-path-preset is only supported with --archive-route-detail.")
+    if args.profile_path_preset_id and not args.profile_path_preset:
+        raise SystemExit("--profile-path-preset-id requires --profile-path-preset.")
     profile_path_filters = [
         args.profile_path_move,
         args.profile_path_route,
@@ -9552,8 +9817,12 @@ def handle_archive(args: argparse.Namespace) -> None:
                 payload = apply_archive_auto_calibration(conn, args)
                 markdown = render_archive_auto_calibrate(payload)
             elif args.archive_route_detail:
-                payload = archive_route_detail_payload(conn, args)
-                markdown = render_archive_route_detail(payload)
+                if args.profile_path_preset:
+                    payload = archive_route_detail_preset_exports_payload(conn, args)
+                    markdown = render_archive_route_detail_preset_exports(payload)
+                else:
+                    payload = archive_route_detail_payload(conn, args)
+                    markdown = render_archive_route_detail(payload)
             elif args.archive_route_selectors:
                 payload = archive_route_selectors_payload(conn, args)
                 markdown = render_archive_route_selectors(payload)
