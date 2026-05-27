@@ -10118,6 +10118,12 @@ def count_value_text(value) -> str:
     return str(value)
 
 
+def count_or_default(value, default: int | float = 0) -> int | float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    return value
+
+
 def string_value_text(value, fallback: str = "unknown") -> str:
     return value if isinstance(value, str) and value else fallback
 
@@ -10444,9 +10450,16 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         "",
     ]
     if validation:
-        selected_preset_count = validation.get("selected_preset_count", 0)
-        expected_route_count = validation.get("expected_route_count", 0)
-        expected_example_count = validation.get("expected_example_count", 0)
+        validation_schema_text = string_value_text(
+            validation.get("schema_version"), fallback="route_detail_preset_validation_v1"
+        )
+        validation_status_text = string_value_text(validation.get("status"), fallback="unknown")
+        source_bundle_preset_count = count_or_default(validation.get("source_bundle_preset_count", 0))
+        selected_preset_count = count_or_default(validation.get("selected_preset_count", 0))
+        ready_preset_count = count_or_default(validation.get("ready_preset_count", 0))
+        unmatched_preset_count = count_or_default(validation.get("unmatched_preset_count", 0))
+        expected_route_count = count_or_default(validation.get("expected_route_count", 0))
+        expected_example_count = count_or_default(validation.get("expected_example_count", 0))
         raw_duplicate_preset_ids = validation.get("duplicate_preset_ids") or []
         if isinstance(raw_duplicate_preset_ids, str):
             duplicate_preset_ids = [raw_duplicate_preset_ids]
@@ -10460,12 +10473,12 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
             [
                 "## Preset Validation",
                 "",
-                f"- Schema：{validation.get('schema_version') or 'route_detail_preset_validation_v1'}",
-                f"- Status：{validation.get('status') or 'unknown'}",
-                f"- Source presets：{validation.get('source_bundle_preset_count', 0)}",
-                f"- Selected / ready / unmatched：{validation.get('selected_preset_count', 0)} / {validation.get('ready_preset_count', 0)} / {validation.get('unmatched_preset_count', 0)}",
+                f"- Schema：{validation_schema_text}",
+                f"- Status：{validation_status_text}",
+                f"- Source presets：{source_bundle_preset_count}",
+                f"- Selected / ready / unmatched：{selected_preset_count} / {ready_preset_count} / {unmatched_preset_count}",
                 f"- Selected preset count consistency：{selected_preset_count} / summary {summary_preset_count} / matches summary {selected_preset_count == summary_preset_count}",
-                f"- Expected route / example：{validation.get('expected_route_count', 0)} / {validation.get('expected_example_count', 0)}",
+                f"- Expected route / example：{expected_route_count} / {expected_example_count}",
                 f"- Expected route/example consistency：route {expected_route_count} / summary {summary_route_count} / matches summary {expected_route_count == summary_route_count}; example {expected_example_count} / summary {summary_example_count} / matches summary {expected_example_count == summary_example_count}",
                 f"- Duplicate preset IDs：{', '.join(duplicate_preset_ids) or '无'}",
                 "",

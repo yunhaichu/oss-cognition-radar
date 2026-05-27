@@ -426,6 +426,37 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertFalse(any("{'bad': 'time'}" in line for line in lines))
         self.assertFalse(any("['ready']" in line for line in lines))
 
+    def test_preset_export_markdown_renders_malformed_validation_summary_identity_as_fallbacks(self):
+        payload = preset_exports_payload({})
+        payload["preset_validation"]["schema_version"] = {"bad": "schema"}
+        payload["preset_validation"]["status"] = ["ready"]
+        payload["preset_validation"]["source_bundle_preset_count"] = {"bad": "count"}
+        payload["preset_validation"]["selected_preset_count"] = ["bad"]
+        payload["preset_validation"]["ready_preset_count"] = {"bad": "ready"}
+        payload["preset_validation"]["unmatched_preset_count"] = None
+        payload["preset_validation"]["expected_route_count"] = {"bad": "route"}
+        payload["preset_validation"]["expected_example_count"] = ["example"]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Schema\uff1aroute_detail_preset_validation_v1", lines)
+        self.assertIn("- Status\uff1aunknown", lines)
+        self.assertIn("- Source presets\uff1a0", lines)
+        self.assertIn("- Selected / ready / unmatched\uff1a0 / 0 / 0", lines)
+        self.assertIn("- Selected preset count consistency\uff1a0 / summary 0 / matches summary True", lines)
+        self.assertIn("- Expected route / example\uff1a0 / 0", lines)
+        self.assertIn(
+            "- Expected route/example consistency\uff1aroute 0 / summary 0 / matches summary True; example 0 / summary 0 / matches summary True",
+            lines,
+        )
+        self.assertFalse(any("{'bad': 'schema'}" in line for line in lines))
+        self.assertFalse(any("['ready']" in line for line in lines))
+        self.assertFalse(any("{'bad': 'count'}" in line for line in lines))
+        self.assertFalse(any("['bad']" in line for line in lines))
+        self.assertFalse(any("{'bad': 'ready'}" in line for line in lines))
+        self.assertFalse(any("{'bad': 'route'}" in line for line in lines))
+        self.assertFalse(any("['example']" in line for line in lines))
+
     def test_preset_export_markdown_filters_malformed_source_selector_filter_entries(self):
         payload = preset_exports_payload({})
         payload["source_selector_filters"] = {
