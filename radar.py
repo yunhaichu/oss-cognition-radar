@@ -10118,6 +10118,14 @@ def count_value_text(value) -> str:
     return str(value)
 
 
+def string_value_text(value, fallback: str = "unknown") -> str:
+    return value if isinstance(value, str) and value else fallback
+
+
+def bool_value_text(value) -> str:
+    return str(value) if isinstance(value, bool) else "unknown"
+
+
 def confidence_signal_breakdown_text(confidence: dict | None, group_limit: int = 5, signal_limit: int = 3) -> str:
     if not confidence:
         return "无"
@@ -10413,7 +10421,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         f"- Source fixture status filter：{payload.get('source_fixture_status_filter') or '无'}",
         f"- Source selector fixture filter：{source_filter_value}",
         f"- Source selector filters：{source_filters_text}",
-        f"- Source fixture validation：{payload.get('source_fixture_validation_status') or 'unknown'} / matches expected {payload.get('source_fixture_validation_matches_expected') if payload.get('source_fixture_validation_matches_expected') is not None else 'unknown'}",
+        f"- Source fixture validation：{string_value_text(payload.get('source_fixture_validation_status'))} / matches expected {bool_value_text(payload.get('source_fixture_validation_matches_expected'))}",
         f"- Source fixture count：{count_value_text(payload.get('source_fixture_count'))} / unfiltered {count_value_text(payload.get('source_unfiltered_fixture_count'))}",
         f"- Source fixture matching expected：{count_value_text(payload.get('source_fixture_matching_expected_count'))} / unfiltered {count_value_text(payload.get('source_fixture_unfiltered_matching_expected_count'))}",
         f"- Source fixture status counts：{source_status_text}",

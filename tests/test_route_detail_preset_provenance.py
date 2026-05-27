@@ -1516,6 +1516,30 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertIn("- Source selector fixture filter\uff1aready", lines)
         self.assertIn("- Source selector filters\uff1a\u65e0", lines)
 
+    def test_preset_export_markdown_preserves_source_fixture_validation_status_and_match_flag(self):
+        markdown = radar.render_archive_route_detail_preset_exports(
+            preset_exports_payload(
+                {
+                    "validation_status": "ready",
+                    "validation_matches_expected": False,
+                }
+            )
+        )
+        lines = markdown.splitlines()
+
+        self.assertIn("- Source fixture validation\uff1aready / matches expected False", lines)
+
+    def test_preset_export_markdown_renders_malformed_source_fixture_validation_as_unknown(self):
+        payload = preset_exports_payload({})
+        payload["source_fixture_validation_status"] = {"bad": "status"}
+        payload["source_fixture_validation_matches_expected"] = ["bad"]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Source fixture validation\uff1aunknown / matches expected unknown", lines)
+        self.assertFalse(any("{'bad': 'status'}" in line for line in lines))
+        self.assertFalse(any("['bad']" in line for line in lines))
+
     def test_preset_export_markdown_renders_missing_fixture_counts_as_unknown(self):
         markdown = radar.render_archive_route_detail_preset_exports(preset_exports_payload({}))
         lines = markdown.splitlines()
