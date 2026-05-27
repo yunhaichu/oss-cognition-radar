@@ -690,6 +690,57 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             }
         ])
 
+    def test_dashboard_single_fixture_preset_selectors_override_conflicting_source_path_filters(self):
+        source_filters = {
+            "fixture_validation_status": "ready",
+            "confidence_source": "auto",
+            "signal_group": "time_series",
+            "track": "protocol",
+            "min_score": 69,
+            "path_move": "dashboard_move::Should not win",
+            "path_route": "dashboard_route::should_not_win",
+            "path_repo": "dashboard/repo",
+        }
+        source_payload = dashboard_ready_fixture_bundle(source_filters=source_filters)
+        selector_payload = fixture_batch_selector_payload(source_filters={"validation_fixture_status": "ready"})
+        detail_calls = []
+
+        def archive_detail_stub(conn, args):
+            detail_calls.append(
+                {
+                    "move": args.profile_path_move,
+                    "route": args.profile_path_route,
+                    "repo": args.profile_path_repo,
+                    "confidence_source": args.profile_path_confidence_source,
+                    "signal_group": args.archive_signal_group,
+                    "track": args.archive_track,
+                    "min_track_score": args.min_track_score,
+                }
+            )
+            return fake_route_detail_payload(args)
+
+        with mock.patch.object(radar, "read_json_payload", return_value=source_payload), \
+            mock.patch.object(radar, "archive_route_selectors_payload", return_value=selector_payload), \
+            mock.patch.object(radar, "archive_route_detail_payload", side_effect=archive_detail_stub):
+            payload = radar.archive_route_detail_preset_exports_payload(
+                None,
+                preset_export_args(fixture_id=None, preset_ids=["dashboard_ready"]),
+            )
+
+        self.assertEqual(payload["source_selector_filters"], source_filters)
+        self.assertEqual(payload["summary"]["preset_count"], 1)
+        self.assertEqual(detail_calls, [
+            {
+                "move": "boundary_design::Architecture boundary",
+                "route": "validation::tests",
+                "repo": "owner/repo",
+                "confidence_source": "auto",
+                "signal_group": "time_series",
+                "track": "protocol",
+                "min_track_score": 69,
+            }
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()
