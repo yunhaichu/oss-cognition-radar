@@ -10542,22 +10542,22 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         derived_repository_count = len(export_repository_names)
         derived_evidence_count = len(export_evidence_refs)
         summary_route_count = (
-            route_summary.get("route_count")
+            count_or_default(route_summary.get("route_count"), default=derived_route_count)
             if route_summary.get("route_count") is not None
             else derived_route_count
         )
         summary_example_count = (
-            route_summary.get("example_count")
+            count_or_default(route_summary.get("example_count"), default=derived_example_count)
             if route_summary.get("example_count") is not None
             else derived_example_count
         )
         summary_repository_count = (
-            route_summary.get("repository_count")
+            count_or_default(route_summary.get("repository_count"), default=derived_repository_count)
             if route_summary.get("repository_count") is not None
             else derived_repository_count
         )
         summary_evidence_count = (
-            route_summary.get("unique_evidence_count")
+            count_or_default(route_summary.get("unique_evidence_count"), default=derived_evidence_count)
             if route_summary.get("unique_evidence_count") is not None
             else derived_evidence_count
         )

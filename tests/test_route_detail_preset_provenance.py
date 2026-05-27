@@ -1520,6 +1520,52 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_uses_derived_fallbacks_for_malformed_export_summary_counts(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "summary": {
+                        "route_count": {"bad": "route"},
+                        "example_count": ["example"],
+                        "repository_count": {"bad": "repo"},
+                        "unique_evidence_count": ["evidence"],
+                    },
+                    "routes": [
+                        {
+                            "repositories": ["owner/repo", "owner/second"],
+                            "examples": [
+                                {"evidence_stable_id": "ev_repo"},
+                                {"evidence_id": "ev_second"},
+                            ],
+                        },
+                        {
+                            "repositories": ["owner/repo"],
+                            "examples": [{"evidence_stable_id": "ev_repo"}],
+                        },
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Route / example\uff1a2 / 3", lines)
+        self.assertIn("- Repository / unique evidence\uff1a2 / 2", lines)
+        self.assertIn(
+            "- Route/example count consistency\uff1aroute 2 / summary 2 / matches summary True; example 3 / summary 3 / matches summary True",
+            lines,
+        )
+        self.assertIn(
+            "- Repository/evidence count consistency\uff1arepository 2 / summary 2 / matches summary True; evidence 2 / summary 2 / matches summary True",
+            lines,
+        )
+        self.assertFalse(any("{'bad': 'route'}" in line for line in lines))
+        self.assertFalse(any("['example']" in line for line in lines))
+        self.assertFalse(any("{'bad': 'repo'}" in line for line in lines))
+        self.assertFalse(any("['evidence']" in line for line in lines))
+
     def test_preset_export_markdown_uses_top_level_summary_count_fallbacks_when_counts_missing(self):
         payload = preset_exports_payload({})
         payload["summary"] = {}
