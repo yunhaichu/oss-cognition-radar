@@ -361,6 +361,21 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
 
         self.assertIn("- Requested preset IDs\uff1abatch_repo, batch_second", lines)
 
+    def test_preset_export_markdown_renders_selected_preset_count_consistency(self):
+        payload = preset_exports_payload({"presets": [preset("batch_repo"), preset("batch_second")]})
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Selected preset count consistency\uff1a2 / summary 2 / matches summary True", lines)
+
+    def test_preset_export_markdown_flags_selected_preset_count_mismatch(self):
+        payload = preset_exports_payload({"presets": [preset("batch_repo"), preset("batch_second")]})
+        payload["summary"]["preset_count"] = 1
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Selected preset count consistency\uff1a2 / summary 1 / matches summary False", lines)
+
     def test_preset_export_markdown_uses_source_fixture_status_fallback_when_filters_empty(self):
         markdown = radar.render_archive_route_detail_preset_exports(
             preset_exports_payload({"source_fixture_status_filter": "ready"})

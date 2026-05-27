@@ -10363,6 +10363,8 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         "",
     ]
     if validation:
+        summary_preset_count = summary.get("preset_count", 0)
+        selected_preset_count = validation.get("selected_preset_count", 0)
         lines.extend(
             [
                 "## Preset Validation",
@@ -10371,6 +10373,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
                 f"- Status：{validation.get('status') or 'unknown'}",
                 f"- Source presets：{validation.get('source_bundle_preset_count', 0)}",
                 f"- Selected / ready / unmatched：{validation.get('selected_preset_count', 0)} / {validation.get('ready_preset_count', 0)} / {validation.get('unmatched_preset_count', 0)}",
+                f"- Selected preset count consistency：{selected_preset_count} / summary {summary_preset_count} / matches summary {selected_preset_count == summary_preset_count}",
                 f"- Expected route / example：{validation.get('expected_route_count', 0)} / {validation.get('expected_example_count', 0)}",
                 f"- Duplicate preset IDs：{', '.join(validation.get('duplicate_preset_ids') or []) or '无'}",
                 "",
