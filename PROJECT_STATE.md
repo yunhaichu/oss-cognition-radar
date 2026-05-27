@@ -45,6 +45,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Profile path comparisons: `--archive-patterns` and `--archive-dashboard` now include cross-repository comparison views for profile explanation paths, grouping the same design move by evidence route across claim gap layer and evidence type.
 - Profile path comparison drilldown: the dashboard now has dedicated filters for comparison design move, evidence route, and repository, while still honoring search, confidence source, and signal group filters.
 - Route detail drilldown: dashboard profile path comparisons now retain full route examples and expose a detail panel with repository examples, confidence signals, route IDs, path/pattern IDs, and evidence stable IDs for the selected design move/route/repository scope.
+- Route detail export: dashboard route detail drilldown can export the current scope as `route_detail_drilldown_v1` JSON or Markdown, preserving filters, evidence routes, repository examples, path/pattern IDs, confidence signals, and evidence stable IDs.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -69,4 +70,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add JSON/Markdown export or permalink state serialization for route detail drilldown results.
+Add permalink state serialization for dashboard drilldown filters.

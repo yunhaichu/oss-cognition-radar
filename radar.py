@@ -6183,6 +6183,61 @@ def render_archive_dashboard(payload: dict) -> str:
       margin-bottom: 10px;
     }
 
+    .route-detail-actions {
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .route-detail-actions button {
+      min-width: 86px;
+      height: 32px;
+      padding: 0 10px;
+      font-size: 12px;
+    }
+
+    .route-detail-actions button:disabled {
+      color: var(--muted);
+      cursor: default;
+      opacity: 0.65;
+    }
+
+    .route-detail-export {
+      margin-bottom: 10px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfd;
+    }
+
+    .route-detail-export[hidden] {
+      display: none;
+    }
+
+    .route-detail-export-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .route-detail-export textarea {
+      width: 100%;
+      min-height: 180px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--ink);
+      background: #fff;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      resize: vertical;
+    }
+
     .route-detail-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -6565,6 +6620,7 @@ def render_archive_dashboard(payload: dict) -> str:
     const pathRouteDetailPanel = document.getElementById("pathRouteDetailPanel");
     const patternsPanel = document.getElementById("patternsPanel");
     const githubLink = document.getElementById("githubLink");
+    let routeDetailExportUrl = null;
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -7383,19 +7439,182 @@ def render_archive_dashboard(payload: dict) -> str:
       });
     }
 
-    function renderPathRouteDetailPanel() {
-      const drilldownActive = state.pathMove !== "all" || state.pathRoute !== "all" || state.pathRepo !== "all";
-      if (!drilldownActive || !repositoryCognitionPathComparisons.length) {
-        pathRouteDetailPanel.innerHTML = "";
-        return;
-      }
-      const routeRows = filteredPathComparisons().flatMap((comparison) =>
+    function routeDetailRows() {
+      return filteredPathComparisons().flatMap((comparison) =>
         visibleRoutesForComparison(comparison).map((route) => ({
           comparison,
           route,
           examples: routeExamplesForDrilldown(route),
         }))
       );
+    }
+
+    function selectedOptionText(select) {
+      return select.selectedOptions?.[0]?.textContent || "All";
+    }
+
+    function routeDetailExportPayload() {
+      const rows = routeDetailRows();
+      const routePayloads = rows.map(({ comparison, route, examples }) => {
+        const scopedRepositories = Array.from(new Set(examples.map((example) => example.repo_full_name).filter(Boolean))).sort();
+        return {
+          comparison_id: comparison.comparison_id,
+          design_move_category: comparison.design_move_category,
+          design_move: comparison.design_move,
+          cognition_move: comparison.cognition_move,
+          transfer_rule: comparison.transfer_rule,
+          comparison_confidence: comparison.confidence,
+          comparison_score: comparison.score,
+          route_id: route.route_id || pathComparisonRouteKey(route),
+          route_label: pathComparisonRouteLabel(route),
+          claim_gap_layer: route.claim_gap_layer,
+          evidence_type: route.evidence_type,
+          repository_count: scopedRepositories.length || route.repository_count || 0,
+          path_count: examples.length || route.path_count || 0,
+          high_confidence_paths: examples.filter((example) => example.confidence === "high").length || route.high_confidence_paths || 0,
+          average_confidence: route.average_confidence,
+          confidence_sources: route.confidence_sources || [],
+          signal_groups: route.signal_groups || [],
+          repositories: scopedRepositories.length ? scopedRepositories : (route.repositories || []),
+          examples,
+        };
+      });
+      return {
+        schema_version: "route_detail_drilldown_v1",
+        generated_at: DATA.generated_at,
+        exported_at: new Date().toISOString(),
+        db: DATA.db || "",
+        filters: {
+          query: state.query,
+          track: state.track,
+          confidence_source: state.confidenceSource,
+          signal_group: state.signalGroup,
+          min_score: state.minScore,
+          path_move: state.pathMove,
+          path_move_label: selectedOptionText(pathMoveSelect),
+          path_route: state.pathRoute,
+          path_route_label: selectedOptionText(pathRouteSelect),
+          path_repo: state.pathRepo,
+          path_repo_label: selectedOptionText(pathRepoSelect),
+        },
+        summary: {
+          comparison_count: new Set(routePayloads.map((route) => route.comparison_id)).size,
+          route_count: routePayloads.length,
+          example_count: routePayloads.reduce((sum, route) => sum + (route.examples || []).length, 0),
+          repository_count: new Set(routePayloads.flatMap((route) => route.repositories || [])).size,
+        },
+        routes: routePayloads,
+      };
+    }
+
+    function routeDetailMarkdown(payload) {
+      const lines = [
+        "# Route Detail Drilldown",
+        "",
+        `- Schema: ${payload.schema_version}`,
+        `- Generated at: ${payload.generated_at || "unknown"}`,
+        `- Exported at: ${payload.exported_at}`,
+        `- Database: ${payload.db || "unknown"}`,
+        `- Filters: move=${payload.filters.path_move_label}; route=${payload.filters.path_route_label}; repo=${payload.filters.path_repo_label}; confidence=${payload.filters.confidence_source}; signal=${payload.filters.signal_group}`,
+        `- Summary: ${payload.summary.route_count} routes; ${payload.summary.example_count} examples; ${payload.summary.repository_count} repositories`,
+        "",
+      ];
+      payload.routes.forEach((route, index) => {
+        lines.push(
+          `## ${index + 1}. ${route.design_move || "Design move"} / ${route.route_label}`,
+          "",
+          `- Comparison ID: \\`${route.comparison_id || ""}\\``,
+          `- Route ID: \\`${route.route_id || ""}\\``,
+          `- Confidence: ${route.comparison_confidence || "unknown"} / ${route.comparison_score ?? 0}`,
+          `- Repositories / paths / high: ${route.repository_count} / ${route.path_count} / ${route.high_confidence_paths}`,
+          `- Average confidence: ${route.average_confidence ?? "unknown"}`,
+          `- Repositories: ${(route.repositories || []).join(", ") || "none"}`,
+          `- Signals: ${(route.signal_groups || []).map((item) => `${item.value} ${item.count}`).join(", ") || "none"}`,
+          "",
+          route.cognition_move || route.transfer_rule ? `${route.cognition_move || route.transfer_rule}` : "",
+          ""
+        );
+        (route.examples || []).forEach((example) => {
+          const evidenceRef = example.evidence_stable_id || example.evidence_id || "no-evidence-id";
+          lines.push(
+            `- ${example.repo_full_name || "repo"}: \\`${evidenceRef}\\``,
+            `  - Claim gap: ${example.claim_field || "claim"} -> ${example.claim_gap_layer_label || example.claim_gap_layer || "gap"}`,
+            `  - Evidence: ${example.evidence_kind || "Evidence"} / ${example.evidence_type || "general"} / ${example.evidence_title || "untitled"}`,
+            `  - Confidence: ${example.confidence || "unknown"} ${example.confidence_score ?? "unknown"} (${example.confidence_source || "unknown"})`,
+            `  - Path: ${example.path_id || ""}${example.pattern_id ? " / " + example.pattern_id : ""}`,
+            `  - Reason: ${compact(example.acquisition_reason || "", 260)}`,
+            ""
+          );
+        });
+      });
+      return lines.filter((line, index) => line || lines[index - 1] !== "").join("\\n");
+    }
+
+    function routeDetailFilename(extension) {
+      const slugPart = (value, fallback) => {
+        const slug = String(value || "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+          .slice(0, 52);
+        return slug || fallback;
+      };
+      const movePart = state.pathMove === "all"
+        ? "all-moves"
+        : slugPart(state.pathMove.split("::").pop(), "selected-move");
+      const routePart = state.pathRoute === "all"
+        ? "all-routes"
+        : slugPart(state.pathRoute, "selected-route");
+      const repoPart = state.pathRepo === "all"
+        ? "all-repos"
+        : slugPart(state.pathRepo, "selected-repo");
+      return `route-detail-${movePart}-${routePart}-${repoPart}.${extension}`;
+    }
+
+    function clearRouteDetailExportUrl() {
+      if (routeDetailExportUrl) {
+        URL.revokeObjectURL(routeDetailExportUrl);
+        routeDetailExportUrl = null;
+      }
+    }
+
+    function exportRouteDetail(format) {
+      const payload = routeDetailExportPayload();
+      const isMarkdown = format === "markdown";
+      const text = isMarkdown ? routeDetailMarkdown(payload) : JSON.stringify(payload, null, 2);
+      const filename = routeDetailFilename(isMarkdown ? "md" : "json");
+      const mimeType = isMarkdown ? "text/markdown;charset=utf-8" : "application/json;charset=utf-8";
+      const exportBlock = document.getElementById("routeDetailExportBlock");
+      if (!exportBlock) return;
+      clearRouteDetailExportUrl();
+      routeDetailExportUrl = URL.createObjectURL(new Blob([text], { type: mimeType }));
+      exportBlock.hidden = false;
+      exportBlock.innerHTML = `
+        <div class="route-detail-export-head">
+          <div class="section-title">${escapeHtml(isMarkdown ? "Markdown Export" : "JSON Export")}</div>
+          <a href="${escapeHtml(routeDetailExportUrl)}" download="${escapeHtml(filename)}">${escapeHtml(filename)}</a>
+        </div>
+        <textarea readonly spellcheck="false">${escapeHtml(text)}</textarea>
+      `;
+    }
+
+    function downloadRouteDetail(format) {
+      if (format === "markdown") {
+        exportRouteDetail("markdown");
+        return;
+      }
+      exportRouteDetail("json");
+    }
+
+    function renderPathRouteDetailPanel() {
+      const drilldownActive = state.pathMove !== "all" || state.pathRoute !== "all" || state.pathRepo !== "all";
+      if (!drilldownActive || !repositoryCognitionPathComparisons.length) {
+        clearRouteDetailExportUrl();
+        pathRouteDetailPanel.innerHTML = "";
+        return;
+      }
+      clearRouteDetailExportUrl();
+      const routeRows = routeDetailRows();
       const totalExamples = routeRows.reduce((sum, row) => sum + row.examples.length, 0);
       const cards = routeRows.map(({ comparison, route, examples }) => {
         const signalChips = (route.signal_groups || []).slice(0, 4).map((item) =>
@@ -7444,10 +7663,17 @@ def render_archive_dashboard(payload: dict) -> str:
       pathRouteDetailPanel.innerHTML = `
         <div class="route-detail-head">
           <div class="section-title">Route Drilldown Details</div>
-          <div class="count">${escapeHtml(routeRows.length)} routes / ${escapeHtml(totalExamples)} examples</div>
+          <div class="route-detail-actions">
+            <div class="count">${escapeHtml(routeRows.length)} routes / ${escapeHtml(totalExamples)} examples</div>
+            <button id="routeDetailJsonButton" type="button" ${routeRows.length ? "" : "disabled"}>JSON</button>
+            <button id="routeDetailMarkdownButton" type="button" ${routeRows.length ? "" : "disabled"}>Markdown</button>
+          </div>
         </div>
+        <div class="route-detail-export" id="routeDetailExportBlock" hidden></div>
         <div class="route-detail-grid">${cards || '<div class="empty">No matching route details.</div>'}</div>
       `;
+      document.getElementById("routeDetailJsonButton")?.addEventListener("click", () => downloadRouteDetail("json"));
+      document.getElementById("routeDetailMarkdownButton")?.addEventListener("click", () => downloadRouteDetail("markdown"));
     }
 
     function renderPatterns() {
