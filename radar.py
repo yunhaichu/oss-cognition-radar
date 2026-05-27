@@ -10557,6 +10557,8 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         if not isinstance(route_detail, dict):
             route_detail = {}
         route_summary = route_detail.get("summary") or {}
+        if not isinstance(route_summary, dict):
+            route_summary = {}
         routes = route_detail_routes_list(route_detail)
         preset_label_text = string_value_text(
             preset.get("label"), fallback=string_value_text(preset.get("preset_id"), fallback="Route detail preset")

@@ -1656,6 +1656,44 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_uses_derived_fallbacks_for_malformed_route_detail_summary_payload(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "summary": ["bad summary"],
+                    "routes": [
+                        {
+                            "repositories": ["owner/repo", "owner/second"],
+                            "examples": [
+                                {"evidence_stable_id": "ev_repo"},
+                                {"evidence_id": "ev_second"},
+                            ],
+                        },
+                        {
+                            "repositories": ["owner/repo"],
+                            "examples": [{"evidence_stable_id": "ev_repo"}],
+                        },
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Route / example\uff1a2 / 3", lines)
+        self.assertIn("- Repository / unique evidence\uff1a2 / 2", lines)
+        self.assertIn(
+            "- Route/example count consistency\uff1aroute 2 / summary 2 / matches summary True; example 3 / summary 3 / matches summary True",
+            lines,
+        )
+        self.assertIn(
+            "- Repository/evidence count consistency\uff1arepository 2 / summary 2 / matches summary True; evidence 2 / summary 2 / matches summary True",
+            lines,
+        )
+        self.assertFalse(any("bad summary" in line for line in lines))
+
     def test_preset_export_markdown_uses_partial_export_summary_count_fallbacks(self):
         payload = preset_exports_payload({})
         payload["exports"] = [
