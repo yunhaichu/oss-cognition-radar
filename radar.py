@@ -10520,6 +10520,13 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         route_detail = export.get("route_detail") or {}
         route_summary = route_detail.get("summary") or {}
         routes = route_detail.get("routes") or []
+        preset_label_text = string_value_text(
+            preset.get("label"), fallback=string_value_text(preset.get("preset_id"), fallback="Route detail preset")
+        )
+        preset_id_text = string_value_text(preset.get("preset_id"), fallback="")
+        selector_move_text = string_value_text(selectors.get("profile_path_move"), fallback="")
+        selector_route_text = string_value_text(selectors.get("profile_path_route"), fallback="")
+        selector_repo_text = string_value_text(selectors.get("profile_path_repo"), fallback="")
         derived_route_count = len(routes)
         derived_example_count = sum(len(route.get("examples") or []) for route in routes)
         export_repository_names = set()
@@ -10556,10 +10563,10 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         )
         lines.extend(
             [
-                f"## {index}. {preset.get('label') or preset.get('preset_id') or 'Route detail preset'}",
+                f"## {index}. {preset_label_text}",
                 "",
-                f"- Preset ID：`{preset.get('preset_id') or ''}`",
-                f"- Move / route / repo：`{selectors.get('profile_path_move') or ''}` / `{selectors.get('profile_path_route') or ''}` / `{selectors.get('profile_path_repo') or ''}`",
+                f"- Preset ID：`{preset_id_text}`",
+                f"- Move / route / repo：`{selector_move_text}` / `{selector_route_text}` / `{selector_repo_text}`",
                 f"- Route / example：{summary_route_count} / {summary_example_count}",
                 f"- Route/example count consistency：route {derived_route_count} / summary {summary_route_count} / matches summary {derived_route_count == summary_route_count}; example {derived_example_count} / summary {summary_example_count} / matches summary {derived_example_count == summary_example_count}",
                 f"- Repository / unique evidence：{summary_repository_count} / {summary_evidence_count}",

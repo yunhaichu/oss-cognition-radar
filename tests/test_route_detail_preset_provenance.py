@@ -1442,6 +1442,42 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_renders_malformed_export_preset_identity_as_fallbacks(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": {
+                    "label": {"bad": "label"},
+                    "preset_id": ["batch_repo"],
+                    "selectors": {
+                        "profile_path_move": {"bad": "move"},
+                        "profile_path_route": ["route"],
+                        "profile_path_repo": {"bad": "repo"},
+                    },
+                },
+                "route_detail": {
+                    "summary": {
+                        "route_count": 0,
+                        "example_count": 0,
+                        "repository_count": 0,
+                        "unique_evidence_count": 0,
+                    },
+                    "routes": [],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("## 1. Route detail preset", lines)
+        self.assertIn("- Preset ID\uff1a``", lines)
+        self.assertIn("- Move / route / repo\uff1a`` / `` / ``", lines)
+        self.assertFalse(any("{'bad': 'label'}" in line for line in lines))
+        self.assertFalse(any("['batch_repo']" in line for line in lines))
+        self.assertFalse(any("{'bad': 'move'}" in line for line in lines))
+        self.assertFalse(any("['route']" in line for line in lines))
+        self.assertFalse(any("{'bad': 'repo'}" in line for line in lines))
+
     def test_preset_export_markdown_preserves_explicit_zero_export_summary_counts(self):
         payload = preset_exports_payload({})
         payload["exports"] = [
