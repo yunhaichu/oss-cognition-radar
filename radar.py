@@ -10322,7 +10322,15 @@ def render_archive_route_detail(payload: dict) -> str:
 def render_archive_route_detail_preset_exports(payload: dict) -> str:
     summary = payload.get("summary") or {}
     validation = payload.get("preset_validation") or {}
-    source_selector_filters = payload.get("source_selector_filters") or {}
+    raw_source_selector_filters = payload.get("source_selector_filters") or {}
+    if isinstance(raw_source_selector_filters, dict):
+        source_selector_filters = {
+            key: value
+            for key, value in raw_source_selector_filters.items()
+            if isinstance(key, str) and isinstance(value, (str, int, float, bool))
+        }
+    else:
+        source_selector_filters = {}
     source_filter_value = (
         source_selector_filters.get("validation_fixture_status")
         or source_selector_filters.get("fixture_validation_status")

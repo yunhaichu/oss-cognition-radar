@@ -382,6 +382,40 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertIn("- Source selector fixture filter\uff1a\u65e0", lines)
         self.assertIn("- Source selector filters\uff1a\u65e0", lines)
 
+    def test_preset_export_markdown_renders_malformed_source_selector_filter_payload_as_empty(self):
+        for source_selector_filters in ("fixture_validation_status=ready", ["ready"], 7):
+            with self.subTest(source_selector_filters=source_selector_filters):
+                payload = preset_exports_payload({})
+                payload["source_selector_filters"] = source_selector_filters
+                markdown = radar.render_archive_route_detail_preset_exports(payload)
+                lines = markdown.splitlines()
+
+                self.assertIn("- Source selector fixture filter\uff1a\u65e0", lines)
+                self.assertIn("- Source selector filters\uff1a\u65e0", lines)
+
+    def test_preset_export_markdown_filters_malformed_source_selector_filter_entries(self):
+        payload = preset_exports_payload({})
+        payload["source_selector_filters"] = {
+            "fixture_validation_status": "ready",
+            "confidence_source": "auto",
+            "min_score": 72,
+            "bad_dict": {"bad": "filter"},
+            "bad_list": ["bad"],
+            "bad_none": None,
+            7: "bad_key",
+        }
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Source selector fixture filter\uff1aready", lines)
+        self.assertIn(
+            "- Source selector filters\uff1aconfidence_source=auto, fixture_validation_status=ready, min_score=72",
+            lines,
+        )
+        self.assertFalse(any("{'bad': 'filter'}" in line for line in lines))
+        self.assertFalse(any("['bad']" in line for line in lines))
+        self.assertFalse(any("7=bad_key" in line for line in lines))
+
     def test_preset_export_markdown_renders_empty_requested_preset_ids(self):
         markdown = radar.render_archive_route_detail_preset_exports(preset_exports_payload({}))
         lines = markdown.splitlines()
