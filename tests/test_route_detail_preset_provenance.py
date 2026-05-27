@@ -21,7 +21,7 @@ def args_for_fixture(fixture_id=None, preset_ids=None):
 def preset(preset_id="preset_1", repo="owner/repo"):
     return {
         "preset_id": preset_id,
-        "label": "Preset 1",
+        "label": f"Preset {preset_id}",
         "selectors": {
             "profile_path_move": "boundary_design::Architecture boundary",
             "profile_path_route": "validation::tests",
@@ -91,7 +91,13 @@ def dashboard_fixture_bundle():
     }
 
 
-def fixture_batch_selector_payload():
+def fixture_batch_selector_payload(extra_unselected_preset=False):
+    fixture_presets = [
+        preset("batch_repo", "owner/repo"),
+        preset("batch_second", "owner/second"),
+    ]
+    if extra_unselected_preset:
+        fixture_presets.append(preset("batch_unselected", "owner/missing"))
     return {
         "schema_version": "route_detail_selectors_v1",
         "generated_at": "2026-05-27T00:00:00+00:00",
@@ -151,11 +157,8 @@ def fixture_batch_selector_payload():
                         "schema_version": "route_detail_selector_preset_bundle_v1",
                         "generated_at": "2026-05-27T00:00:00+00:00",
                         "source": "archive_route_selectors",
-                        "preset_count": 2,
-                        "presets": [
-                            preset("batch_repo", "owner/repo"),
-                            preset("batch_second", "owner/second"),
-                        ],
+                        "preset_count": len(fixture_presets),
+                        "presets": fixture_presets,
                     },
                 }
             ],
@@ -457,6 +460,56 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertIn("1 / 1 / 0", markdown)
         self.assertIn("Preset / route / example", markdown)
         self.assertIn("1 / 1 / 1", markdown)
+
+    def test_fixture_driven_preset_batch_markdown_honors_multiple_preset_ids(self):
+        source_payload = fixture_batch_selector_payload(extra_unselected_preset=True)
+        detail_calls = []
+
+        def archive_detail_stub(conn, args):
+            detail_calls.append(
+                {
+                    "move": args.profile_path_move,
+                    "route": args.profile_path_route,
+                    "repo": args.profile_path_repo,
+                }
+            )
+            return fake_route_detail_payload(args)
+
+        with mock.patch.object(radar, "read_json_payload", return_value=source_payload), \
+            mock.patch.object(radar, "archive_route_selectors_payload", return_value=source_payload), \
+            mock.patch.object(radar, "archive_route_detail_payload", side_effect=archive_detail_stub):
+            payload = radar.archive_route_detail_preset_exports_payload(
+                None,
+                preset_export_args(preset_ids=["batch_repo", "batch_second"]),
+            )
+
+        self.assertEqual(payload["requested_preset_ids"], ["batch_repo", "batch_second"])
+        self.assertEqual(payload["source_fixture_id"], "ready_batch")
+        self.assertEqual(payload["source_fixture_count"], 2)
+        self.assertEqual(payload["source_unfiltered_fixture_count"], 4)
+        self.assertEqual(payload["preset_validation"]["status"], "ready")
+        self.assertEqual(payload["preset_validation"]["selected_preset_count"], 2)
+        self.assertEqual(payload["preset_validation"]["ready_preset_count"], 2)
+        self.assertEqual(payload["preset_validation"]["source_bundle_preset_count"], 3)
+        self.assertEqual(payload["summary"]["preset_count"], 2)
+        self.assertEqual(payload["summary"]["route_count"], 2)
+        self.assertEqual(payload["summary"]["example_count"], 3)
+        self.assertEqual([item["repo"] for item in detail_calls], ["owner/repo", "owner/second"])
+        self.assertEqual([export["preset"]["preset_id"] for export in payload["exports"]], ["batch_repo", "batch_second"])
+
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        self.assertIn("Source fixture", markdown)
+        self.assertIn("ready_batch", markdown)
+        self.assertIn("Source presets", markdown)
+        self.assertIn("Selected / ready / unmatched", markdown)
+        self.assertIn("2 / 2 / 0", markdown)
+        self.assertIn("Preset / route / example", markdown)
+        self.assertIn("2 / 2 / 3", markdown)
+        self.assertIn("Preset batch_repo", markdown)
+        self.assertIn("Preset batch_second", markdown)
+        self.assertIn("batch_repo", markdown)
+        self.assertIn("batch_second", markdown)
+        self.assertNotIn("batch_unselected", markdown)
 
 
 if __name__ == "__main__":
