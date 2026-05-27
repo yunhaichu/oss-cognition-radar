@@ -5180,6 +5180,33 @@ def build_repository_cognition_profiles(patterns: list[dict], rows: list[dict], 
     return profiles[: max(limit, 1)]
 
 
+def build_archive_show_repository_cognition_profile(conn: sqlite3.Connection, full_name: str, limit: int) -> tuple[dict | None, dict]:
+    normalized = normalize_repo_arg(full_name).lower()
+    rows = query_archive_pattern_bindings(conn)
+    repo_rows = [
+        row
+        for row in rows
+        if normalize_repo_arg(row.get("repo_full_name") or "").lower() == normalized
+    ]
+    patterns = build_archive_acquisition_patterns(rows, max(len(rows), limit, 1)) if rows else []
+    profiles = build_repository_cognition_profiles(patterns, repo_rows, 1) if repo_rows and patterns else []
+    context = {
+        "scope": "latest_deep_dossiers",
+        "profile_source": "semantic_v1_archive_patterns",
+        "archive_binding_count": len(rows),
+        "archive_pattern_count": len(patterns),
+        "archive_repository_count": len({row.get("repo_full_name") for row in rows if row.get("repo_full_name")}),
+        "repository_binding_count": len(repo_rows),
+    }
+    if profiles:
+        context["repository_pattern_count"] = profiles[0].get("pattern_count", 0)
+        context["repository_profile_confidence"] = profiles[0].get("confidence")
+        return profiles[0], context
+    context["repository_pattern_count"] = 0
+    context["repository_profile_confidence"] = None
+    return None, context
+
+
 def archive_message_payload(mode: str, args: argparse.Namespace, message: str) -> dict:
     return {
         "schema_version": 1,
@@ -5250,6 +5277,14 @@ def archive_show_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> 
         payload["message"] = f"No archived repository found for {args.archive_show}."
         return payload
     payload.update(dossier)
+    profile, profile_context = build_archive_show_repository_cognition_profile(
+        conn,
+        payload["repository"]["full_name"],
+        args.limit,
+    )
+    payload["repository_cognition_profile"] = profile
+    payload["repository_cognition_profiles"] = [profile] if profile else []
+    payload["repository_cognition_profile_context"] = profile_context
     return payload
 
 
@@ -6993,6 +7028,61 @@ def render_repository_cognition_profiles(profiles: list[dict]) -> list[str]:
     return lines
 
 
+def render_repository_cognition_profile(profile: dict | None, context: dict | None = None) -> list[str]:
+    if not profile:
+        return []
+    context = context or {}
+    lines = [
+        "## Repository Cognition Profile",
+        "",
+        f"- Profile ID：`{profile.get('profile_id')}`",
+        f"- Schema：{profile.get('schema_version') or 'repository_cognition_v1'}",
+        f"- Confidence：{profile.get('confidence') or 'unknown'} / {profile.get('score', 0)}/100",
+        f"- Pattern 数 / binding 数：{profile.get('pattern_count', 0)} / {profile.get('binding_count', 0)}",
+        f"- Archive 上下文：{context.get('archive_repository_count', 0)} 个仓库、{context.get('archive_pattern_count', 0)} 个 semantic patterns、{context.get('archive_binding_count', 0)} 条 bindings",
+        f"- 摘要：{profile.get('summary') or '无'}",
+        f"- 证据依据：{profile.get('evidence_basis') or '无'}",
+        f"- 最强设计动作：{count_items_text(profile.get('move_counts') or [], limit=6)}",
+        f"- 证据族：{count_items_text(profile.get('evidence_families') or [], limit=6)}",
+        f"- 原始 claim 字段：{count_items_text(profile.get('raw_fields') or [], limit=8)}",
+        f"- 原始证据层：{count_items_text(profile.get('raw_layers') or [], limit=8)}",
+        f"- Evidence types：{count_items_text(profile.get('evidence_types') or [], limit=8)}",
+        f"- Signal groups：{count_items_text(profile.get('signal_groups') or [], limit=6)}",
+        "",
+    ]
+    strongest = profile.get("strongest_moves") or []
+    if strongest:
+        lines.extend(["### Strongest Design Moves", ""])
+        for move in strongest[:5]:
+            lines.append(
+                f"- {move.get('label') or move.get('category')}：bindings {move.get('binding_count', 0)}；"
+                f"patterns {move.get('pattern_count', 0)}；avg score {move.get('average_score') if move.get('average_score') is not None else 'unknown'}；"
+                f"{move.get('move') or ''}；transfer {move.get('transfer_rule') or '无'}"
+            )
+        lines.append("")
+    supporting = profile.get("supporting_patterns") or []
+    if supporting:
+        lines.extend(["### Supporting Semantic Patterns", ""])
+        for pattern in supporting[:5]:
+            semantic = pattern.get("semantic_normalization") or {}
+            lines.append(
+                f"- `{pattern.get('pattern_id')}` {pattern.get('field')} -> {pattern.get('missing_layer_label') or pattern.get('missing_layer')}；"
+                f"semantic {semantic.get('field_category', 'unknown')} / {semantic.get('layer_group', 'unknown')}；"
+                f"local bindings {pattern.get('local_binding_count', 0)}；pattern score {pattern.get('pattern_score', 0)}；"
+                f"signal score {pattern.get('signal_group_score', 0)}"
+            )
+            examples = pattern.get("evidence_examples") or []
+            for example in examples[:2]:
+                stable_ref = example.get("evidence_stable_id") or example.get("evidence_id") or "no-evidence-id"
+                lines.append(
+                    f"  - `{stable_ref}` {example.get('evidence_title') or 'Evidence'}；"
+                    f"type {example.get('evidence_type') or 'general'}；"
+                    f"confidence {example.get('confidence') or 'unknown'} {example.get('confidence_score') if example.get('confidence_score') is not None else 'unknown'}"
+                )
+        lines.append("")
+    return lines
+
+
 def render_archive_patterns(payload: dict) -> str:
     if payload.get("message"):
         return "\n".join(["# OSS Cognition Archive Patterns", "", payload["message"], ""])
@@ -7141,6 +7231,10 @@ def render_archive_show(payload: dict) -> str:
     lines.append("")
     lines.extend(render_repository_health(summary))
     lines.extend(render_track_score(summary))
+    lines.extend(render_repository_cognition_profile(
+        payload.get("repository_cognition_profile"),
+        payload.get("repository_cognition_profile_context") or {},
+    ))
     lines.extend(["", "## Claims", ""])
     if not payload.get("claims"):
         lines.extend(["该归档快照没有深度 claim；请先运行 `python3 radar.py --repo owner/name`。", ""])
