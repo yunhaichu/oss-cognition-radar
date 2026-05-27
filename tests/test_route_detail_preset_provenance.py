@@ -10,8 +10,11 @@ sys.path.insert(0, str(ROOT))
 import radar  # noqa: E402
 
 
-def args_for_fixture(fixture_id=None):
-    return argparse.Namespace(profile_path_preset_fixture=fixture_id)
+def args_for_fixture(fixture_id=None, preset_ids=None):
+    return argparse.Namespace(
+        profile_path_preset_fixture=fixture_id,
+        profile_path_preset_id=preset_ids or [],
+    )
 
 
 def preset(preset_id="preset_1"):
@@ -196,6 +199,42 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertIn("Duplicate preset IDs", markdown)
         self.assertIn("duplicate", markdown)
         self.assert_common_markdown(markdown, "duplicate_ids", 1, 1, "duplicate_ids=1")
+
+    def test_missing_fixture_id_reports_available_fixture_ids(self):
+        with self.assertRaises(SystemExit) as raised:
+            radar.route_detail_preset_bundle_from_payload(
+                selector_fixture_payload(), args_for_fixture("missing_fixture")
+            )
+
+        message = str(raised.exception)
+        self.assertIn("Preset validation fixture not found", message)
+        self.assertIn("missing_fixture", message)
+        self.assertIn("Available fixtures: missing_move", message)
+
+    def test_preset_id_selection_returns_only_requested_presets(self):
+        bundle = {
+            "presets": [
+                preset("preset_a"),
+                preset("preset_b"),
+                preset("preset_c"),
+            ]
+        }
+
+        selected = radar.selected_route_detail_presets(
+            bundle, args_for_fixture(preset_ids=["preset_b", "preset_c"])
+        )
+
+        self.assertEqual([item["preset_id"] for item in selected], ["preset_b", "preset_c"])
+
+    def test_missing_preset_id_reports_unknown_ids(self):
+        bundle = {"presets": [preset("preset_a")]}
+
+        with self.assertRaises(SystemExit) as raised:
+            radar.selected_route_detail_presets(bundle, args_for_fixture(preset_ids=["preset_missing"]))
+
+        message = str(raised.exception)
+        self.assertIn("Preset ID not found", message)
+        self.assertIn("preset_missing", message)
 
 
 if __name__ == "__main__":
