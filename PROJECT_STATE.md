@@ -56,6 +56,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Route detail preset validation: preset batch exports now include `route_detail_preset_validation_v1`, summarizing ready/unmatched presets, duplicate preset IDs, and expected route/example counts before exports are rendered.
 - Route detail preset validation fixtures: `--archive-route-selectors` JSON now includes `route_detail_preset_validation_fixtures_v1`, and `--archive-route-detail --profile-path-preset-fixture ID` can run built-in missing move, missing route, missing repo, and duplicate ID coverage paths.
 - Dashboard route detail validation fixtures: browser route detail JSON and Markdown exports now embed `route_detail_preset_validation_fixtures_v1`, so dashboard exports can feed `--profile-path-preset-fixture` without a separate selector export.
+- Dashboard fixture bundle downloads: route detail drilldown now has a validation fixture selector plus JSON/Markdown controls for downloading a single fixture's `route_detail_selector_preset_bundle_v1` with fixture metadata preserved for CLI roundtrips.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -80,4 +81,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add dashboard controls for downloading individual route detail validation fixture bundles.
+Add inline dashboard validation summary previews for selected fixture bundles.

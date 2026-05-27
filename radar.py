@@ -7056,11 +7056,20 @@ def render_archive_dashboard(payload: dict) -> str:
       flex-wrap: wrap;
     }
 
+    .route-detail-actions select,
     .route-detail-actions button {
       min-width: 86px;
       height: 32px;
       padding: 0 10px;
       font-size: 12px;
+    }
+
+    .route-detail-actions select {
+      min-width: 150px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--ink);
     }
 
     .route-detail-actions button:disabled {
@@ -8724,6 +8733,44 @@ def render_archive_dashboard(payload: dict) -> str:
       return lines.filter((line, index) => line || lines[index - 1] !== "").join("\\n");
     }
 
+    function routeDetailFixtureBundlePayload(payload, fixture) {
+      const bundle = JSON.parse(JSON.stringify(fixture?.preset_bundle || {}));
+      bundle.fixture_id = fixture?.fixture_id || "";
+      bundle.fixture_description = fixture?.description || "";
+      bundle.expected_validation_status = fixture?.expected_validation_status || "";
+      bundle.source_validation_fixtures_schema = payload.validation_fixtures?.schema_version || "";
+      bundle.source_route_detail_schema = payload.schema_version || "";
+      bundle.source_route_detail_generated_at = payload.generated_at || "";
+      return bundle;
+    }
+
+    function routeDetailFixtureMarkdown(fixture, bundle) {
+      const lines = [
+        "# Route Detail Validation Fixture Bundle",
+        "",
+        `- Schema: ${bundle.schema_version || "route_detail_selector_preset_bundle_v1"}`,
+        `- Fixture ID: \\`${bundle.fixture_id || ""}\\``,
+        `- Expected validation status: ${bundle.expected_validation_status || "unknown"}`,
+        `- Preset count: ${bundle.preset_count ?? (bundle.presets || []).length}`,
+        "",
+        bundle.fixture_description || "",
+        "",
+      ];
+      (bundle.presets || []).forEach((preset, index) => {
+        const selectors = preset.selectors || {};
+        lines.push(
+          `## ${index + 1}. ${preset.label || preset.preset_id || "Fixture preset"}`,
+          "",
+          `- Preset ID: \\`${preset.preset_id || ""}\\``,
+          `- move=\\`${selectors.profile_path_move || ""}\\``,
+          `- route=\\`${selectors.profile_path_route || ""}\\``,
+          `- repo=\\`${selectors.profile_path_repo || ""}\\``,
+          ""
+        );
+      });
+      return lines.filter((line, index) => line || lines[index - 1] !== "").join("\\n");
+    }
+
     function routeDetailFilename(extension) {
       const slugPart = (value, fallback) => {
         const slug = String(value || "")
@@ -8743,6 +8790,15 @@ def render_archive_dashboard(payload: dict) -> str:
         ? "all-repos"
         : slugPart(state.pathRepo, "selected-repo");
       return `route-detail-${movePart}-${routePart}-${repoPart}.${extension}`;
+    }
+
+    function routeDetailFixtureFilename(fixtureId, extension) {
+      const slug = String(fixtureId || "fixture")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 52) || "fixture";
+      return `route-detail-fixture-${slug}.${extension}`;
     }
 
     function dashboardStateParams() {
@@ -8852,6 +8908,30 @@ def render_archive_dashboard(payload: dict) -> str:
       `;
     }
 
+    function exportRouteDetailFixture(format) {
+      const payload = routeDetailExportPayload();
+      const fixtureSelect = document.getElementById("routeDetailFixtureSelect");
+      const fixtureId = fixtureSelect?.value || "";
+      const fixture = (payload.validation_fixtures?.fixtures || []).find((item) => item.fixture_id === fixtureId);
+      const exportBlock = document.getElementById("routeDetailExportBlock");
+      if (!fixture || !exportBlock) return;
+      const bundle = routeDetailFixtureBundlePayload(payload, fixture);
+      const isMarkdown = format === "markdown";
+      const text = isMarkdown ? routeDetailFixtureMarkdown(fixture, bundle) : JSON.stringify(bundle, null, 2);
+      const filename = routeDetailFixtureFilename(fixture.fixture_id, isMarkdown ? "md" : "json");
+      const mimeType = isMarkdown ? "text/markdown;charset=utf-8" : "application/json;charset=utf-8";
+      clearRouteDetailExportUrl();
+      routeDetailExportUrl = URL.createObjectURL(new Blob([text], { type: mimeType }));
+      exportBlock.hidden = false;
+      exportBlock.innerHTML = `
+        <div class="route-detail-export-head">
+          <div class="section-title">${escapeHtml(isMarkdown ? "Fixture Markdown" : "Fixture JSON")}</div>
+          <a href="${escapeHtml(routeDetailExportUrl)}" download="${escapeHtml(filename)}">${escapeHtml(filename)}</a>
+        </div>
+        <textarea readonly spellcheck="false">${escapeHtml(text)}</textarea>
+      `;
+    }
+
     function showRouteDetailPermalink() {
       const exportBlock = document.getElementById("routeDetailExportBlock");
       if (!exportBlock) return;
@@ -8886,6 +8966,12 @@ def render_archive_dashboard(payload: dict) -> str:
       clearRouteDetailExportUrl();
       const routeRows = routeDetailRows();
       const totalExamples = routeRows.reduce((sum, row) => sum + row.examples.length, 0);
+      const fixturePayload = routeRows.length ? routeDetailExportPayload() : null;
+      const fixtureOptions = (fixturePayload?.validation_fixtures?.fixtures || []).map((fixture) => {
+        const status = fixture.expected_validation_status || "unknown";
+        return `<option value="${escapeHtml(fixture.fixture_id || "")}">${escapeHtml((fixture.fixture_id || "fixture") + " / " + status)}</option>`;
+      }).join("");
+      const fixtureControlsDisabled = fixtureOptions ? "" : "disabled";
       const cards = routeRows.map(({ comparison, route, examples }) => {
         const signalChips = (route.signal_groups || []).slice(0, 4).map((item) =>
           `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`
@@ -8938,6 +9024,9 @@ def render_archive_dashboard(payload: dict) -> str:
             <button id="routeDetailPermalinkButton" type="button" ${routeRows.length ? "" : "disabled"}>Permalink</button>
             <button id="routeDetailJsonButton" type="button" ${routeRows.length ? "" : "disabled"}>JSON</button>
             <button id="routeDetailMarkdownButton" type="button" ${routeRows.length ? "" : "disabled"}>Markdown</button>
+            <select id="routeDetailFixtureSelect" ${fixtureControlsDisabled} aria-label="Validation fixture">${fixtureOptions}</select>
+            <button id="routeDetailFixtureJsonButton" type="button" ${fixtureControlsDisabled}>Fixture JSON</button>
+            <button id="routeDetailFixtureMarkdownButton" type="button" ${fixtureControlsDisabled}>Fixture MD</button>
           </div>
         </div>
         <div class="route-detail-export" id="routeDetailExportBlock" hidden></div>
@@ -8946,6 +9035,8 @@ def render_archive_dashboard(payload: dict) -> str:
       document.getElementById("routeDetailPermalinkButton")?.addEventListener("click", showRouteDetailPermalink);
       document.getElementById("routeDetailJsonButton")?.addEventListener("click", () => downloadRouteDetail("json"));
       document.getElementById("routeDetailMarkdownButton")?.addEventListener("click", () => downloadRouteDetail("markdown"));
+      document.getElementById("routeDetailFixtureJsonButton")?.addEventListener("click", () => exportRouteDetailFixture("json"));
+      document.getElementById("routeDetailFixtureMarkdownButton")?.addEventListener("click", () => exportRouteDetailFixture("markdown"));
     }
 
     function renderPatterns() {
