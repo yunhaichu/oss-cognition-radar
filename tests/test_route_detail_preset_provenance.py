@@ -376,6 +376,34 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
 
         self.assertIn("- Selected preset count consistency\uff1a2 / summary 1 / matches summary False", lines)
 
+    def test_preset_export_markdown_renders_expected_route_example_consistency(self):
+        payload = preset_exports_payload({})
+        payload["preset_validation"]["expected_route_count"] = 2
+        payload["preset_validation"]["expected_example_count"] = 3
+        payload["summary"]["route_count"] = 2
+        payload["summary"]["example_count"] = 3
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn(
+            "- Expected route/example consistency\uff1aroute 2 / summary 2 / matches summary True; example 3 / summary 3 / matches summary True",
+            lines,
+        )
+
+    def test_preset_export_markdown_flags_expected_route_example_mismatch(self):
+        payload = preset_exports_payload({})
+        payload["preset_validation"]["expected_route_count"] = 2
+        payload["preset_validation"]["expected_example_count"] = 3
+        payload["summary"]["route_count"] = 1
+        payload["summary"]["example_count"] = 4
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn(
+            "- Expected route/example consistency\uff1aroute 2 / summary 1 / matches summary False; example 3 / summary 4 / matches summary False",
+            lines,
+        )
+
     def test_preset_export_markdown_uses_source_fixture_status_fallback_when_filters_empty(self):
         markdown = radar.render_archive_route_detail_preset_exports(
             preset_exports_payload({"source_fixture_status_filter": "ready"})
