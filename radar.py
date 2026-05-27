@@ -10339,6 +10339,22 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
     source_all_status_text = ", ".join(
         f"{status}={count}" for status, count in sorted(source_all_status_counts.items())
     ) or "无"
+    export_repository_names = set()
+    export_evidence_refs = set()
+    for export in payload.get("exports") or []:
+        route_detail = export.get("route_detail") or {}
+        for route in route_detail.get("routes") or []:
+            for repo in route.get("repositories") or []:
+                if repo:
+                    export_repository_names.add(repo)
+            for example in route.get("examples") or []:
+                evidence_ref = example.get("evidence_stable_id") or example.get("evidence_id")
+                if evidence_ref:
+                    export_evidence_refs.add(evidence_ref)
+    derived_repository_count = len(export_repository_names)
+    derived_evidence_count = len(export_evidence_refs)
+    summary_repository_count = summary.get("repository_count", 0)
+    summary_evidence_count = summary.get("unique_evidence_count", 0)
     lines = [
         "# OSS Cognition Route Detail Preset Exports",
         "",
@@ -10360,6 +10376,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         f"- Expected validation status：{payload.get('expected_validation_status') or '无'}",
         f"- Preset / route / example：{summary.get('preset_count', 0)} / {summary.get('route_count', 0)} / {summary.get('example_count', 0)}",
         f"- Repository / unique evidence：{summary.get('repository_count', 0)} / {summary.get('unique_evidence_count', 0)}",
+        f"- Repository/evidence count consistency：repository {derived_repository_count} / summary {summary_repository_count} / matches summary {derived_repository_count == summary_repository_count}; evidence {derived_evidence_count} / summary {summary_evidence_count} / matches summary {derived_evidence_count == summary_evidence_count}",
         "",
     ]
     if validation:
