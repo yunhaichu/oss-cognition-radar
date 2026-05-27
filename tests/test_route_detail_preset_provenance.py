@@ -484,6 +484,23 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_defaults_missing_validation_preset_status_counts_to_zero(self):
+        payload = preset_exports_payload({})
+        payload["preset_validation"]["preset_statuses"] = [
+            {
+                "preset_id": "batch_repo",
+                "status": "ready",
+                "messages": ["ready status"],
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn(
+            "- `batch_repo` ready\uff1amoves 0\uff1broutes 0\uff1brepos 0\uff1bexamples 0\uff1bready status",
+            lines,
+        )
+
     def test_preset_export_markdown_renders_repository_evidence_count_consistency(self):
         payload = preset_exports_payload({})
         payload["summary"]["repository_count"] = 2
