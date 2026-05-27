@@ -6335,6 +6335,37 @@ def build_route_detail_preset_validation_fixtures(
     }
 
 
+def attach_route_detail_preset_validation_fixture_metadata(validation_fixtures: dict, selector_payload: dict) -> dict:
+    fixtures_with_summaries = []
+    for fixture in validation_fixtures.get("fixtures") or []:
+        bundle = fixture.get("preset_bundle") or {}
+        validation_summary = route_detail_preset_validation_summary(selector_payload, bundle, bundle.get("presets") or [])
+        annotated_fixture = dict(fixture)
+        annotated_fixture["validation_status"] = validation_summary.get("status")
+        annotated_fixture["validation_matches_expected"] = (
+            validation_summary.get("status") == fixture.get("expected_validation_status")
+        )
+        annotated_fixture["validation_summary"] = validation_summary
+        fixtures_with_summaries.append(annotated_fixture)
+
+    status_counts = {}
+    for fixture in fixtures_with_summaries:
+        count_value(status_counts, fixture.get("validation_status") or "unknown")
+    matching_expected_count = sum(1 for fixture in fixtures_with_summaries if fixture.get("validation_matches_expected"))
+    return {
+        **validation_fixtures,
+        "source": validation_fixtures.get("source") or "archive_route_selectors",
+        "fixture_status_filter": "all",
+        "fixture_count": len(fixtures_with_summaries),
+        "unfiltered_fixture_count": len(fixtures_with_summaries),
+        "matching_expected_count": matching_expected_count,
+        "unfiltered_matching_expected_count": matching_expected_count,
+        "fixture_status_counts": status_counts,
+        "all_fixture_status_counts": dict(status_counts),
+        "fixtures": fixtures_with_summaries,
+    }
+
+
 def build_route_detail_selectors_payload(
     comparisons: list[dict],
     args: argparse.Namespace,
@@ -6482,7 +6513,7 @@ def build_route_detail_selectors_payload(
         args,
         generated_at=generated_at_value,
     )
-    return {
+    payload = {
         "schema_version": "route_detail_selectors_v1",
         "mode": "archive_route_selectors",
         "generated_at": generated_at_value,
@@ -6501,6 +6532,13 @@ def build_route_detail_selectors_payload(
         "validation_fixtures": validation_fixtures,
         "moves": move_payloads,
     }
+    payload["validation_fixtures"] = attach_route_detail_preset_validation_fixture_metadata(validation_fixtures, payload)
+    payload["summary"]["validation_fixture_count"] = payload["validation_fixtures"].get("fixture_count", 0)
+    payload["summary"]["validation_fixture_matching_expected_count"] = payload["validation_fixtures"].get(
+        "matching_expected_count", 0
+    )
+    payload["summary"]["validation_fixture_status_counts"] = payload["validation_fixtures"].get("fixture_status_counts") or {}
+    return payload
 
 
 def archive_route_selectors_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
@@ -10324,10 +10362,23 @@ def render_archive_route_selectors(payload: dict) -> str:
         lines.extend(["## Validation Fixtures", ""])
         lines.append(f"- Schema：{validation_fixtures.get('schema_version') or 'route_detail_preset_validation_fixtures_v1'}")
         lines.append(f"- Fixture count：{validation_fixtures.get('fixture_count', len(fixtures))}")
+        if validation_fixtures.get("matching_expected_count") is not None:
+            lines.append(
+                f"- Matching expected：{validation_fixtures.get('matching_expected_count', 0)} / "
+                f"{validation_fixtures.get('unfiltered_fixture_count', len(fixtures))}"
+            )
+        status_counts = validation_fixtures.get("fixture_status_counts") or {}
+        if status_counts:
+            status_text = ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
+            lines.append(f"- Status counts：{status_text}")
         lines.append("")
         for fixture in fixtures:
+            validation = fixture.get("validation_summary") or {}
+            matches_text = "yes" if fixture.get("validation_matches_expected") else "no"
             lines.append(
-                f"- `{fixture.get('fixture_id') or ''}` expected={fixture.get('expected_validation_status') or 'unknown'}；"
+                f"- `{fixture.get('fixture_id') or ''}` status={fixture.get('validation_status') or validation.get('status') or 'unknown'} "
+                f"expected={fixture.get('expected_validation_status') or 'unknown'} matches_expected={matches_text}；"
+                f"ready={validation.get('ready_preset_count', 'unknown')} unmatched={validation.get('unmatched_preset_count', 'unknown')}；"
                 f"{fixture.get('description') or ''}"
             )
         lines.append("")
