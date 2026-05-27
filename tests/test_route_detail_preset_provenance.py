@@ -91,6 +91,29 @@ def dashboard_fixture_bundle():
     }
 
 
+def dashboard_ready_fixture_bundle(source_filters=None):
+    return {
+        "schema_version": "route_detail_selector_preset_bundle_v1",
+        "generated_at": "2026-05-27T00:00:00+00:00",
+        "source": "dashboard_route_detail_validation_fixture",
+        "fixture_id": "ready_dashboard",
+        "fixture_description": "Ready dashboard fixture",
+        "expected_validation_status": "ready",
+        "source_selector_filters": source_filters or {"fixture_validation_status": "ready"},
+        "source_fixture_status_filter": "ready",
+        "source_fixture_count": 1,
+        "source_unfiltered_fixture_count": 4,
+        "source_fixture_matching_expected_count": 1,
+        "source_fixture_unfiltered_matching_expected_count": 4,
+        "source_fixture_status_counts": {"ready": 1},
+        "source_all_fixture_status_counts": {"blocked": 1, "duplicate_ids": 1, "ready": 2},
+        "validation_status": "ready",
+        "validation_matches_expected": True,
+        "preset_count": 1,
+        "presets": [preset("dashboard_ready", "owner/repo")],
+    }
+
+
 def fixture_batch_selector_payload(extra_unselected_preset=False, source_filters=None):
     fixture_presets = [
         preset("batch_repo", "owner/repo"),
@@ -609,6 +632,61 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
                 "signal_group": "pattern",
                 "track": "developer_tools",
                 "min_track_score": 64,
+            }
+        ])
+
+    def test_dashboard_single_fixture_source_filters_are_carried_into_preset_args(self):
+        source_filters = {
+            "fixture_validation_status": "ready",
+            "confidence_source": "auto",
+            "signal_group": "drift",
+            "track": "local-first",
+            "min_score": 81,
+            "path_move": "all",
+            "path_route": "all",
+            "path_repo": "all",
+        }
+        source_payload = dashboard_ready_fixture_bundle(source_filters=source_filters)
+        selector_payload = fixture_batch_selector_payload(source_filters={"validation_fixture_status": "ready"})
+        detail_calls = []
+
+        def archive_detail_stub(conn, args):
+            detail_calls.append(
+                {
+                    "move": args.profile_path_move,
+                    "route": args.profile_path_route,
+                    "repo": args.profile_path_repo,
+                    "confidence_source": args.profile_path_confidence_source,
+                    "signal_group": args.archive_signal_group,
+                    "track": args.archive_track,
+                    "min_track_score": args.min_track_score,
+                }
+            )
+            return fake_route_detail_payload(args)
+
+        with mock.patch.object(radar, "read_json_payload", return_value=source_payload), \
+            mock.patch.object(radar, "archive_route_selectors_payload", return_value=selector_payload), \
+            mock.patch.object(radar, "archive_route_detail_payload", side_effect=archive_detail_stub):
+            payload = radar.archive_route_detail_preset_exports_payload(
+                None,
+                preset_export_args(fixture_id=None, preset_ids=["dashboard_ready"]),
+            )
+
+        self.assertEqual(payload["source_fixture_id"], "ready_dashboard")
+        self.assertEqual(payload["source_selector_filters"], source_filters)
+        self.assertEqual(payload["source_fixture_status_filter"], "ready")
+        self.assertEqual(payload["source_fixture_validation_status"], "ready")
+        self.assertEqual(payload["preset_validation"]["status"], "ready")
+        self.assertEqual(payload["summary"]["preset_count"], 1)
+        self.assertEqual(detail_calls, [
+            {
+                "move": "boundary_design::Architecture boundary",
+                "route": "validation::tests",
+                "repo": "owner/repo",
+                "confidence_source": "auto",
+                "signal_group": "drift",
+                "track": "local-first",
+                "min_track_score": 81,
             }
         ])
 
