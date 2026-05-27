@@ -49,6 +49,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Dashboard permalink state: dashboard route detail drilldown filters are serialized into URL hash state and restored on load, covering search, track, confidence source, signal group, score, design move, evidence route, and repository scope.
 - CLI route detail export: `--archive-route-detail` exports the same `route_detail_drilldown_v1` research payload in Markdown and JSON, with filters for design move, evidence route, repository, confidence source, signal group, track, and track score.
 - CLI route selector listing: `--archive-route-selectors` exports `route_detail_selectors_v1`, listing valid design move, evidence route, and repository selector values for route detail batch exports.
+- Dashboard route selector export: `--archive-dashboard` JSON now embeds the same `route_detail_selectors_v1` structure and selector statistics so browser and CLI route detail selector payloads stay aligned.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -73,4 +74,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Expose route detail selector structures through dashboard exports so browser and CLI selector payloads stay aligned.
+Use dashboard route detail selectors to drive drilldown option hydration and selector search hints.

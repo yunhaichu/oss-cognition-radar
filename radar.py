@@ -6111,8 +6111,12 @@ def archive_route_detail_payload(conn: sqlite3.Connection, args: argparse.Namesp
     }
 
 
-def archive_route_selectors_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
-    comparisons = archive_route_detail_comparisons(conn, args)
+def build_route_detail_selectors_payload(
+    comparisons: list[dict],
+    args: argparse.Namespace,
+    *,
+    generated_at: str | None = None,
+) -> dict:
     move_payloads = []
     route_count = 0
     example_count = 0
@@ -6245,7 +6249,7 @@ def archive_route_selectors_payload(conn: sqlite3.Connection, args: argparse.Nam
     return {
         "schema_version": "route_detail_selectors_v1",
         "mode": "archive_route_selectors",
-        "generated_at": utc_now().isoformat(),
+        "generated_at": generated_at or utc_now().isoformat(),
         "db": args.db,
         "filters": archive_route_detail_filters_payload(args),
         "scope": "latest_deep_dossiers",
@@ -6260,8 +6264,14 @@ def archive_route_selectors_payload(conn: sqlite3.Connection, args: argparse.Nam
     }
 
 
+def archive_route_selectors_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
+    comparisons = archive_route_detail_comparisons(conn, args)
+    return build_route_detail_selectors_payload(comparisons, args)
+
+
 def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace) -> dict:
     signal_group = getattr(args, "archive_signal_group", None)
+    generated_at = utc_now().isoformat()
     index_status = rebuild_archive_search_index(conn)
     pattern_rows = query_archive_pattern_bindings(
         conn,
@@ -6296,6 +6306,12 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
     repository_cognition_profiles = build_repository_cognition_profiles(patterns, pattern_rows, args.limit)
     profile_path_statistics = aggregate_repository_cognition_profile_path_statistics(repository_cognition_profiles)
     profile_path_comparisons = build_repository_cognition_path_comparisons(repository_cognition_profiles, args.limit)
+    route_detail_selectors = build_route_detail_selectors_payload(
+        profile_path_comparisons,
+        args,
+        generated_at=generated_at,
+    )
+    route_detail_selector_summary = route_detail_selectors.get("summary") or {}
     scores = [
         (summary.get("track_score") or {}).get("score")
         for summary in repositories
@@ -6318,7 +6334,7 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
     return {
         "schema_version": 1,
         "mode": "archive_dashboard",
-        "generated_at": utc_now().isoformat(),
+        "generated_at": generated_at,
         "db": args.db,
         "filters": archive_filters_payload(args),
         "search_index": index_status,
@@ -6338,6 +6354,9 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
             "high_confidence_repository_profile_paths": profile_path_statistics.get("high_confidence_paths", 0),
             "repository_cognition_profile_path_comparisons": len(profile_path_comparisons),
             "cross_repository_profile_path_comparisons": sum(1 for item in profile_path_comparisons if item.get("repository_count", 0) >= 2),
+            "route_detail_selector_moves": route_detail_selector_summary.get("move_count", 0),
+            "route_detail_selector_routes": route_detail_selector_summary.get("route_count", 0),
+            "route_detail_selector_examples": route_detail_selector_summary.get("example_count", 0),
             "cross_project_patterns": sum(1 for item in patterns if item.get("repository_count", 0) >= 2),
             "average_pattern_confidence": round(sum(pattern_confidences) / len(pattern_confidences), 1) if pattern_confidences else None,
             "average_pattern_signal_score": mean_number(
@@ -6355,6 +6374,7 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
         "repository_cognition_profiles": repository_cognition_profiles,
         "repository_cognition_profile_path_statistics": profile_path_statistics,
         "repository_cognition_profile_path_comparisons": profile_path_comparisons,
+        "route_detail_selectors": route_detail_selectors,
         "patterns": patterns,
     }
 
