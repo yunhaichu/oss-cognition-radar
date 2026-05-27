@@ -31,7 +31,7 @@ MAX_TEXT_CHARS = 5000
 MAX_IMPLEMENTATION_FILE_SIZE = 120_000
 GROWTH_WINDOWS = {"1d": 1, "7d": 7, "30d": 30}
 GROWTH_MAX_AGE_DAYS = {"1d": 2, "7d": 10, "30d": 45}
-ARCHIVE_SEARCH_INDEX_VERSION = 11
+ARCHIVE_SEARCH_INDEX_VERSION = 12
 BINDING_CONFIDENCE_BASE = 35
 BINDING_CONFIDENCE_SIGNAL_WEIGHTS = {
     "requested_missing_layer": 22,
@@ -5316,6 +5316,7 @@ def build_repository_cognition_profiles(patterns: list[dict], rows: list[dict], 
             "supporting_patterns": pattern_items[:6],
         }
         profile_payload["explanation_paths"] = repository_cognition_profile_explanation_paths(profile_payload)
+        profile_payload["explanation_path_statistics"] = repository_cognition_profile_path_statistics(profile_payload["explanation_paths"])
         profiles.append(profile_payload)
 
     profiles.sort(
@@ -5370,6 +5371,10 @@ def repository_cognition_profile_search_text(profile: dict) -> str:
         search_text_from_value(profile.get("evidence_types") or []),
         "signal_groups",
         search_text_from_value(profile.get("signal_groups") or []),
+        "explanation_path_statistics",
+        search_text_from_value(profile.get("explanation_path_statistics") or {}),
+        "explanation_paths",
+        search_text_from_value(profile.get("explanation_paths") or []),
         "supporting_patterns",
         search_text_from_value(profile.get("supporting_patterns") or []),
     ]
@@ -5437,7 +5442,57 @@ def repository_cognition_profile_explanation_paths(profile: dict, limit: int = 6
     return paths[: max(limit, 1)]
 
 
+def repository_cognition_profile_path_statistics(paths: list[dict]) -> dict:
+    design_move_counts: dict[str, int] = {}
+    gap_layer_counts: dict[str, int] = {}
+    evidence_type_counts: dict[str, int] = {}
+    evidence_kind_counts: dict[str, int] = {}
+    confidence_label_counts: dict[str, int] = {}
+    signal_group_counts: dict[str, int] = {}
+    confidence_scores = []
+    repositories = set()
+    evidence_refs = set()
+    for path in paths:
+        count_value(design_move_counts, path.get("semantic_field_label") or path.get("semantic_field_category"))
+        count_value(gap_layer_counts, path.get("claim_gap_layer_label") or path.get("claim_gap_layer"))
+        count_value(evidence_type_counts, path.get("evidence_type"))
+        count_value(evidence_kind_counts, path.get("evidence_kind"))
+        count_value(confidence_label_counts, path.get("confidence"))
+        for group_name in path.get("confidence_signal_groups") or []:
+            count_value(signal_group_counts, group_name)
+        if isinstance(path.get("confidence_score"), (int, float)):
+            confidence_scores.append(path["confidence_score"])
+        if path.get("repo_full_name"):
+            repositories.add(path["repo_full_name"])
+        evidence_ref = path.get("evidence_stable_id") or path.get("evidence_id")
+        if evidence_ref:
+            evidence_refs.add(evidence_ref)
+    return {
+        "path_count": len(paths),
+        "repository_count": len(repositories),
+        "unique_evidence_count": len(evidence_refs),
+        "average_confidence": mean_number(confidence_scores),
+        "high_confidence_paths": sum(1 for path in paths if path.get("confidence") == "high"),
+        "design_moves": top_count_items(design_move_counts, limit=8),
+        "claim_gap_layers": top_count_items(gap_layer_counts, limit=8),
+        "evidence_types": top_count_items(evidence_type_counts, limit=8),
+        "evidence_kinds": top_count_items(evidence_kind_counts, limit=8),
+        "confidence_labels": top_count_items(confidence_label_counts, limit=6),
+        "signal_groups": top_count_items(signal_group_counts, limit=8),
+    }
+
+
+def aggregate_repository_cognition_profile_path_statistics(profiles: list[dict]) -> dict:
+    paths = [
+        path
+        for profile in profiles
+        for path in profile.get("explanation_paths") or []
+    ]
+    return repository_cognition_profile_path_statistics(paths)
+
+
 def repository_cognition_profile_match_payload(profile: dict, relevance: dict) -> dict:
+    explanation_paths = profile.get("explanation_paths") or repository_cognition_profile_explanation_paths(profile)
     return {
         "profile_id": profile.get("profile_id"),
         "repo_full_name": profile.get("repo_full_name"),
@@ -5453,7 +5508,8 @@ def repository_cognition_profile_match_payload(profile: dict, relevance: dict) -
         "raw_fields": profile.get("raw_fields") or [],
         "raw_layers": profile.get("raw_layers") or [],
         "supporting_patterns": (profile.get("supporting_patterns") or [])[:3],
-        "explanation_paths": repository_cognition_profile_explanation_paths(profile),
+        "explanation_paths": explanation_paths,
+        "explanation_path_statistics": profile.get("explanation_path_statistics") or repository_cognition_profile_path_statistics(explanation_paths),
         "relevance": relevance,
     }
 
@@ -5577,6 +5633,7 @@ def archive_patterns_payload(conn: sqlite3.Connection, args: argparse.Namespace)
     patterns = build_archive_acquisition_patterns(rows, args.limit)
     cognition_summaries = build_archive_cognition_summaries(patterns, args.limit)
     repository_cognition_profiles = build_repository_cognition_profiles(patterns, rows, args.limit)
+    profile_path_statistics = aggregate_repository_cognition_profile_path_statistics(repository_cognition_profiles)
     repositories = sorted({row.get("repo_full_name") for row in rows if row.get("repo_full_name")})
     pattern_confidences = [
         item.get("average_binding_confidence")
@@ -5597,6 +5654,8 @@ def archive_patterns_payload(conn: sqlite3.Connection, args: argparse.Namespace)
             "high_confidence_cognition_summaries": sum(1 for item in cognition_summaries if item.get("confidence") == "high"),
             "repository_cognition_profiles": len(repository_cognition_profiles),
             "high_confidence_repository_profiles": sum(1 for item in repository_cognition_profiles if item.get("confidence") == "high"),
+            "repository_cognition_profile_paths": profile_path_statistics.get("path_count", 0),
+            "high_confidence_repository_profile_paths": profile_path_statistics.get("high_confidence_paths", 0),
             "repositories": len(repositories),
             "cross_project_patterns": sum(1 for item in patterns if item.get("repository_count", 0) >= 2),
             "average_pattern_confidence": round(sum(pattern_confidences) / len(pattern_confidences), 1) if pattern_confidences else None,
@@ -5604,7 +5663,9 @@ def archive_patterns_payload(conn: sqlite3.Connection, args: argparse.Namespace)
                 [item.get("signal_group_score") for item in patterns if isinstance(item.get("signal_group_score"), (int, float))]
             ),
             "signal_groups": aggregate_pattern_count_items(patterns, "signal_groups"),
+            "repository_cognition_profile_path_statistics": profile_path_statistics,
         },
+        "repository_cognition_profile_path_statistics": profile_path_statistics,
         "cognition_summaries": cognition_summaries,
         "repository_cognition_profiles": repository_cognition_profiles,
         "patterns": patterns,
@@ -5645,6 +5706,7 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
     patterns = build_archive_acquisition_patterns(pattern_rows, args.limit)
     cognition_summaries = build_archive_cognition_summaries(patterns, args.limit)
     repository_cognition_profiles = build_repository_cognition_profiles(patterns, pattern_rows, args.limit)
+    profile_path_statistics = aggregate_repository_cognition_profile_path_statistics(repository_cognition_profiles)
     scores = [
         (summary.get("track_score") or {}).get("score")
         for summary in repositories
@@ -5683,6 +5745,8 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
             "high_confidence_cognition_summaries": sum(1 for item in cognition_summaries if item.get("confidence") == "high"),
             "repository_cognition_profiles": len(repository_cognition_profiles),
             "high_confidence_repository_profiles": sum(1 for item in repository_cognition_profiles if item.get("confidence") == "high"),
+            "repository_cognition_profile_paths": profile_path_statistics.get("path_count", 0),
+            "high_confidence_repository_profile_paths": profile_path_statistics.get("high_confidence_paths", 0),
             "cross_project_patterns": sum(1 for item in patterns if item.get("repository_count", 0) >= 2),
             "average_pattern_confidence": round(sum(pattern_confidences) / len(pattern_confidences), 1) if pattern_confidences else None,
             "average_pattern_signal_score": mean_number(
@@ -5692,11 +5756,13 @@ def archive_dashboard_payload(conn: sqlite3.Connection, args: argparse.Namespace
             "average_track_score": round(sum(scores) / len(scores), 1) if scores else None,
             "confidence_sources": top_count_items(confidence_sources),
             "tracks": tracks,
+            "repository_cognition_profile_path_statistics": profile_path_statistics,
         },
         "repositories": repositories,
         "dossiers": dossiers,
         "cognition_summaries": cognition_summaries,
         "repository_cognition_profiles": repository_cognition_profiles,
+        "repository_cognition_profile_path_statistics": profile_path_statistics,
         "patterns": patterns,
     }
 
@@ -6348,6 +6414,14 @@ def render_archive_dashboard(payload: dict) -> str:
         ...(profile.raw_layers || []).map((item) => item.value),
         ...(profile.evidence_types || []).map((item) => item.value),
         ...(profile.signal_groups || []).map((item) => item.value),
+        profile.explanation_path_statistics?.path_count,
+        profile.explanation_path_statistics?.average_confidence,
+        ...(profile.explanation_path_statistics?.design_moves || []).map((item) => item.value),
+        ...(profile.explanation_path_statistics?.claim_gap_layers || []).map((item) => item.value),
+        ...(profile.explanation_path_statistics?.evidence_types || []).map((item) => item.value),
+        ...(profile.explanation_path_statistics?.evidence_kinds || []).map((item) => item.value),
+        ...(profile.explanation_path_statistics?.confidence_labels || []).map((item) => item.value),
+        ...(profile.explanation_path_statistics?.signal_groups || []).map((item) => item.value),
         ...(profile.supporting_patterns || []).flatMap((pattern) => [
           pattern.pattern_id,
           pattern.field,
@@ -6678,6 +6752,7 @@ def render_archive_dashboard(payload: dict) -> str:
       const bindingCount = items.reduce((sum, repo) => sum + ((dossierOf(repo).evidence_acquisition || {}).binding_count || 0), 0);
       const patternCount = filteredPatterns().length;
       const profileCount = items.filter((repo) => cognitionProfileOf(repo)).length;
+      const profilePathCount = items.reduce((sum, repo) => sum + ((cognitionProfileOf(repo)?.explanation_path_statistics || {}).path_count || 0), 0);
       const evidenceCount = items.reduce((sum, repo) => sum + (dossierOf(repo).evidence || []).length, 0);
       const average = items.length
         ? items.reduce((sum, repo) => sum + scoreOf(repo), 0) / items.length
@@ -6698,6 +6773,7 @@ def render_archive_dashboard(payload: dict) -> str:
         ["Bindings", bindingCount],
         ["Patterns", patternCount],
         ["Profiles", profileCount],
+        ["Paths", profilePathCount],
         ["Evidence", evidenceCount],
         ["Avg score", average ? average.toFixed(1) : "0.0"],
       ];
@@ -6905,6 +6981,17 @@ def render_archive_dashboard(payload: dict) -> str:
       const cognitionProfilePatterns = cognitionProfileVisible ? (cognitionProfile.supporting_patterns || []).slice(0, 4).map((pattern) => `
         <span class="chip">${escapeHtml(pattern.field || "pattern")} / ${escapeHtml(pattern.missing_layer_label || pattern.missing_layer || "evidence")} ${escapeHtml(pattern.local_binding_count || 0)}</span>
       `).join("") : "";
+      const cognitionPathStats = cognitionProfileVisible ? (cognitionProfile.explanation_path_statistics || {}) : {};
+      const cognitionPathStatChips = cognitionProfileVisible ? `
+        <div class="chips">
+          <span class="chip support">Paths ${escapeHtml(cognitionPathStats.path_count || 0)}</span>
+          <span class="chip">High ${escapeHtml(cognitionPathStats.high_confidence_paths || 0)}</span>
+          <span class="chip">Avg confidence ${escapeHtml(cognitionPathStats.average_confidence ?? "unknown")}</span>
+          ${(cognitionPathStats.design_moves || []).slice(0, 3).map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
+          ${(cognitionPathStats.claim_gap_layers || []).slice(0, 3).map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
+          ${(cognitionPathStats.evidence_types || []).slice(0, 3).map((item) => `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`).join("")}
+        </div>
+      ` : "";
       const cognitionProfilePaths = cognitionProfileVisible ? (cognitionProfile.explanation_paths || []).slice(0, 6).map((path) => {
         const evidenceRef = path.evidence_stable_id || path.evidence_id || "no-evidence-id";
         const confidenceClassName = path.confidence === "high" ? "support" : (path.confidence === "low" ? "risk-mid" : "");
@@ -7034,6 +7121,7 @@ def render_archive_dashboard(payload: dict) -> str:
             ${cognitionProfileMoves}
             <div class="profile-paths">
               <div class="section-title">Profile Explanation Paths</div>
+              ${cognitionPathStatChips}
               ${cognitionProfilePaths || '<div class="empty">No explanation paths for this profile.</div>'}
             </div>
           ` : '<div class="empty">No repository cognition profile for these filters.</div>'}
@@ -7361,6 +7449,7 @@ def render_repository_cognition_profiles(profiles: list[dict]) -> list[str]:
         return []
     lines = ["## Repository Cognition Profiles", ""]
     for index, profile in enumerate(profiles, 1):
+        path_stats = profile.get("explanation_path_statistics") or {}
         lines.extend(
             [
                 f"### {index}. {profile.get('repo_full_name')}",
@@ -7375,6 +7464,10 @@ def render_repository_cognition_profiles(profiles: list[dict]) -> list[str]:
                 f"- 原始 claim 字段：{count_items_text(profile.get('raw_fields') or [], limit=8)}",
                 f"- 原始证据层：{count_items_text(profile.get('raw_layers') or [], limit=8)}",
                 f"- Signal groups：{count_items_text(profile.get('signal_groups') or [], limit=6)}",
+                f"- Explanation paths：{path_stats.get('path_count', 0)} 条；高置信 {path_stats.get('high_confidence_paths', 0)}；平均可靠度 {path_stats.get('average_confidence') if path_stats.get('average_confidence') is not None else 'unknown'}",
+                f"- Path 设计动作：{count_items_text(path_stats.get('design_moves') or [], limit=6)}",
+                f"- Path 缺口层：{count_items_text(path_stats.get('claim_gap_layers') or [], limit=6)}",
+                f"- Path evidence types：{count_items_text(path_stats.get('evidence_types') or [], limit=6)}",
                 "",
             ]
         )
@@ -7404,6 +7497,7 @@ def render_repository_cognition_profile(profile: dict | None, context: dict | No
     if not profile:
         return []
     context = context or {}
+    path_stats = profile.get("explanation_path_statistics") or {}
     lines = [
         "## Repository Cognition Profile",
         "",
@@ -7420,6 +7514,10 @@ def render_repository_cognition_profile(profile: dict | None, context: dict | No
         f"- 原始证据层：{count_items_text(profile.get('raw_layers') or [], limit=8)}",
         f"- Evidence types：{count_items_text(profile.get('evidence_types') or [], limit=8)}",
         f"- Signal groups：{count_items_text(profile.get('signal_groups') or [], limit=6)}",
+        f"- Explanation paths：{path_stats.get('path_count', 0)} 条；高置信 {path_stats.get('high_confidence_paths', 0)}；平均可靠度 {path_stats.get('average_confidence') if path_stats.get('average_confidence') is not None else 'unknown'}",
+        f"- Path 设计动作：{count_items_text(path_stats.get('design_moves') or [], limit=6)}",
+        f"- Path 缺口层：{count_items_text(path_stats.get('claim_gap_layers') or [], limit=6)}",
+        f"- Path evidence types：{count_items_text(path_stats.get('evidence_types') or [], limit=6)}",
         "",
     ]
     strongest = profile.get("strongest_moves") or []
@@ -7462,6 +7560,7 @@ def render_archive_patterns(payload: dict) -> str:
     if payload.get("message"):
         return "\n".join(["# OSS Cognition Archive Patterns", "", payload["message"], ""])
     stats = payload.get("statistics") or {}
+    path_stats = payload.get("repository_cognition_profile_path_statistics") or stats.get("repository_cognition_profile_path_statistics") or {}
     lines = [
         "# OSS Cognition Archive Patterns",
         "",
@@ -7478,10 +7577,15 @@ def render_archive_patterns(payload: dict) -> str:
         f"- 高置信摘要数：{stats.get('high_confidence_cognition_summaries', 0)}",
         f"- 单仓库认知画像数：{stats.get('repository_cognition_profiles', 0)}",
         f"- 高置信仓库画像数：{stats.get('high_confidence_repository_profiles', 0)}",
+        f"- 画像解释路径数：{stats.get('repository_cognition_profile_paths', path_stats.get('path_count', 0))}",
+        f"- 高置信画像解释路径数：{stats.get('high_confidence_repository_profile_paths', path_stats.get('high_confidence_paths', 0))}",
         f"- 跨项目重复模式：{stats.get('cross_project_patterns', 0)}",
         f"- 平均模式可靠度：{stats.get('average_pattern_confidence') if stats.get('average_pattern_confidence') is not None else '未记录'}",
         f"- 平均信号结构分：{stats.get('average_pattern_signal_score') if stats.get('average_pattern_signal_score') is not None else '未记录'}",
         f"- Signal groups：{count_items_text(stats.get('signal_groups') or [])}",
+        f"- Path 设计动作：{count_items_text(path_stats.get('design_moves') or [], limit=6)}",
+        f"- Path 缺口层：{count_items_text(path_stats.get('claim_gap_layers') or [], limit=6)}",
+        f"- Path evidence types：{count_items_text(path_stats.get('evidence_types') or [], limit=6)}",
         "",
     ]
     if not payload.get("patterns"):
