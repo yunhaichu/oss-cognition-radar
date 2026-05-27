@@ -510,6 +510,23 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertFalse(any("['bad']" in line for line in lines))
         self.assertFalse(any("7=bad_key" in line for line in lines))
 
+    def test_preset_export_markdown_renders_scalar_source_selector_filters_stably(self):
+        payload = preset_exports_payload({})
+        payload["source_selector_filters"] = {
+            "archive_track": "agent",
+            "enabled": True,
+            "fixture_validation_status": "ready",
+            "min_track_score": 70.5,
+        }
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Source selector fixture filter\uff1aready", lines)
+        self.assertIn(
+            "- Source selector filters\uff1aarchive_track=agent, enabled=True, fixture_validation_status=ready, min_track_score=70.5",
+            lines,
+        )
+
     def test_preset_export_markdown_renders_empty_requested_preset_ids(self):
         markdown = radar.render_archive_route_detail_preset_exports(preset_exports_payload({}))
         lines = markdown.splitlines()
