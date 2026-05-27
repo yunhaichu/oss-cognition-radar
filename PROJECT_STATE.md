@@ -143,6 +143,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Malformed root payload Markdown coverage: route detail preset export Markdown now treats malformed non-dict root payloads as empty payloads and renders fallback provenance without leaking raw payload content.
 - Empty payload baseline Markdown coverage: route detail preset export Markdown now has a fixed empty-payload baseline covering fallback schema/source/fixture/validation/count fields, no validation section, and empty export messaging.
 - Scalar source selector filter Markdown coverage: route detail preset export Markdown now renders string, boolean, integer, and float source selector filter values in stable key order while preserving fixture filter precedence.
+- Source selector fixture precedence Markdown coverage: route detail preset export Markdown now has regression coverage that `validation_fixture_status` takes precedence over `fixture_validation_status`, which takes precedence over the fallback source fixture status filter.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -167,4 +168,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add preset export Markdown source selector fixture precedence coverage.
+Add preset export Markdown source fixture validation status fallback coverage.
