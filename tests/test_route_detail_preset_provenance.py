@@ -2302,6 +2302,20 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
 
         self.assertIn("- Source fixture validation\uff1aready / matches expected True", lines)
 
+    def test_preset_export_markdown_falls_back_to_validation_status_for_source_fixture_mismatch(self):
+        payload = preset_exports_payload(
+            {
+                "validation_status": "blocked",
+                "expected_validation_status": "ready",
+            }
+        )
+        payload.pop("source_fixture_validation_status")
+        payload.pop("source_fixture_validation_matches_expected")
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Source fixture validation\uff1ablocked / matches expected False", lines)
+
     def test_preset_export_markdown_renders_malformed_source_fixture_validation_as_unknown(self):
         payload = preset_exports_payload({})
         payload["source_fixture_validation_status"] = {"bad": "status"}
