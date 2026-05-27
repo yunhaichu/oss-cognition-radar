@@ -1983,6 +1983,87 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_uses_derived_fallbacks_for_malformed_top_level_summary_counts(self):
+        payload = preset_exports_payload({})
+        payload["summary"] = {
+            "preset_count": {"bad": "preset"},
+            "route_count": ["route"],
+            "example_count": {"bad": "example"},
+            "repository_count": ["repo"],
+            "unique_evidence_count": {"bad": "evidence"},
+        }
+        payload["preset_validation"]["selected_preset_count"] = 1
+        payload["preset_validation"]["expected_route_count"] = 2
+        payload["preset_validation"]["expected_example_count"] = 3
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "routes": [
+                        {
+                            "repositories": ["owner/repo", "owner/second"],
+                            "examples": [
+                                {"evidence_stable_id": "ev_repo"},
+                                {"evidence_id": "ev_second"},
+                            ],
+                        },
+                        {
+                            "repositories": ["owner/repo"],
+                            "examples": [{"evidence_stable_id": "ev_repo"}],
+                        },
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Preset / route / example\uff1a1 / 2 / 3", lines)
+        self.assertIn("- Repository / unique evidence\uff1a2 / 2", lines)
+        self.assertIn("- Selected preset count consistency\uff1a1 / summary 1 / matches summary True", lines)
+        self.assertIn(
+            "- Expected route/example consistency\uff1aroute 2 / summary 2 / matches summary True; example 3 / summary 3 / matches summary True",
+            lines,
+        )
+        self.assertFalse(any("{'bad': 'preset'}" in line for line in lines))
+        self.assertFalse(any("['route']" in line for line in lines))
+        self.assertFalse(any("{'bad': 'example'}" in line for line in lines))
+        self.assertFalse(any("['repo']" in line for line in lines))
+        self.assertFalse(any("{'bad': 'evidence'}" in line for line in lines))
+
+    def test_preset_export_markdown_uses_derived_fallbacks_for_malformed_top_level_summary_payload(self):
+        payload = preset_exports_payload({})
+        payload["summary"] = ["bad summary"]
+        payload["preset_validation"]["selected_preset_count"] = 1
+        payload["preset_validation"]["expected_route_count"] = 2
+        payload["preset_validation"]["expected_example_count"] = 3
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "routes": [
+                        {
+                            "repositories": ["owner/repo", "owner/second"],
+                            "examples": [
+                                {"evidence_stable_id": "ev_repo"},
+                                {"evidence_id": "ev_second"},
+                            ],
+                        },
+                        {
+                            "repositories": ["owner/repo"],
+                            "examples": [{"evidence_stable_id": "ev_repo"}],
+                        },
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Preset / route / example\uff1a1 / 2 / 3", lines)
+        self.assertIn("- Repository / unique evidence\uff1a2 / 2", lines)
+        self.assertFalse(any("bad summary" in line for line in lines))
+
     def test_preset_export_markdown_preserves_explicit_zero_top_level_summary_counts(self):
         payload = preset_exports_payload({})
         payload["summary"] = {

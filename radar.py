@@ -10387,6 +10387,8 @@ def render_archive_route_detail(payload: dict) -> str:
 
 def render_archive_route_detail_preset_exports(payload: dict) -> str:
     summary = payload.get("summary") or {}
+    if not isinstance(summary, dict):
+        summary = {}
     validation = payload.get("preset_validation") or {}
     raw_source_selector_filters = payload.get("source_selector_filters") or {}
     if isinstance(raw_source_selector_filters, dict):
@@ -10454,21 +10456,27 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
     derived_repository_count = len(export_repository_names)
     derived_evidence_count = len(export_evidence_refs)
     summary_preset_count = (
-        summary.get("preset_count") if summary.get("preset_count") is not None else derived_preset_count
+        count_or_default(summary.get("preset_count"), default=derived_preset_count)
+        if summary.get("preset_count") is not None
+        else derived_preset_count
     )
     summary_route_count = (
-        summary.get("route_count") if summary.get("route_count") is not None else derived_route_count
+        count_or_default(summary.get("route_count"), default=derived_route_count)
+        if summary.get("route_count") is not None
+        else derived_route_count
     )
     summary_example_count = (
-        summary.get("example_count") if summary.get("example_count") is not None else derived_example_count
+        count_or_default(summary.get("example_count"), default=derived_example_count)
+        if summary.get("example_count") is not None
+        else derived_example_count
     )
     summary_repository_count = (
-        summary.get("repository_count")
+        count_or_default(summary.get("repository_count"), default=derived_repository_count)
         if summary.get("repository_count") is not None
         else derived_repository_count
     )
     summary_evidence_count = (
-        summary.get("unique_evidence_count")
+        count_or_default(summary.get("unique_evidence_count"), default=derived_evidence_count)
         if summary.get("unique_evidence_count") is not None
         else derived_evidence_count
     )
