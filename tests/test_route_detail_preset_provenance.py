@@ -630,6 +630,54 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_renders_per_route_repository_count_consistency(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "routes": [
+                        {
+                            "route_id": "validation::tests",
+                            "repository_count": 2,
+                            "repositories": ["owner/repo", "owner/second", "owner/repo"],
+                        }
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn(
+            "  - Repository count consistency\uff1arepository 2 / route 2 / matches route True",
+            lines,
+        )
+
+    def test_preset_export_markdown_flags_per_route_repository_count_mismatch(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "routes": [
+                        {
+                            "route_id": "validation::tests",
+                            "repository_count": 1,
+                            "repositories": ["owner/repo", "owner/second"],
+                        }
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn(
+            "  - Repository count consistency\uff1arepository 2 / route 1 / matches route False",
+            lines,
+        )
+
     def test_preset_export_markdown_uses_source_fixture_status_fallback_when_filters_empty(self):
         markdown = radar.render_archive_route_detail_preset_exports(
             preset_exports_payload({"source_fixture_status_filter": "ready"})
