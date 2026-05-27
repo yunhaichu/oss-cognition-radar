@@ -74,6 +74,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Preset-ID scoped fixture batch regression coverage: `tests/test_route_detail_preset_provenance.py` verifies `--profile-path-preset-id` narrows fixture-driven preset batches to requested presets while preserving source fixture provenance, validation summary, aggregate export counts, and Markdown output.
 - Multi-preset Markdown regression coverage: `tests/test_route_detail_preset_provenance.py` verifies multiple selected preset IDs render both selected preset sections in route detail preset export Markdown while excluding unselected fixture presets.
 - Source-filtered preset args: fixture-driven preset exports now carry selector/dashboard source filters such as confidence source, signal group, track, and minimum score into each route detail preset run before applying the preset-specific move/route/repository selectors.
+- Source-filter precedence regression coverage: `tests/test_route_detail_preset_provenance.py` verifies preset move/route/repository selectors override conflicting source path filters while still inheriting non-path source filters.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -98,4 +99,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add source-filter precedence regression coverage for preset selectors overriding source path filters.
+Add dashboard single-fixture preset arg inheritance coverage for source selector filters.
