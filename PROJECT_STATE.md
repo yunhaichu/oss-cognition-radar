@@ -146,6 +146,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Source selector fixture precedence Markdown coverage: route detail preset export Markdown now has regression coverage that `validation_fixture_status` takes precedence over `fixture_validation_status`, which takes precedence over the fallback source fixture status filter.
 - Source fixture validation fallback Markdown coverage: route detail preset export Markdown now falls back to preset validation summary status when source fixture validation status is missing and derives the expected-status match flag when possible.
 - Source fixture validation mismatch fallback Markdown coverage: route detail preset export Markdown now has regression coverage that fallback validation status mismatches derive `matches expected False` instead of unknown.
+- Source fixture validation unknown fallback Markdown coverage: route detail preset export Markdown now has regression coverage that fallback validation status without an expected status keeps `matches expected unknown`.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -170,4 +171,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add preset export Markdown source fixture validation unknown fallback coverage.
+Add preset export Markdown source fixture validation explicit flag precedence coverage.
