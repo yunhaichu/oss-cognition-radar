@@ -8882,7 +8882,12 @@ def render_archive_dashboard(payload: dict) -> str:
       bundle.fixture_description = fixture?.description || "";
       bundle.expected_validation_status = fixture?.expected_validation_status || "";
       bundle.source_validation_fixtures_schema = payload.validation_fixtures?.schema_version || "";
+      bundle.source_selector_filters = payload.filters || {};
       bundle.source_fixture_status_filter = payload.validation_fixtures?.fixture_status_filter || "all";
+      bundle.source_fixture_count = payload.validation_fixtures?.fixture_count;
+      bundle.source_unfiltered_fixture_count = payload.validation_fixtures?.unfiltered_fixture_count;
+      bundle.source_fixture_matching_expected_count = payload.validation_fixtures?.matching_expected_count;
+      bundle.source_fixture_unfiltered_matching_expected_count = payload.validation_fixtures?.unfiltered_matching_expected_count;
       bundle.source_fixture_status_counts = payload.validation_fixtures?.fixture_status_counts || {};
       bundle.source_all_fixture_status_counts = payload.validation_fixtures?.all_fixture_status_counts || {};
       bundle.source_route_detail_schema = payload.schema_version || "";
@@ -9044,12 +9049,30 @@ def render_archive_dashboard(payload: dict) -> str:
     function routeDetailFixtureMarkdown(fixture, bundle) {
       const validation = bundle.validation_summary || {};
       const duplicateText = (validation.duplicate_preset_ids || []).join(", ") || "none";
+      const sourceFilters = bundle.source_selector_filters || {};
+      const sourceFilterValue = sourceFilters.validation_fixture_status
+        || sourceFilters.fixture_validation_status
+        || bundle.source_fixture_status_filter
+        || "all";
+      const sourceStatusText = Object.entries(bundle.source_fixture_status_counts || {})
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([status, count]) => `${status}=${count}`)
+        .join(", ") || "none";
+      const sourceAllStatusText = Object.entries(bundle.source_all_fixture_status_counts || {})
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([status, count]) => `${status}=${count}`)
+        .join(", ") || "none";
       const lines = [
         "# Route Detail Validation Fixture Bundle",
         "",
         `- Schema: ${bundle.schema_version || "route_detail_selector_preset_bundle_v1"}`,
         `- Fixture ID: \\`${bundle.fixture_id || ""}\\``,
         `- Source fixture status filter: ${bundle.source_fixture_status_filter || "all"}`,
+        `- Source selector fixture filter: ${sourceFilterValue}`,
+        `- Source fixture count: ${bundle.source_fixture_count ?? "unknown"} / unfiltered ${bundle.source_unfiltered_fixture_count ?? "unknown"}`,
+        `- Source fixture matching expected: ${bundle.source_fixture_matching_expected_count ?? "unknown"} / unfiltered ${bundle.source_fixture_unfiltered_matching_expected_count ?? "unknown"}`,
+        `- Source fixture status counts: ${sourceStatusText}`,
+        `- Source all fixture status counts: ${sourceAllStatusText}`,
         `- Expected validation status: ${bundle.expected_validation_status || "unknown"}`,
         `- Validation status: ${bundle.validation_status || "unknown"}`,
         `- Validation matches expected: ${bundle.validation_matches_expected ? "yes" : "no"}`,
