@@ -107,6 +107,14 @@ python3 radar.py \
   --profile-path-preset reports/route-selectors.json \
   --archive-output reports/route-detail-presets.md \
   --json-output reports/route-detail-presets.json
+
+python3 radar.py \
+  --archive-route-detail \
+  --db data/radar.sqlite \
+  --profile-path-preset reports/route-selectors.json \
+  --profile-path-preset-fixture missing_move \
+  --archive-output reports/route-detail-preset-fixture.md \
+  --json-output reports/route-detail-preset-fixture.json
 ```
 
 自动校准 archive 中的 acquisition binding confidence。该步骤只使用归档内信号，会根据跨项目重复性、同仓库跨版本稳定性、release/issue/PR 时间序列、证据类型、证据极性、稳定链接和关键词稀疏度等归档信号生成 `archive_auto_v1` confidence。`archive_auto_v1` 会把分数拆成 heuristic 基础分、跨项目重复分、时间序列分、证据质量分和惩罚项，避免热门项目的绑定全部饱和为 high：
@@ -238,8 +246,8 @@ SQLite 当前会保存：
 - `--archive-show owner/name`：优先展示最新 deep dossier，没有 deep 快照时回退到最新 discovery 快照；存在跨项目语义模式时会同时显示该仓库的 Repository Cognition Profile
 - `--archive-patterns`：聚合最新 deep dossiers 中的 evidence acquisition bindings，按 claim 字段和缺口证据层输出跨项目重复模式、例子仓库和 evidence
 - `--archive-route-detail`：批量导出 profile path route detail，下钻到具体设计动作、证据路线、仓库样例、path/pattern ID 和 evidence stable ID
-- `--archive-route-selectors`：列出可用于 `--archive-route-detail` 的 design move、evidence route 和 repository selector 候选，并在 JSON 中附带 `route_detail_selector_preset_bundle_v1`
-- `--profile-path-preset PATH` / `--profile-path-preset-id ID`：用于 `--archive-route-detail`，从 selector preset bundle 批量运行 route detail 导出；可用 preset ID 选择其中一组或多组 selector，导出前会生成 `route_detail_preset_validation_v1` 检查摘要
+- `--archive-route-selectors`：列出可用于 `--archive-route-detail` 的 design move、evidence route 和 repository selector 候选，并在 JSON 中附带 `route_detail_selector_preset_bundle_v1` 和 `route_detail_preset_validation_fixtures_v1`
+- `--profile-path-preset PATH` / `--profile-path-preset-id ID` / `--profile-path-preset-fixture ID`：用于 `--archive-route-detail`，从 selector preset bundle 批量运行 route detail 导出；可用 preset ID 选择其中一组或多组 selector，也可运行 selector JSON 内置的 validation fixture；导出前会生成 `route_detail_preset_validation_v1` 检查摘要
 - `--archive-signal-group GROUP`：用于 `--archive-patterns` / `--archive-dashboard` / `--archive-route-detail` / `--archive-route-selectors`，按自动 confidence signal group 过滤，例如 `time_series`、`drift`、`pattern`、`evidence`
 - `--archive-auto-calibrate`：按 archive 内部信号自动重算 acquisition binding confidence，并重建 archive search index
 - `--archive-dashboard [PATH]`：生成一个可直接打开的静态 HTML dashboard，包含搜索、track 过滤、confidence source 过滤、最低分过滤、跨项目 patterns、项目详情、claims、claim gaps、evidence acquisition bindings、route detail selectors 和 evidence 摘要
@@ -288,7 +296,7 @@ patterns 现在会先做 `semantic_v1` 归并：claim 字段会归一到问题�
 
 `--archive-patterns` 还会从 signal-ranked semantic patterns 自动派生 `cognition_summaries`。每条摘要包含稳定 `summary_id`、认知动作类别、可迁移规则、证据依据、自动复核动作、置信度、原始字段/证据层分布和支撑 patterns，用于把“哪些 claim-gap 修补模式反复出现”提升为“哪些可观察设计/认知动作反复出现”。该摘要完全来自 archive evidence 和自动信号。
 
-系统还会从 `semantic_v1` patterns 自动派生 `repository_cognition_profiles`。每个仓库画像会显示该项目最强体现的跨项目设计动作、证据族、原始 claim 字段/证据层分布、支撑 semantic patterns 和 evidence examples；`--archive-show` 和 dashboard 的仓库详情页会直接展示 Repository Cognition Profile，`--archive-search` 和 dashboard 搜索也会纳入画像内容。CLI 搜索和 dashboard 仓库详情都会输出 profile-to-claim/evidence explanation paths，把设计动作连接到具体 claim gap、采集原因和 evidence stable ID，并按设计动作、缺口层和 evidence type 汇总 path-level 统计。`--archive-patterns` 和 dashboard 还会输出 `repository_cognition_profile_path_comparisons`，按同一设计动作跨仓库比较不同 claim gap layer 与 evidence type 组成的证据路线；dashboard 可以继续按设计动作、证据路线和仓库下钻这些 comparisons，并在 route detail 面板中展开完整仓库样例、confidence 信号和 evidence stable ID。route detail 面板和 `--archive-route-detail` 都可以按当前过滤范围导出 `route_detail_drilldown_v1` JSON 或 Markdown，把 evidence route、仓库样例、path/pattern ID 和 evidence stable ID 保存为可复用研究材料；`--archive-route-selectors` 和 dashboard JSON 都输出同一版 `route_detail_selectors_v1`，列出批处理可用的设计动作、证据路线和仓库 selector；selector JSON 和 dashboard route detail JSON 都会附带 `route_detail_selector_preset_bundle_v1`，可由 `--profile-path-preset` 直接批量运行 route detail 导出；preset 批处理会先输出 `route_detail_preset_validation_v1`，汇总 ready/unmatched preset、重复 ID 和预计 route/example 数；dashboard 的设计动作、证据路线和仓库下钻选项会优先使用该 selector payload，并把 selector values 纳入搜索匹配；同一 dashboard 过滤状态会写入 URL hash，Permalink 可以直接恢复搜索、track、confidence、signal、score、设计动作、证据路线和仓库范围。
+系统还会从 `semantic_v1` patterns 自动派生 `repository_cognition_profiles`。每个仓库画像会显示该项目最强体现的跨项目设计动作、证据族、原始 claim 字段/证据层分布、支撑 semantic patterns 和 evidence examples；`--archive-show` 和 dashboard 的仓库详情页会直接展示 Repository Cognition Profile，`--archive-search` 和 dashboard 搜索也会纳入画像内容。CLI 搜索和 dashboard 仓库详情都会输出 profile-to-claim/evidence explanation paths，把设计动作连接到具体 claim gap、采集原因和 evidence stable ID，并按设计动作、缺口层和 evidence type 汇总 path-level 统计。`--archive-patterns` 和 dashboard 还会输出 `repository_cognition_profile_path_comparisons`，按同一设计动作跨仓库比较不同 claim gap layer 与 evidence type 组成的证据路线；dashboard 可以继续按设计动作、证据路线和仓库下钻这些 comparisons，并在 route detail 面板中展开完整仓库样例、confidence 信号和 evidence stable ID。route detail 面板和 `--archive-route-detail` 都可以按当前过滤范围导出 `route_detail_drilldown_v1` JSON 或 Markdown，把 evidence route、仓库样例、path/pattern ID 和 evidence stable ID 保存为可复用研究材料；`--archive-route-selectors` 和 dashboard JSON 都输出同一版 `route_detail_selectors_v1`，列出批处理可用的设计动作、证据路线和仓库 selector；selector JSON 和 dashboard route detail JSON 都会附带 `route_detail_selector_preset_bundle_v1`，可由 `--profile-path-preset` 直接批量运行 route detail 导出；selector JSON 还会附带 `route_detail_preset_validation_fixtures_v1`，可用 `--profile-path-preset-fixture` 覆盖 missing move、missing route、missing repo 和 duplicate ID 这类失败路径；preset 批处理会先输出 `route_detail_preset_validation_v1`，汇总 ready/unmatched preset、重复 ID 和预计 route/example 数；dashboard 的设计动作、证据路线和仓库下钻选项会优先使用该 selector payload，并把 selector values 纳入搜索匹配；同一 dashboard 过滤状态会写入 URL hash，Permalink 可以直接恢复搜索、track、confidence、signal、score、设计动作、证据路线和仓库范围。
 
 实现层证据会从 Git tree 中限量抽取：
 

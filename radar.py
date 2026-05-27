@@ -288,6 +288,10 @@ def parse_args() -> argparse.Namespace:
         action="append",
         help="Archive route detail mode: run one preset ID from --profile-path-preset. Repeat to run several.",
     )
+    parser.add_argument(
+        "--profile-path-preset-fixture",
+        help="Archive route detail mode: run one validation fixture ID from a selector preset bundle JSON.",
+    )
     parser.add_argument("--archive-output", help="Archive mode: optional Markdown output path. Defaults to stdout.")
     return parser.parse_args()
 
@@ -6191,6 +6195,146 @@ def build_route_detail_selector_preset_bundle(
     }
 
 
+def route_detail_fixture_preset(
+    preset_id: str,
+    label: str,
+    *,
+    move_selector: str,
+    route_selector: str,
+    repo_selector: str,
+) -> dict:
+    return {
+        "preset_id": preset_id,
+        "label": label,
+        "selectors": {
+            "profile_path_move": move_selector,
+            "profile_path_route": route_selector,
+            "profile_path_repo": repo_selector,
+        },
+        "summary": {"example_count": 0},
+    }
+
+
+def build_route_detail_preset_validation_fixtures(
+    move_payloads: list[dict],
+    args: argparse.Namespace,
+    *,
+    generated_at: str | None = None,
+) -> dict:
+    fixtures = []
+    first_move = next((move for move in move_payloads if move.get("routes")), None)
+    first_route = next(
+        (
+            route
+            for route in ((first_move or {}).get("routes") or [])
+            if route_detail_route_repositories(route)
+        ),
+        None,
+    )
+    if first_move and first_route:
+        move_key = first_move.get("move_key") or ""
+        route_id = first_route.get("route_id") or first_route.get("route_key") or ""
+        repo = route_detail_route_repositories(first_route)[0]
+        base_filters = archive_route_detail_filters_payload(args)
+        fixtures.extend(
+            [
+                {
+                    "fixture_id": "missing_move",
+                    "expected_validation_status": "blocked",
+                    "description": "Preset move selector is outside the current archive selector scope.",
+                    "preset_bundle": {
+                        "schema_version": "route_detail_selector_preset_bundle_v1",
+                        "generated_at": generated_at or utc_now().isoformat(),
+                        "filters": base_filters,
+                        "preset_count": 1,
+                        "presets": [
+                            route_detail_fixture_preset(
+                                "route_preset_fixture_missing_move",
+                                "Missing move fixture",
+                                move_selector="missing-move-fixture",
+                                route_selector=route_id,
+                                repo_selector=repo,
+                            )
+                        ],
+                    },
+                },
+                {
+                    "fixture_id": "missing_route",
+                    "expected_validation_status": "blocked",
+                    "description": "Preset route selector is outside the matched move scope.",
+                    "preset_bundle": {
+                        "schema_version": "route_detail_selector_preset_bundle_v1",
+                        "generated_at": generated_at or utc_now().isoformat(),
+                        "filters": base_filters,
+                        "preset_count": 1,
+                        "presets": [
+                            route_detail_fixture_preset(
+                                "route_preset_fixture_missing_route",
+                                "Missing route fixture",
+                                move_selector=move_key,
+                                route_selector="missing-route-fixture",
+                                repo_selector=repo,
+                            )
+                        ],
+                    },
+                },
+                {
+                    "fixture_id": "missing_repo",
+                    "expected_validation_status": "blocked",
+                    "description": "Preset repository selector is outside the matched route scope.",
+                    "preset_bundle": {
+                        "schema_version": "route_detail_selector_preset_bundle_v1",
+                        "generated_at": generated_at or utc_now().isoformat(),
+                        "filters": base_filters,
+                        "preset_count": 1,
+                        "presets": [
+                            route_detail_fixture_preset(
+                                "route_preset_fixture_missing_repo",
+                                "Missing repo fixture",
+                                move_selector=move_key,
+                                route_selector=route_id,
+                                repo_selector="missing/repo-fixture",
+                            )
+                        ],
+                    },
+                },
+                {
+                    "fixture_id": "duplicate_ids",
+                    "expected_validation_status": "duplicate_ids",
+                    "description": "Two ready presets reuse the same preset ID.",
+                    "preset_bundle": {
+                        "schema_version": "route_detail_selector_preset_bundle_v1",
+                        "generated_at": generated_at or utc_now().isoformat(),
+                        "filters": base_filters,
+                        "preset_count": 2,
+                        "presets": [
+                            route_detail_fixture_preset(
+                                "route_preset_fixture_duplicate",
+                                "Duplicate ID fixture A",
+                                move_selector=move_key,
+                                route_selector=route_id,
+                                repo_selector=repo,
+                            ),
+                            route_detail_fixture_preset(
+                                "route_preset_fixture_duplicate",
+                                "Duplicate ID fixture B",
+                                move_selector=move_key,
+                                route_selector=route_id,
+                                repo_selector=repo,
+                            ),
+                        ],
+                    },
+                },
+            ]
+        )
+    return {
+        "schema_version": "route_detail_preset_validation_fixtures_v1",
+        "generated_at": generated_at or utc_now().isoformat(),
+        "fixture_count": len(fixtures),
+        "fixtures": fixtures,
+    }
+
+
 def build_route_detail_selectors_payload(
     comparisons: list[dict],
     args: argparse.Namespace,
@@ -6333,6 +6477,11 @@ def build_route_detail_selectors_payload(
         args,
         generated_at=generated_at_value,
     )
+    validation_fixtures = build_route_detail_preset_validation_fixtures(
+        move_payloads,
+        args,
+        generated_at=generated_at_value,
+    )
     return {
         "schema_version": "route_detail_selectors_v1",
         "mode": "archive_route_selectors",
@@ -6349,6 +6498,7 @@ def build_route_detail_selectors_payload(
             "preset_count": preset_bundle.get("preset_count", 0),
         },
         "preset_bundle": preset_bundle,
+        "validation_fixtures": validation_fixtures,
         "moves": move_payloads,
     }
 
@@ -6368,6 +6518,18 @@ def read_json_payload(path: str) -> dict:
 
 
 def route_detail_preset_bundle_from_payload(payload: dict, args: argparse.Namespace) -> dict:
+    fixture_id = getattr(args, "profile_path_preset_fixture", None)
+    if fixture_id:
+        fixtures = ((payload.get("validation_fixtures") or {}).get("fixtures") or [])
+        fixture = next((item for item in fixtures if item.get("fixture_id") == fixture_id), None)
+        if not fixture:
+            available = ", ".join(item.get("fixture_id") or "" for item in fixtures if item.get("fixture_id")) or "none"
+            raise SystemExit(f"Preset validation fixture not found: {fixture_id}. Available fixtures: {available}.")
+        bundle = fixture.get("preset_bundle") or {}
+        bundle["fixture_id"] = fixture.get("fixture_id")
+        bundle["fixture_description"] = fixture.get("description")
+        bundle["expected_validation_status"] = fixture.get("expected_validation_status")
+        return bundle
     if payload.get("schema_version") == "route_detail_selector_preset_bundle_v1":
         return payload
     if isinstance(payload.get("preset_bundle"), dict):
@@ -6488,6 +6650,7 @@ def route_detail_preset_validation_summary(selector_payload: dict, bundle: dict,
         seen_ids.add(preset_id)
 
     statuses = [route_detail_preset_status(selector_payload, preset) for preset in presets]
+    ready_statuses = [item for item in statuses if item.get("can_run")]
     ready_count = sum(1 for item in statuses if item.get("can_run"))
     missing_count = len(statuses) - ready_count
     status = "ready"
@@ -6504,8 +6667,8 @@ def route_detail_preset_validation_summary(selector_payload: dict, bundle: dict,
         "ready_preset_count": ready_count,
         "unmatched_preset_count": missing_count,
         "duplicate_preset_ids": sorted(set(duplicate_ids)),
-        "expected_route_count": sum(item.get("matched_route_count", 0) for item in statuses),
-        "expected_example_count": sum(item.get("expected_example_count", 0) for item in statuses),
+        "expected_route_count": sum(item.get("matched_route_count", 0) for item in ready_statuses),
+        "expected_example_count": sum(item.get("expected_example_count", 0) for item in ready_statuses),
         "archive_selector_summary": selector_payload.get("summary") or {},
         "preset_statuses": statuses,
     }
@@ -6577,6 +6740,9 @@ def archive_route_detail_preset_exports_payload(conn: sqlite3.Connection, args: 
         "source_preset_path": args.profile_path_preset,
         "source_bundle_schema": bundle.get("schema_version"),
         "source_bundle_generated_at": bundle.get("generated_at"),
+        "source_fixture_id": bundle.get("fixture_id"),
+        "source_fixture_description": bundle.get("fixture_description"),
+        "expected_validation_status": bundle.get("expected_validation_status"),
         "requested_preset_ids": args.profile_path_preset_id or [],
         "filters": archive_route_detail_filters_payload(args),
         "preset_validation": preset_validation,
@@ -9573,6 +9739,8 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         f"- 生成时间：{payload.get('generated_at')}",
         f"- Preset source：{payload.get('source_preset_path') or '无'}",
         f"- Source schema：{payload.get('source_bundle_schema') or 'unknown'}",
+        f"- Source fixture：{payload.get('source_fixture_id') or '无'}",
+        f"- Expected validation status：{payload.get('expected_validation_status') or '无'}",
         f"- Preset / route / example：{summary.get('preset_count', 0)} / {summary.get('route_count', 0)} / {summary.get('example_count', 0)}",
         f"- Repository / unique evidence：{summary.get('repository_count', 0)} / {summary.get('unique_evidence_count', 0)}",
         "",
@@ -9714,6 +9882,19 @@ def render_archive_route_selectors(payload: dict) -> str:
             )
         if len(presets) > 12:
             lines.append(f"- ... {len(presets) - 12} more presets in JSON")
+        lines.append("")
+    validation_fixtures = payload.get("validation_fixtures") or {}
+    fixtures = validation_fixtures.get("fixtures") or []
+    if fixtures:
+        lines.extend(["## Validation Fixtures", ""])
+        lines.append(f"- Schema：{validation_fixtures.get('schema_version') or 'route_detail_preset_validation_fixtures_v1'}")
+        lines.append(f"- Fixture count：{validation_fixtures.get('fixture_count', len(fixtures))}")
+        lines.append("")
+        for fixture in fixtures:
+            lines.append(
+                f"- `{fixture.get('fixture_id') or ''}` expected={fixture.get('expected_validation_status') or 'unknown'}；"
+                f"{fixture.get('description') or ''}"
+            )
         lines.append("")
     return "\n".join(lines)
 
@@ -10036,6 +10217,8 @@ def handle_archive(args: argparse.Namespace) -> None:
         raise SystemExit("--profile-path-preset is only supported with --archive-route-detail.")
     if args.profile_path_preset_id and not args.profile_path_preset:
         raise SystemExit("--profile-path-preset-id requires --profile-path-preset.")
+    if args.profile_path_preset_fixture and not args.profile_path_preset:
+        raise SystemExit("--profile-path-preset-fixture requires --profile-path-preset.")
     profile_path_filters = [
         args.profile_path_move,
         args.profile_path_route,
