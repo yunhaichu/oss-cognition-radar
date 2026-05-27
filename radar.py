@@ -10496,10 +10496,14 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
                 messages = "; ".join(message for message in raw_messages if isinstance(message, str))
             else:
                 messages = ""
+            matched_move_count = count_or_default(status.get("matched_move_count", 0))
+            matched_route_count = count_or_default(status.get("matched_route_count", 0))
+            matched_repository_count = count_or_default(status.get("matched_repository_count", 0))
+            expected_status_example_count = count_or_default(status.get("expected_example_count", 0))
             lines.append(
                 f"- `{status.get('preset_id') or ''}` {status.get('status') or 'unknown'}："
-                f"moves {status.get('matched_move_count', 0)}；routes {status.get('matched_route_count', 0)}；"
-                f"repos {status.get('matched_repository_count', 0)}；examples {status.get('expected_example_count', 0)}；{messages}"
+                f"moves {matched_move_count}；routes {matched_route_count}；"
+                f"repos {matched_repository_count}；examples {expected_status_example_count}；{messages}"
             )
         if len(preset_statuses) > 12:
             lines.append(f"- ... {len(preset_statuses) - 12} more preset statuses in JSON")

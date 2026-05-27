@@ -690,6 +690,30 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_renders_malformed_validation_preset_status_counts_as_zero(self):
+        payload = preset_exports_payload({})
+        payload["preset_validation"]["preset_statuses"] = [
+            {
+                "preset_id": "batch_repo",
+                "status": "ready",
+                "matched_move_count": {"bad": "move"},
+                "matched_route_count": ["route"],
+                "matched_repository_count": None,
+                "expected_example_count": {"bad": "example"},
+                "messages": ["malformed counts"],
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn(
+            "- `batch_repo` ready\uff1amoves 0\uff1broutes 0\uff1brepos 0\uff1bexamples 0\uff1bmalformed counts",
+            lines,
+        )
+        self.assertFalse(any("{'bad': 'move'}" in line for line in lines))
+        self.assertFalse(any("['route']" in line for line in lines))
+        self.assertFalse(any("{'bad': 'example'}" in line for line in lines))
+
     def test_preset_export_markdown_defaults_missing_validation_preset_status_identity(self):
         payload = preset_exports_payload({})
         payload["preset_validation"]["preset_statuses"] = [
