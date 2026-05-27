@@ -408,6 +408,24 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertFalse(any("['bad_schema']" in line for line in lines))
         self.assertFalse(any("{'bad': 'fixture'}" in line for line in lines))
 
+    def test_preset_export_markdown_renders_malformed_top_level_identity_as_fallbacks(self):
+        payload = preset_exports_payload({})
+        payload["schema_version"] = {"bad": "schema"}
+        payload["db"] = ["bad.sqlite"]
+        payload["generated_at"] = {"bad": "time"}
+        payload["expected_validation_status"] = ["ready"]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("- Schema\uff1aroute_detail_preset_exports_v1", lines)
+        self.assertIn("- \u6570\u636e\u5e93\uff1aunknown", lines)
+        self.assertIn("- \u751f\u6210\u65f6\u95f4\uff1aunknown", lines)
+        self.assertIn("- Expected validation status\uff1a\u65e0", lines)
+        self.assertFalse(any("{'bad': 'schema'}" in line for line in lines))
+        self.assertFalse(any("['bad.sqlite']" in line for line in lines))
+        self.assertFalse(any("{'bad': 'time'}" in line for line in lines))
+        self.assertFalse(any("['ready']" in line for line in lines))
+
     def test_preset_export_markdown_filters_malformed_source_selector_filter_entries(self):
         payload = preset_exports_payload({})
         payload["source_selector_filters"] = {

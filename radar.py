@@ -10369,9 +10369,17 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
     requested_preset_ids_text = ", ".join(requested_preset_ids) or "无"
     source_status_text = count_map_text(payload.get("source_fixture_status_counts"))
     source_all_status_text = count_map_text(payload.get("source_all_fixture_status_counts"))
+    schema_version_text = string_value_text(
+        payload.get("schema_version"), fallback="route_detail_preset_exports_v1"
+    )
+    db_text = string_value_text(payload.get("db"), fallback="unknown")
+    generated_at_text = string_value_text(payload.get("generated_at"), fallback="unknown")
     source_preset_path_text = string_value_text(payload.get("source_preset_path"), fallback="无")
     source_bundle_schema_text = string_value_text(payload.get("source_bundle_schema"), fallback="unknown")
     source_fixture_id_text = string_value_text(payload.get("source_fixture_id"), fallback="无")
+    expected_validation_status_text = string_value_text(
+        payload.get("expected_validation_status"), fallback="无"
+    )
     exports = payload.get("exports") or []
     derived_preset_count = len(exports)
     derived_route_count = 0
@@ -10414,9 +10422,9 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
     lines = [
         "# OSS Cognition Route Detail Preset Exports",
         "",
-        f"- Schema：{payload.get('schema_version') or 'route_detail_preset_exports_v1'}",
-        f"- 数据库：{payload.get('db')}",
-        f"- 生成时间：{payload.get('generated_at')}",
+        f"- Schema：{schema_version_text}",
+        f"- 数据库：{db_text}",
+        f"- 生成时间：{generated_at_text}",
         f"- Preset source：{source_preset_path_text}",
         f"- Requested preset IDs：{requested_preset_ids_text}",
         f"- Source schema：{source_bundle_schema_text}",
@@ -10429,7 +10437,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         f"- Source fixture matching expected：{count_value_text(payload.get('source_fixture_matching_expected_count'))} / unfiltered {count_value_text(payload.get('source_fixture_unfiltered_matching_expected_count'))}",
         f"- Source fixture status counts：{source_status_text}",
         f"- Source all fixture status counts：{source_all_status_text}",
-        f"- Expected validation status：{payload.get('expected_validation_status') or '无'}",
+        f"- Expected validation status：{expected_validation_status_text}",
         f"- Preset / route / example：{summary_preset_count} / {summary_route_count} / {summary_example_count}",
         f"- Repository / unique evidence：{summary_repository_count} / {summary_evidence_count}",
         f"- Repository/evidence count consistency：repository {derived_repository_count} / summary {summary_repository_count} / matches summary {derived_repository_count == summary_repository_count}; evidence {derived_evidence_count} / summary {summary_evidence_count} / matches summary {derived_evidence_count == summary_evidence_count}",
