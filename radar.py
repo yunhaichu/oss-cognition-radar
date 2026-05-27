@@ -6385,6 +6385,132 @@ def route_detail_preset_bundle_from_payload(payload: dict, args: argparse.Namesp
     raise SystemExit("Preset JSON must contain route_detail_selector_preset_bundle_v1 or route_detail_selectors_v1.")
 
 
+def route_detail_preset_selectors(preset: dict) -> dict:
+    return preset.get("selectors") or {}
+
+
+def route_detail_move_selector_values(move: dict) -> list[str | None]:
+    return [
+        move.get("comparison_id"),
+        move.get("move_key"),
+        move.get("design_move_category"),
+        move.get("design_move"),
+        *(move.get("selector_values") or []),
+    ]
+
+
+def route_detail_route_selector_values(route: dict) -> list[str | None]:
+    return [
+        route.get("route_id"),
+        route.get("route_key"),
+        route.get("route_label"),
+        route.get("claim_gap_layer"),
+        route.get("evidence_type"),
+        *(route.get("selector_values") or []),
+    ]
+
+
+def route_detail_route_repositories(route: dict) -> list[str]:
+    return sorted(
+        {
+            repo
+            for repo in [
+                *(route.get("repositories") or []),
+                *[item.get("value") for item in route.get("repository_options") or []],
+            ]
+            if repo
+        }
+    )
+
+
+def route_detail_preset_status(selector_payload: dict, preset: dict) -> dict:
+    selectors = route_detail_preset_selectors(preset)
+    move_selector = selectors.get("profile_path_move")
+    route_selector = selectors.get("profile_path_route")
+    repo_selector = selectors.get("profile_path_repo")
+    matched_moves = [
+        move
+        for move in selector_payload.get("moves") or []
+        if route_detail_selector_matches(move_selector, route_detail_move_selector_values(move))
+    ]
+    matched_routes = []
+    for move in matched_moves:
+        for route in move.get("routes") or []:
+            if route_detail_selector_matches(route_selector, route_detail_route_selector_values(route)):
+                matched_routes.append((move, route))
+
+    repository_matches = []
+    expected_examples = 0
+    for _, route in matched_routes:
+        route_repositories = route_detail_route_repositories(route)
+        if repo_selector:
+            if repo_selector in route_repositories:
+                repository_matches.append(repo_selector)
+                expected_examples += route_detail_selector_preset_repo_count(route, repo_selector)
+        else:
+            repository_matches.extend(route_repositories)
+            expected_examples += route.get("example_count", 0)
+
+    messages = []
+    if not matched_moves:
+        messages.append("profile_path_move does not match current selector scope")
+    if matched_moves and not matched_routes:
+        messages.append("profile_path_route does not match current selector scope")
+    if matched_routes and repo_selector and not repository_matches:
+        messages.append("profile_path_repo does not match current selector scope")
+    if not messages:
+        messages.append("preset selectors match current archive scope")
+
+    can_run = bool(matched_routes) and (not repo_selector or bool(repository_matches))
+    return {
+        "preset_id": preset.get("preset_id"),
+        "label": preset.get("label"),
+        "selectors": selectors,
+        "status": "ready" if can_run else "unmatched",
+        "can_run": can_run,
+        "matched_move_count": len(matched_moves),
+        "matched_route_count": len(matched_routes),
+        "matched_repository_count": len(set(repository_matches)),
+        "expected_example_count": expected_examples,
+        "messages": messages,
+    }
+
+
+def route_detail_preset_validation_summary(selector_payload: dict, bundle: dict, presets: list[dict]) -> dict:
+    seen_ids = set()
+    duplicate_ids = []
+    for preset in presets:
+        preset_id = preset.get("preset_id")
+        if not preset_id:
+            continue
+        if preset_id in seen_ids:
+            duplicate_ids.append(preset_id)
+        seen_ids.add(preset_id)
+
+    statuses = [route_detail_preset_status(selector_payload, preset) for preset in presets]
+    ready_count = sum(1 for item in statuses if item.get("can_run"))
+    missing_count = len(statuses) - ready_count
+    status = "ready"
+    if duplicate_ids:
+        status = "duplicate_ids"
+    if missing_count:
+        status = "partial" if ready_count else "blocked"
+    return {
+        "schema_version": "route_detail_preset_validation_v1",
+        "status": status,
+        "source_bundle_schema": bundle.get("schema_version"),
+        "source_bundle_preset_count": bundle.get("preset_count", len(bundle.get("presets") or [])),
+        "selected_preset_count": len(presets),
+        "ready_preset_count": ready_count,
+        "unmatched_preset_count": missing_count,
+        "duplicate_preset_ids": sorted(set(duplicate_ids)),
+        "expected_route_count": sum(item.get("matched_route_count", 0) for item in statuses),
+        "expected_example_count": sum(item.get("expected_example_count", 0) for item in statuses),
+        "archive_selector_summary": selector_payload.get("summary") or {},
+        "preset_statuses": statuses,
+    }
+
+
 def selected_route_detail_presets(bundle: dict, args: argparse.Namespace) -> list[dict]:
     presets = bundle.get("presets") or []
     selected_ids = set(args.profile_path_preset_id or [])
@@ -6422,6 +6548,8 @@ def archive_route_detail_preset_exports_payload(conn: sqlite3.Connection, args: 
     source_payload = read_json_payload(args.profile_path_preset)
     bundle = route_detail_preset_bundle_from_payload(source_payload, args)
     presets = selected_route_detail_presets(bundle, args)
+    selector_payload = archive_route_selectors_payload(conn, args)
+    preset_validation = route_detail_preset_validation_summary(selector_payload, bundle, presets)
     exports = []
     repository_names = set()
     evidence_refs = set()
@@ -6451,6 +6579,7 @@ def archive_route_detail_preset_exports_payload(conn: sqlite3.Connection, args: 
         "source_bundle_generated_at": bundle.get("generated_at"),
         "requested_preset_ids": args.profile_path_preset_id or [],
         "filters": archive_route_detail_filters_payload(args),
+        "preset_validation": preset_validation,
         "summary": {
             "preset_count": len(exports),
             "route_count": sum((export.get("route_detail") or {}).get("summary", {}).get("route_count", 0) for export in exports),
@@ -9435,6 +9564,7 @@ def render_archive_route_detail(payload: dict) -> str:
 
 def render_archive_route_detail_preset_exports(payload: dict) -> str:
     summary = payload.get("summary") or {}
+    validation = payload.get("preset_validation") or {}
     lines = [
         "# OSS Cognition Route Detail Preset Exports",
         "",
@@ -9447,6 +9577,30 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         f"- Repository / unique evidence：{summary.get('repository_count', 0)} / {summary.get('unique_evidence_count', 0)}",
         "",
     ]
+    if validation:
+        lines.extend(
+            [
+                "## Preset Validation",
+                "",
+                f"- Schema：{validation.get('schema_version') or 'route_detail_preset_validation_v1'}",
+                f"- Status：{validation.get('status') or 'unknown'}",
+                f"- Source presets：{validation.get('source_bundle_preset_count', 0)}",
+                f"- Selected / ready / unmatched：{validation.get('selected_preset_count', 0)} / {validation.get('ready_preset_count', 0)} / {validation.get('unmatched_preset_count', 0)}",
+                f"- Expected route / example：{validation.get('expected_route_count', 0)} / {validation.get('expected_example_count', 0)}",
+                f"- Duplicate preset IDs：{', '.join(validation.get('duplicate_preset_ids') or []) or '无'}",
+                "",
+            ]
+        )
+        for status in (validation.get("preset_statuses") or [])[:12]:
+            messages = "; ".join(status.get("messages") or [])
+            lines.append(
+                f"- `{status.get('preset_id') or ''}` {status.get('status') or 'unknown'}："
+                f"moves {status.get('matched_move_count', 0)}；routes {status.get('matched_route_count', 0)}；"
+                f"repos {status.get('matched_repository_count', 0)}；examples {status.get('expected_example_count', 0)}；{messages}"
+            )
+        if len(validation.get("preset_statuses") or []) > 12:
+            lines.append(f"- ... {len(validation.get('preset_statuses') or []) - 12} more preset statuses in JSON")
+        lines.append("")
     if not payload.get("exports"):
         lines.extend(["当前 preset 范围没有可导出的 route detail。", ""])
         return "\n".join(lines)
