@@ -8797,6 +8797,13 @@ def render_archive_dashboard(payload: dict) -> str:
       return payload;
     }
 
+    function routeDetailCountMapText(counts) {
+      return Object.entries(counts || {})
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([status, count]) => `${status}=${count}`)
+        .join(", ") || "none";
+    }
+
     function routeDetailMarkdown(payload) {
       const lines = [
         "# Route Detail Drilldown",
@@ -8856,14 +8863,22 @@ def render_archive_dashboard(payload: dict) -> str:
         lines.push("");
       }
       const fixtures = payload.validation_fixtures?.fixtures || [];
-      if (fixtures.length) {
+      if (payload.validation_fixtures) {
         lines.push(
           "## Validation Fixtures",
           "",
           `- Schema: ${payload.validation_fixtures.schema_version}`,
           `- Fixture count: ${payload.validation_fixtures.fixture_count}`,
+          `- Fixture status filter: ${payload.validation_fixtures.fixture_status_filter || "all"}`,
+          `- Fixture count / unfiltered: ${payload.validation_fixtures.fixture_count ?? 0} / ${payload.validation_fixtures.unfiltered_fixture_count ?? fixtures.length}`,
+          `- Matching expected / unfiltered: ${payload.validation_fixtures.matching_expected_count ?? 0} / ${payload.validation_fixtures.unfiltered_matching_expected_count ?? 0}`,
+          `- Status counts: ${routeDetailCountMapText(payload.validation_fixtures.fixture_status_counts)}`,
+          `- All status counts: ${routeDetailCountMapText(payload.validation_fixtures.all_fixture_status_counts)}`,
           ""
         );
+        if (!fixtures.length) {
+          lines.push("No validation fixtures in the selected status scope.", "");
+        }
         fixtures.forEach((fixture) => {
           const validation = fixture.validation_summary || {};
           lines.push(
@@ -9008,6 +9023,13 @@ def render_archive_dashboard(payload: dict) -> str:
       const validation = bundle.validation_summary || routeDetailPresetValidationSummary(payload, bundle);
       const statusClass = validation.status === "ready" ? "support" : (validation.status === "blocked" || validation.status === "duplicate_ids" ? "risk-mid" : "");
       const duplicateText = validation.duplicate_preset_ids.length ? validation.duplicate_preset_ids.join(", ") : "none";
+      const sourceFilters = bundle.source_selector_filters || {};
+      const sourceFilterValue = sourceFilters.validation_fixture_status
+        || sourceFilters.fixture_validation_status
+        || bundle.source_fixture_status_filter
+        || "all";
+      const sourceStatusText = routeDetailCountMapText(bundle.source_fixture_status_counts);
+      const sourceAllStatusText = routeDetailCountMapText(bundle.source_all_fixture_status_counts);
       const statusRows = validation.preset_statuses.slice(0, 3).map((item) => `
         <div class="subtle">${escapeHtml(item.preset_id || "preset")} ${escapeHtml(item.status || "unknown")} · moves ${escapeHtml(item.matched_move_count || 0)} · routes ${escapeHtml(item.matched_route_count || 0)} · repos ${escapeHtml(item.matched_repository_count || 0)} · examples ${escapeHtml(item.expected_example_count || 0)} · ${escapeHtml((item.messages || []).join("; "))}</div>
       `).join("");
@@ -9024,8 +9046,12 @@ def render_archive_dashboard(payload: dict) -> str:
           <span class="chip">Unmatched ${escapeHtml(validation.unmatched_preset_count)}</span>
           <span class="chip">Routes ${escapeHtml(validation.expected_route_count)}</span>
           <span class="chip">Examples ${escapeHtml(validation.expected_example_count)}</span>
+          <span class="chip">Source filter ${escapeHtml(sourceFilterValue)}</span>
+          <span class="chip">Source fixtures ${escapeHtml(bundle.source_fixture_count ?? "unknown")} / ${escapeHtml(bundle.source_unfiltered_fixture_count ?? "unknown")}</span>
+          <span class="chip">Source expected ${escapeHtml(bundle.source_fixture_matching_expected_count ?? "unknown")} / ${escapeHtml(bundle.source_fixture_unfiltered_matching_expected_count ?? "unknown")}</span>
         </div>
         <p class="subtle">Duplicate IDs: ${escapeHtml(duplicateText)}</p>
+        <p class="subtle">Source status counts: ${escapeHtml(sourceStatusText)}; all: ${escapeHtml(sourceAllStatusText)}</p>
         ${statusRows || '<div class="subtle">No preset statuses.</div>'}
       `;
     }
@@ -9054,14 +9080,8 @@ def render_archive_dashboard(payload: dict) -> str:
         || sourceFilters.fixture_validation_status
         || bundle.source_fixture_status_filter
         || "all";
-      const sourceStatusText = Object.entries(bundle.source_fixture_status_counts || {})
-        .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([status, count]) => `${status}=${count}`)
-        .join(", ") || "none";
-      const sourceAllStatusText = Object.entries(bundle.source_all_fixture_status_counts || {})
-        .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([status, count]) => `${status}=${count}`)
-        .join(", ") || "none";
+      const sourceStatusText = routeDetailCountMapText(bundle.source_fixture_status_counts);
+      const sourceAllStatusText = routeDetailCountMapText(bundle.source_all_fixture_status_counts);
       const lines = [
         "# Route Detail Validation Fixture Bundle",
         "",
