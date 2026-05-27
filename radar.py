@@ -5651,14 +5651,14 @@ def build_repository_cognition_path_comparisons(profiles: list[dict], limit: int
                     **route,
                     "path_count": len(route_paths),
                     "repository_count": len(route_repositories),
-                    "repositories": route_repositories[:12],
+                    "repositories": route_repositories,
                     "unique_evidence_count": len(route_evidence_refs),
                     "high_confidence_paths": sum(1 for item in route_paths if item.get("confidence") == "high"),
                     "average_confidence": mean_number(route_confidence_scores),
                     "confidence_labels": top_count_items(route_confidence_labels, limit=6),
                     "confidence_sources": top_count_items(route_confidence_sources, limit=6),
                     "signal_groups": top_count_items(route_signal_groups, limit=8),
-                    "examples": [repository_cognition_path_example_payload(item) for item in route_paths[:3]],
+                    "examples": [repository_cognition_path_example_payload(item) for item in route_paths],
                 }
             )
         routes.sort(
@@ -5693,7 +5693,7 @@ def build_repository_cognition_path_comparisons(profiles: list[dict], limit: int
                 "confidence": repository_cognition_profile_path_comparison_confidence(score, len(repositories)),
                 "path_count": len(paths),
                 "repository_count": len(repositories),
-                "repositories": repositories[:12],
+                "repositories": repositories,
                 "unique_evidence_count": len(evidence_refs),
                 "high_confidence_paths": sum(1 for item in paths if item.get("confidence") == "high"),
                 "average_confidence": average_confidence,
@@ -5704,8 +5704,8 @@ def build_repository_cognition_path_comparisons(profiles: list[dict], limit: int
                 "confidence_labels": top_count_items(confidence_label_counts, limit=6),
                 "confidence_sources": top_count_items(confidence_source_counts, limit=6),
                 "signal_groups": top_count_items(signal_group_counts, limit=8),
-                "evidence_routes": routes[:6],
-                "repository_examples": [repository_cognition_path_example_payload(item) for item in paths[:8]],
+                "evidence_routes": routes,
+                "repository_examples": [repository_cognition_path_example_payload(item) for item in paths],
             }
         )
 
@@ -6155,7 +6155,7 @@ def render_archive_dashboard(payload: dict) -> str:
       font-weight: 700;
     }
 
-    .patterns-panel {
+    .patterns-panel, .route-detail-panel {
       padding: 14px 24px 0;
     }
 
@@ -6169,6 +6169,56 @@ def render_archive_dashboard(payload: dict) -> str:
 
     .comparison-toolbar[hidden] {
       display: none;
+    }
+
+    .route-detail-panel:empty {
+      display: none;
+    }
+
+    .route-detail-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .route-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .route-detail-card {
+      min-height: 126px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      box-shadow: var(--shadow);
+    }
+
+    .route-detail-card h2 {
+      margin: 0 0 8px;
+      font-size: 14px;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+
+    .route-detail-card p {
+      margin: 8px 0;
+      color: #2d3640;
+      overflow-wrap: anywhere;
+    }
+
+    .route-example {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+    }
+
+    .route-example p {
+      margin: 0 0 8px;
     }
 
     .patterns-head {
@@ -6409,6 +6459,7 @@ def render_archive_dashboard(payload: dict) -> str:
       .comparison-toolbar { grid-template-columns: 1fr 1fr; }
       .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .patterns-grid { grid-template-columns: 1fr; }
+      .route-detail-grid { grid-template-columns: 1fr; }
       main { grid-template-columns: 1fr; }
       .repo-list, .detail-body { max-height: none; }
     }
@@ -6453,6 +6504,7 @@ def render_archive_dashboard(payload: dict) -> str:
       <select id="pathRepoSelect" aria-label="Comparison repository"></select>
       <div class="count" id="pathComparisonDrilldownCount"></div>
     </section>
+    <section class="route-detail-panel" id="pathRouteDetailPanel"></section>
     <section class="patterns-panel" id="patternsPanel"></section>
 
     <main>
@@ -6510,6 +6562,7 @@ def render_archive_dashboard(payload: dict) -> str:
     const pathRouteSelect = document.getElementById("pathRouteSelect");
     const pathRepoSelect = document.getElementById("pathRepoSelect");
     const pathComparisonDrilldownCount = document.getElementById("pathComparisonDrilldownCount");
+    const pathRouteDetailPanel = document.getElementById("pathRouteDetailPanel");
     const patternsPanel = document.getElementById("patternsPanel");
     const githubLink = document.getElementById("githubLink");
 
@@ -6710,15 +6763,30 @@ def render_archive_dashboard(payload: dict) -> str:
     }
 
     function visibleExamplesForComparison(comparison, routes) {
-      const routeIds = new Set(routes.map(pathComparisonRouteKey));
-      return (comparison.repository_examples || []).filter((example) => {
-        if (state.pathRepo !== "all" && example.repo_full_name !== state.pathRepo) return false;
-        if (state.pathRoute === "all") return true;
-        return (routes || []).some((route) => {
-          if (!routeIds.has(pathComparisonRouteKey(route))) return false;
-          const routeLabel = pathComparisonRouteLabel(route);
-          return routeLabel === `${example.claim_gap_layer_label || example.claim_gap_layer || "gap"} / ${example.evidence_type || "evidence"}`;
+      const seen = new Set();
+      const examples = [];
+      (routes || []).forEach((route) => {
+        routeExamplesForDrilldown(route).forEach((example) => {
+          const key = example.path_id
+            || `${example.repo_full_name || "repo"}::${example.evidence_stable_id || example.evidence_id || "evidence"}::${pathComparisonRouteKey(route)}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          examples.push({
+            ...example,
+            route_id: pathComparisonRouteKey(route),
+            route_label: pathComparisonRouteLabel(route),
+          });
         });
+      });
+      return examples;
+    }
+
+    function routeExamplesForDrilldown(route) {
+      return (route.examples || []).filter((example) => {
+        if (state.pathRepo !== "all" && example.repo_full_name !== state.pathRepo) return false;
+        if (state.confidenceSource !== "all" && example.confidence_source !== state.confidenceSource) return false;
+        if (state.signalGroup !== "all" && !(example.confidence_signal_groups || []).includes(state.signalGroup)) return false;
+        return true;
       });
     }
 
@@ -7315,6 +7383,73 @@ def render_archive_dashboard(payload: dict) -> str:
       });
     }
 
+    function renderPathRouteDetailPanel() {
+      const drilldownActive = state.pathMove !== "all" || state.pathRoute !== "all" || state.pathRepo !== "all";
+      if (!drilldownActive || !repositoryCognitionPathComparisons.length) {
+        pathRouteDetailPanel.innerHTML = "";
+        return;
+      }
+      const routeRows = filteredPathComparisons().flatMap((comparison) =>
+        visibleRoutesForComparison(comparison).map((route) => ({
+          comparison,
+          route,
+          examples: routeExamplesForDrilldown(route),
+        }))
+      );
+      const totalExamples = routeRows.reduce((sum, row) => sum + row.examples.length, 0);
+      const cards = routeRows.map(({ comparison, route, examples }) => {
+        const signalChips = (route.signal_groups || []).slice(0, 4).map((item) =>
+          `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`
+        ).join("");
+        const sourceChips = (route.confidence_sources || []).slice(0, 3).map((item) =>
+          `<span class="chip">${escapeHtml(item.value)} ${escapeHtml(item.count)}</span>`
+        ).join("");
+        const exampleBlocks = examples.map((example) => {
+          const evidenceRef = example.evidence_stable_id || example.evidence_id || "no-evidence-id";
+          const confidenceClassName = example.confidence === "high" ? "support" : (example.confidence === "low" ? "risk-mid" : "");
+          return `
+            <div class="route-example">
+              <p><b>${escapeHtml(example.repo_full_name || "repo")}</b> ${escapeHtml(example.claim_field || "claim")} -> ${escapeHtml(example.claim_gap_layer_label || example.claim_gap_layer || "gap")}</p>
+              <p class="subtle">${escapeHtml(compact(example.acquisition_reason || example.evidence_title || "", 220))}</p>
+              <div class="chips">
+                <span class="chip support">Evidence stable ${escapeHtml(evidenceRef)}</span>
+                <span class="chip ${confidenceClassName}">Confidence ${escapeHtml(example.confidence || "unknown")} ${escapeHtml(example.confidence_score ?? "unknown")}</span>
+                <span class="chip">${escapeHtml(example.evidence_kind || "Evidence")}</span>
+                ${example.evidence_type ? `<span class="chip">${escapeHtml(example.evidence_type)}</span>` : ""}
+                ${example.confidence_source ? `<span class="chip">${escapeHtml(example.confidence_source)}</span>` : ""}
+                ${(example.confidence_signal_groups || []).slice(0, 3).map((group) => `<span class="chip">${escapeHtml(group)}</span>`).join("")}
+              </div>
+              <div class="subtle">${escapeHtml(example.path_id || "")}${example.pattern_id ? " · " + escapeHtml(example.pattern_id) : ""}${example.evidence_title ? " · " + escapeHtml(compact(example.evidence_title, 140)) : ""}</div>
+            </div>
+          `;
+        }).join("");
+        return `
+          <article class="route-detail-card">
+            <h2>${escapeHtml(comparison.design_move || "Design move")} / ${escapeHtml(pathComparisonRouteLabel(route))}</h2>
+            <div class="chips">
+              <span class="chip support">${escapeHtml(route.route_id || pathComparisonRouteKey(route))}</span>
+              <span class="chip">Repos ${escapeHtml(state.pathRepo !== "all" ? 1 : route.repository_count || 0)}</span>
+              <span class="chip">Paths ${escapeHtml(examples.length || route.path_count || 0)}</span>
+              <span class="chip">High ${escapeHtml(examples.filter((example) => example.confidence === "high").length || route.high_confidence_paths || 0)}</span>
+              <span class="chip">Avg confidence ${escapeHtml(route.average_confidence ?? "unknown")}</span>
+              ${state.pathRepo !== "all" ? `<span class="chip support">${escapeHtml(state.pathRepo)}</span>` : ""}
+              ${sourceChips}
+              ${signalChips}
+            </div>
+            <p>${escapeHtml(compact(comparison.cognition_move || comparison.transfer_rule || "", 180))}</p>
+            ${exampleBlocks || '<div class="empty">No matching route examples.</div>'}
+          </article>
+        `;
+      }).join("");
+      pathRouteDetailPanel.innerHTML = `
+        <div class="route-detail-head">
+          <div class="section-title">Route Drilldown Details</div>
+          <div class="count">${escapeHtml(routeRows.length)} routes / ${escapeHtml(totalExamples)} examples</div>
+        </div>
+        <div class="route-detail-grid">${cards || '<div class="empty">No matching route details.</div>'}</div>
+      `;
+    }
+
     function renderPatterns() {
       const items = filteredPatterns().slice(0, 6);
       const summaries = filteredCognitionSummaries().slice(0, 4);
@@ -7721,6 +7856,7 @@ def render_archive_dashboard(payload: dict) -> str:
       renderPathComparisonDrilldownOptions();
       const items = filteredRepos();
       renderStats(items);
+      renderPathRouteDetailPanel();
       renderPatterns();
       renderList(items);
     }
