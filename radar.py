@@ -292,6 +292,11 @@ def parse_args() -> argparse.Namespace:
         "--profile-path-preset-fixture",
         help="Archive route detail mode: run one validation fixture ID from a selector preset bundle JSON.",
     )
+    parser.add_argument(
+        "--validation-fixture-status",
+        choices=["all", "ready", "partial", "blocked", "duplicate_ids"],
+        help="Archive route selectors mode: filter validation fixtures by actual validation status.",
+    )
     parser.add_argument("--archive-output", help="Archive mode: optional Markdown output path. Defaults to stdout.")
     return parser.parse_args()
 
@@ -5849,6 +5854,7 @@ def archive_route_detail_filters_payload(args: argparse.Namespace) -> dict:
             "profile_path_route": getattr(args, "profile_path_route", None),
             "profile_path_repo": getattr(args, "profile_path_repo", None),
             "profile_path_confidence_source": getattr(args, "profile_path_confidence_source", None),
+            "validation_fixture_status": getattr(args, "validation_fixture_status", None),
         }
     )
     return filters
@@ -6335,8 +6341,14 @@ def build_route_detail_preset_validation_fixtures(
     }
 
 
-def attach_route_detail_preset_validation_fixture_metadata(validation_fixtures: dict, selector_payload: dict) -> dict:
-    fixtures_with_summaries = []
+def attach_route_detail_preset_validation_fixture_metadata(
+    validation_fixtures: dict,
+    selector_payload: dict,
+    *,
+    status_filter: str | None = None,
+) -> dict:
+    status_filter_value = status_filter or "all"
+    all_fixtures_with_summaries = []
     for fixture in validation_fixtures.get("fixtures") or []:
         bundle = fixture.get("preset_bundle") or {}
         validation_summary = route_detail_preset_validation_summary(selector_payload, bundle, bundle.get("presets") or [])
@@ -6346,22 +6358,36 @@ def attach_route_detail_preset_validation_fixture_metadata(validation_fixtures: 
             validation_summary.get("status") == fixture.get("expected_validation_status")
         )
         annotated_fixture["validation_summary"] = validation_summary
-        fixtures_with_summaries.append(annotated_fixture)
+        all_fixtures_with_summaries.append(annotated_fixture)
 
-    status_counts = {}
+    all_status_counts = {}
+    for fixture in all_fixtures_with_summaries:
+        count_value(all_status_counts, fixture.get("validation_status") or "unknown")
+    if status_filter_value == "all":
+        fixtures_with_summaries = all_fixtures_with_summaries
+    else:
+        fixtures_with_summaries = [
+            fixture
+            for fixture in all_fixtures_with_summaries
+            if fixture.get("validation_status") == status_filter_value
+        ]
+    filtered_status_counts = {}
     for fixture in fixtures_with_summaries:
-        count_value(status_counts, fixture.get("validation_status") or "unknown")
+        count_value(filtered_status_counts, fixture.get("validation_status") or "unknown")
     matching_expected_count = sum(1 for fixture in fixtures_with_summaries if fixture.get("validation_matches_expected"))
+    unfiltered_matching_expected_count = sum(
+        1 for fixture in all_fixtures_with_summaries if fixture.get("validation_matches_expected")
+    )
     return {
         **validation_fixtures,
         "source": validation_fixtures.get("source") or "archive_route_selectors",
-        "fixture_status_filter": "all",
+        "fixture_status_filter": status_filter_value,
         "fixture_count": len(fixtures_with_summaries),
-        "unfiltered_fixture_count": len(fixtures_with_summaries),
+        "unfiltered_fixture_count": len(all_fixtures_with_summaries),
         "matching_expected_count": matching_expected_count,
-        "unfiltered_matching_expected_count": matching_expected_count,
-        "fixture_status_counts": status_counts,
-        "all_fixture_status_counts": dict(status_counts),
+        "unfiltered_matching_expected_count": unfiltered_matching_expected_count,
+        "fixture_status_counts": filtered_status_counts,
+        "all_fixture_status_counts": all_status_counts,
         "fixtures": fixtures_with_summaries,
     }
 
@@ -6532,7 +6558,11 @@ def build_route_detail_selectors_payload(
         "validation_fixtures": validation_fixtures,
         "moves": move_payloads,
     }
-    payload["validation_fixtures"] = attach_route_detail_preset_validation_fixture_metadata(validation_fixtures, payload)
+    payload["validation_fixtures"] = attach_route_detail_preset_validation_fixture_metadata(
+        validation_fixtures,
+        payload,
+        status_filter=getattr(args, "validation_fixture_status", None),
+    )
     payload["summary"]["validation_fixture_count"] = payload["validation_fixtures"].get("fixture_count", 0)
     payload["summary"]["validation_fixture_matching_expected_count"] = payload["validation_fixtures"].get(
         "matching_expected_count", 0
@@ -10299,6 +10329,7 @@ def render_archive_route_selectors(payload: dict) -> str:
         f"- 设计动作过滤：{filters.get('profile_path_move') or '无'}",
         f"- 证据路线过滤：{filters.get('profile_path_route') or '无'}",
         f"- 仓库过滤：{filters.get('profile_path_repo') or '无'}",
+        f"- Fixture status 过滤：{filters.get('validation_fixture_status') or 'all'}",
         f"- Move / route / example：{summary.get('move_count', 0)} / {summary.get('route_count', 0)} / {summary.get('example_count', 0)}",
         f"- Repository / unique evidence：{summary.get('repository_count', 0)} / {summary.get('unique_evidence_count', 0)}",
         f"- Presets：{summary.get('preset_count', 0)}",
@@ -10358,10 +10389,11 @@ def render_archive_route_selectors(payload: dict) -> str:
         lines.append("")
     validation_fixtures = payload.get("validation_fixtures") or {}
     fixtures = validation_fixtures.get("fixtures") or []
-    if fixtures:
+    if validation_fixtures:
         lines.extend(["## Validation Fixtures", ""])
         lines.append(f"- Schema：{validation_fixtures.get('schema_version') or 'route_detail_preset_validation_fixtures_v1'}")
         lines.append(f"- Fixture count：{validation_fixtures.get('fixture_count', len(fixtures))}")
+        lines.append(f"- Fixture status filter：{validation_fixtures.get('fixture_status_filter') or 'all'}")
         if validation_fixtures.get("matching_expected_count") is not None:
             lines.append(
                 f"- Matching expected：{validation_fixtures.get('matching_expected_count', 0)} / "
@@ -10371,7 +10403,14 @@ def render_archive_route_selectors(payload: dict) -> str:
         if status_counts:
             status_text = ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
             lines.append(f"- Status counts：{status_text}")
+        all_status_counts = validation_fixtures.get("all_fixture_status_counts") or {}
+        if all_status_counts and all_status_counts != status_counts:
+            all_status_text = ", ".join(f"{status}={count}" for status, count in sorted(all_status_counts.items()))
+            lines.append(f"- All status counts：{all_status_text}")
         lines.append("")
+        if not fixtures:
+            lines.extend(["当前 fixture status 过滤范围没有 validation fixtures。", ""])
+            return "\n".join(lines)
         for fixture in fixtures:
             validation = fixture.get("validation_summary") or {}
             matches_text = "yes" if fixture.get("validation_matches_expected") else "no"
@@ -10705,6 +10744,8 @@ def handle_archive(args: argparse.Namespace) -> None:
         raise SystemExit("--profile-path-preset-id requires --profile-path-preset.")
     if args.profile_path_preset_fixture and not args.profile_path_preset:
         raise SystemExit("--profile-path-preset-fixture requires --profile-path-preset.")
+    if args.validation_fixture_status and not args.archive_route_selectors:
+        raise SystemExit("--validation-fixture-status is only supported with --archive-route-selectors.")
     profile_path_filters = [
         args.profile_path_move,
         args.profile_path_route,
