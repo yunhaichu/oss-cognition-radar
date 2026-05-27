@@ -70,6 +70,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Route selector provenance regression coverage: `tests/test_route_selector_provenance.py` verifies filtered fixture Markdown provenance for blocked, duplicate ID, and empty ready scopes without requiring a SQLite archive.
 - Route detail preset fixture provenance regression coverage: `tests/test_route_detail_preset_provenance.py` verifies selector fixture and dashboard single-fixture bundle roundtrips preserve source filters, filtered/unfiltered counts, matching-expected counts, validation status, and status distributions.
 - Preset fixture error-path regression coverage: `tests/test_route_detail_preset_provenance.py` verifies missing fixture IDs report available fixtures, missing preset IDs report unknown IDs, and preset ID selection returns only requested presets.
+- Fixture-driven preset batch regression coverage: `tests/test_route_detail_preset_provenance.py` verifies fixture-selected preset batches preserve provenance through `archive_route_detail_preset_exports_payload`, run each preset with its selectors, aggregate route/example/repository/evidence summaries, and render provenance in Markdown.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -94,4 +95,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add route detail preset export integration regression coverage for fixture-driven preset batches.
+Add route detail preset export regression coverage for `--profile-path-preset-id` scoped fixture batches.

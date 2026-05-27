@@ -2,6 +2,7 @@ import argparse
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -17,14 +18,14 @@ def args_for_fixture(fixture_id=None, preset_ids=None):
     )
 
 
-def preset(preset_id="preset_1"):
+def preset(preset_id="preset_1", repo="owner/repo"):
     return {
         "preset_id": preset_id,
         "label": "Preset 1",
         "selectors": {
             "profile_path_move": "boundary_design::Architecture boundary",
             "profile_path_route": "validation::tests",
-            "profile_path_repo": "owner/repo",
+            "profile_path_repo": repo,
         },
     }
 
@@ -87,6 +88,119 @@ def dashboard_fixture_bundle():
         "validation_matches_expected": True,
         "preset_count": 2,
         "presets": [preset("duplicate"), preset("duplicate")],
+    }
+
+
+def fixture_batch_selector_payload():
+    return {
+        "schema_version": "route_detail_selectors_v1",
+        "generated_at": "2026-05-27T00:00:00+00:00",
+        "filters": {"validation_fixture_status": "ready"},
+        "summary": {
+            "move_count": 1,
+            "route_count": 1,
+            "example_count": 3,
+            "repository_count": 2,
+            "unique_evidence_count": 2,
+            "preset_count": 2,
+        },
+        "moves": [
+            {
+                "comparison_id": "cmp_1",
+                "move_key": "boundary_design::Architecture boundary",
+                "design_move_category": "boundary_design",
+                "design_move": "Architecture boundary",
+                "selector_values": ["cmp_1", "boundary_design::Architecture boundary", "Architecture boundary"],
+                "routes": [
+                    {
+                        "route_id": "validation::tests",
+                        "route_key": "validation::tests",
+                        "route_label": "Validation / tests",
+                        "claim_gap_layer": "validation",
+                        "evidence_type": "tests",
+                        "selector_values": ["validation::tests", "Validation / tests", "tests"],
+                        "repository_count": 2,
+                        "example_count": 3,
+                        "repositories": ["owner/repo", "owner/second"],
+                        "repository_options": [
+                            {"value": "owner/repo", "count": 2},
+                            {"value": "owner/second", "count": 1},
+                        ],
+                    }
+                ],
+            }
+        ],
+        "validation_fixtures": {
+            "schema_version": "route_detail_preset_validation_fixtures_v1",
+            "source": "archive_route_selectors",
+            "fixture_status_filter": "ready",
+            "fixture_count": 2,
+            "unfiltered_fixture_count": 4,
+            "matching_expected_count": 2,
+            "unfiltered_matching_expected_count": 4,
+            "fixture_status_counts": {"ready": 2},
+            "all_fixture_status_counts": {"blocked": 1, "duplicate_ids": 1, "ready": 2},
+            "fixtures": [
+                {
+                    "fixture_id": "ready_batch",
+                    "description": "Ready fixture-driven batch",
+                    "expected_validation_status": "ready",
+                    "validation_status": "ready",
+                    "validation_matches_expected": True,
+                    "preset_bundle": {
+                        "schema_version": "route_detail_selector_preset_bundle_v1",
+                        "generated_at": "2026-05-27T00:00:00+00:00",
+                        "source": "archive_route_selectors",
+                        "preset_count": 2,
+                        "presets": [
+                            preset("batch_repo", "owner/repo"),
+                            preset("batch_second", "owner/second"),
+                        ],
+                    },
+                }
+            ],
+        },
+    }
+
+
+def preset_export_args(fixture_id="ready_batch", preset_ids=None):
+    args = args_for_fixture(fixture_id, preset_ids)
+    args.profile_path_preset = "selectors.json"
+    args.db = "test.sqlite"
+    args.profile_path_move = None
+    args.profile_path_route = None
+    args.profile_path_repo = None
+    args.profile_path_confidence_source = None
+    args.archive_signal_group = None
+    args.archive_track = None
+    args.min_track_score = 0
+    args.limit = 20
+    return args
+
+
+def fake_route_detail_payload(args):
+    repo = args.profile_path_repo
+    evidence_id = "ev_repo" if repo == "owner/repo" else "ev_second"
+    return {
+        "schema_version": "route_detail_drilldown_v1",
+        "summary": {
+            "route_count": 1,
+            "example_count": 2 if repo == "owner/repo" else 1,
+            "repository_count": 1,
+            "unique_evidence_count": 1,
+        },
+        "routes": [
+            {
+                "route_id": args.profile_path_route,
+                "repositories": [repo],
+                "examples": [
+                    {
+                        "repo_full_name": repo,
+                        "evidence_stable_id": evidence_id,
+                    }
+                ],
+            }
+        ],
     }
 
 
@@ -235,6 +349,59 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         message = str(raised.exception)
         self.assertIn("Preset ID not found", message)
         self.assertIn("preset_missing", message)
+
+    def test_fixture_driven_preset_batch_exports_preserve_provenance_and_summaries(self):
+        source_payload = fixture_batch_selector_payload()
+        detail_calls = []
+
+        def archive_detail_stub(conn, args):
+            detail_calls.append(
+                {
+                    "move": args.profile_path_move,
+                    "route": args.profile_path_route,
+                    "repo": args.profile_path_repo,
+                }
+            )
+            return fake_route_detail_payload(args)
+
+        with mock.patch.object(radar, "read_json_payload", return_value=source_payload), \
+            mock.patch.object(radar, "archive_route_selectors_payload", return_value=source_payload), \
+            mock.patch.object(radar, "archive_route_detail_payload", side_effect=archive_detail_stub):
+            payload = radar.archive_route_detail_preset_exports_payload(None, preset_export_args())
+
+        self.assertEqual(payload["source_fixture_id"], "ready_batch")
+        self.assertEqual(payload["source_fixture_status_filter"], "ready")
+        self.assertEqual(payload["source_fixture_count"], 2)
+        self.assertEqual(payload["source_unfiltered_fixture_count"], 4)
+        self.assertEqual(payload["source_fixture_matching_expected_count"], 2)
+        self.assertEqual(payload["source_fixture_unfiltered_matching_expected_count"], 4)
+        self.assertEqual(payload["source_fixture_status_counts"], {"ready": 2})
+        self.assertEqual(payload["source_all_fixture_status_counts"], {"blocked": 1, "duplicate_ids": 1, "ready": 2})
+        self.assertEqual(payload["source_fixture_validation_status"], "ready")
+        self.assertIs(payload["source_fixture_validation_matches_expected"], True)
+        self.assertEqual(payload["expected_validation_status"], "ready")
+        self.assertEqual(payload["preset_validation"]["status"], "ready")
+        self.assertEqual(payload["preset_validation"]["ready_preset_count"], 2)
+        self.assertEqual(payload["summary"]["preset_count"], 2)
+        self.assertEqual(payload["summary"]["route_count"], 2)
+        self.assertEqual(payload["summary"]["example_count"], 3)
+        self.assertEqual(payload["summary"]["repository_count"], 2)
+        self.assertEqual(payload["summary"]["unique_evidence_count"], 2)
+        self.assertEqual([item["repo"] for item in detail_calls], ["owner/repo", "owner/second"])
+        self.assertEqual([export["preset"]["preset_id"] for export in payload["exports"]], ["batch_repo", "batch_second"])
+
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        self.assertIn("Source fixture", markdown)
+        self.assertIn("ready_batch", markdown)
+        self.assertIn("Source fixture count", markdown)
+        self.assertIn("2 / unfiltered 4", markdown)
+        self.assertIn("Source fixture matching expected", markdown)
+        self.assertIn("Source fixture status counts", markdown)
+        self.assertIn("ready=2", markdown)
+        self.assertIn("Source all fixture status counts", markdown)
+        self.assertIn("blocked=1, duplicate_ids=1, ready=2", markdown)
+        self.assertIn("Preset / route / example", markdown)
+        self.assertIn("2 / 2 / 3", markdown)
 
 
 if __name__ == "__main__":
