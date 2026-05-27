@@ -10144,6 +10144,13 @@ def evidence_ref_text(example: dict) -> str:
     return ""
 
 
+def route_examples_list(route: dict) -> list[dict]:
+    raw_examples = route.get("examples") or []
+    if not isinstance(raw_examples, list):
+        return []
+    return [example for example in raw_examples if isinstance(example, dict)]
+
+
 def confidence_signal_breakdown_text(confidence: dict | None, group_limit: int = 5, signal_limit: int = 3) -> str:
     if not confidence:
         return "无"
@@ -10408,14 +10415,15 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         route_detail = export.get("route_detail") or {}
         for route in route_detail.get("routes") or []:
             derived_route_count += 1
-            derived_example_count += len(route.get("examples") or [])
+            route_examples = route_examples_list(route)
+            derived_example_count += len(route_examples)
             route_repositories = route.get("repositories") or []
             if not isinstance(route_repositories, list):
                 route_repositories = []
             for repo in route_repositories:
                 if isinstance(repo, str) and repo:
                     export_repository_names.add(repo)
-            for example in route.get("examples") or []:
+            for example in route_examples:
                 evidence_ref = evidence_ref_text(example)
                 if evidence_ref:
                     export_evidence_refs.add(evidence_ref)
@@ -10543,7 +10551,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
         selector_route_text = string_value_text(selectors.get("profile_path_route"), fallback="")
         selector_repo_text = string_value_text(selectors.get("profile_path_repo"), fallback="")
         derived_route_count = len(routes)
-        derived_example_count = sum(len(route.get("examples") or []) for route in routes)
+        derived_example_count = sum(len(route_examples_list(route)) for route in routes)
         export_repository_names = set()
         export_evidence_refs = set()
         for route in routes:
@@ -10553,7 +10561,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
             for repo in route_repositories:
                 if isinstance(repo, str) and repo:
                     export_repository_names.add(repo)
-            for example in route.get("examples") or []:
+            for example in route_examples_list(route):
                 evidence_ref = evidence_ref_text(example)
                 if evidence_ref:
                     export_evidence_refs.add(evidence_ref)
@@ -10593,7 +10601,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
             ]
         )
         for route in routes:
-            route_examples = route.get("examples") or []
+            route_examples = route_examples_list(route)
             raw_route_repositories = route.get("repositories") or []
             if not isinstance(raw_route_repositories, list):
                 raw_route_repositories = []
