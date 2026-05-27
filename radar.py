@@ -10101,9 +10101,14 @@ def count_items_text(items: list[dict], limit: int = 6) -> str:
 
 
 def count_map_text(counts: dict | None) -> str:
-    if not counts:
+    if not isinstance(counts, dict):
         return "无"
-    text = ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
+    items = [
+        (key, value)
+        for key, value in counts.items()
+        if isinstance(key, str) and isinstance(value, (str, int, float, bool))
+    ]
+    text = ", ".join(f"{key}={value}" for key, value in sorted(items))
     return text or "无"
 
 
@@ -10348,14 +10353,8 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
     else:
         requested_preset_ids = []
     requested_preset_ids_text = ", ".join(requested_preset_ids) or "无"
-    source_status_counts = payload.get("source_fixture_status_counts") or {}
-    source_all_status_counts = payload.get("source_all_fixture_status_counts") or {}
-    source_status_text = ", ".join(
-        f"{status}={count}" for status, count in sorted(source_status_counts.items())
-    ) or "无"
-    source_all_status_text = ", ".join(
-        f"{status}={count}" for status, count in sorted(source_all_status_counts.items())
-    ) or "无"
+    source_status_text = count_map_text(payload.get("source_fixture_status_counts"))
+    source_all_status_text = count_map_text(payload.get("source_all_fixture_status_counts"))
     exports = payload.get("exports") or []
     derived_preset_count = len(exports)
     derived_route_count = 0

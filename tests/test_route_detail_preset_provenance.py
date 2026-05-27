@@ -1544,6 +1544,53 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
         self.assertIn("- Source fixture status counts\uff1ablocked=1, duplicate_ids=1, ready=2", lines)
         self.assertIn("- Source all fixture status counts\uff1ablocked=2, duplicate_ids=1, ready=3", lines)
 
+    def test_preset_export_markdown_renders_malformed_fixture_status_count_payloads_as_empty(self):
+        for source_fixture_status_counts in ("ready=2", ["ready"], 7):
+            with self.subTest(source_fixture_status_counts=source_fixture_status_counts):
+                markdown = radar.render_archive_route_detail_preset_exports(
+                    preset_exports_payload(
+                        {
+                            "source_fixture_status_counts": source_fixture_status_counts,
+                            "source_all_fixture_status_counts": source_fixture_status_counts,
+                        }
+                    )
+                )
+                lines = markdown.splitlines()
+
+                self.assertIn("- Source fixture status counts\uff1a\u65e0", lines)
+                self.assertIn("- Source all fixture status counts\uff1a\u65e0", lines)
+
+    def test_preset_export_markdown_filters_malformed_fixture_status_count_entries(self):
+        markdown = radar.render_archive_route_detail_preset_exports(
+            preset_exports_payload(
+                {
+                    "source_fixture_status_counts": {
+                        "ready": 2,
+                        "blocked": 1,
+                        "bad_dict": {"bad": "count"},
+                        "bad_list": ["bad"],
+                        "bad_none": None,
+                        7: "bad_key",
+                    },
+                    "source_all_fixture_status_counts": {
+                        "ready": 3,
+                        "duplicate_ids": 1,
+                        "bad_dict": {"bad": "count"},
+                        "bad_list": ["bad"],
+                        "bad_none": None,
+                        7: "bad_key",
+                    },
+                }
+            )
+        )
+        lines = markdown.splitlines()
+
+        self.assertIn("- Source fixture status counts\uff1ablocked=1, ready=2", lines)
+        self.assertIn("- Source all fixture status counts\uff1aduplicate_ids=1, ready=3", lines)
+        self.assertFalse(any("{'bad': 'count'}" in line for line in lines))
+        self.assertFalse(any("['bad']" in line for line in lines))
+        self.assertFalse(any("7=bad_key" in line for line in lines))
+
     def test_missing_fixture_id_reports_available_fixture_ids(self):
         with self.assertRaises(SystemExit) as raised:
             radar.route_detail_preset_bundle_from_payload(
