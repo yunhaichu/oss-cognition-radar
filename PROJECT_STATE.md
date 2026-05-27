@@ -129,6 +129,7 @@ The archive surface now exists in two forms: local SQLite CLI queries and a stan
 - Malformed per-export preset identity Markdown coverage: route detail preset export Markdown now renders malformed per-export preset label, preset ID, and move/route/repository selector fields as fallback provenance instead of leaking raw malformed payloads.
 - Malformed per-export summary count Markdown coverage: route detail preset export Markdown now renders malformed per-export route/example/repository/evidence summary counts with derived fallback provenance instead of leaking raw malformed payloads.
 - Malformed per-route identity Markdown coverage: route detail preset export Markdown now renders malformed route ID, design move, and route label fields as fallback provenance instead of leaking raw malformed payloads.
+- Malformed per-route count Markdown coverage: route detail preset export Markdown now renders malformed route repository/example/evidence/path/high/average confidence counts with derived or unknown fallback provenance instead of leaking raw malformed payloads.
 - Archive dashboard: `--archive-dashboard [PATH]` exports a static HTML dashboard with search, track filtering, confidence source filtering, minimum score filtering, summary metrics, repository details, claims, and evidence excerpts.
 - `README.md`: updated for the new OSS Cognition Radar positioning and usage.
 - `.gitignore`: ignores generated reports and local files.
@@ -153,4 +154,4 @@ Every pushed commit must have a corresponding GitHub Release. Use a commit-addre
 
 ## Next Local Step
 
-Add preset export Markdown malformed per-route count coverage.
+Add preset export Markdown malformed route repository list coverage.

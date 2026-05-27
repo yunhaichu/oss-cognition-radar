@@ -10589,26 +10589,29 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
             derived_route_example_count = len(route_examples)
             derived_route_evidence_count = len(set(evidence_ids))
             route_repository_count = (
-                route.get("repository_count")
+                count_or_default(route.get("repository_count"), default=derived_route_repository_count)
                 if route.get("repository_count") is not None
                 else derived_route_repository_count
             )
             route_example_count = (
-                route.get("example_count")
+                count_or_default(route.get("example_count"), default=derived_route_example_count)
                 if route.get("example_count") is not None
-                else route.get("path_count", derived_route_example_count)
+                else count_or_default(route.get("path_count"), default=derived_route_example_count)
             )
             route_evidence_count = (
-                route.get("unique_evidence_count")
+                count_or_default(route.get("unique_evidence_count"), default=derived_route_evidence_count)
                 if route.get("unique_evidence_count") is not None
                 else derived_route_evidence_count
             )
+            route_path_count = count_or_default(route.get("path_count"), default=0)
+            route_high_confidence_paths = count_or_default(route.get("high_confidence_paths"), default=0)
+            route_average_confidence = count_value_text(route.get("average_confidence"))
             lines.extend(
                 [
                     f"- `{route_id_text}` {route_design_move_text} / {route_label_text}",
                     f"  - Repositories：{', '.join(route_repositories) or '无'}",
                     f"  - Repository count consistency：repository {derived_route_repository_count} / route {route_repository_count} / matches route {derived_route_repository_count == route_repository_count}",
-                    f"  - Paths / high / avg：{route.get('path_count', 0)} / {route.get('high_confidence_paths', 0)} / {route.get('average_confidence') if route.get('average_confidence') is not None else 'unknown'}",
+                    f"  - Paths / high / avg：{route_path_count} / {route_high_confidence_paths} / {route_average_confidence}",
                     f"  - Evidence/example count consistency：example {derived_route_example_count} / route {route_example_count} / matches route {derived_route_example_count == route_example_count}; evidence {derived_route_evidence_count} / route {route_evidence_count} / matches route {derived_route_evidence_count == route_evidence_count}",
                     f"  - Evidence stable IDs：{', '.join(evidence_ids[:6]) or '无'}",
                 ]

@@ -1391,6 +1391,51 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_uses_derived_fallbacks_for_malformed_route_counts(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "routes": [
+                        {
+                            "route_id": "validation::tests",
+                            "repository_count": {"bad": "repo"},
+                            "example_count": ["example"],
+                            "unique_evidence_count": {"bad": "evidence"},
+                            "path_count": ["path"],
+                            "high_confidence_paths": {"bad": "high"},
+                            "average_confidence": ["avg"],
+                            "repositories": ["owner/repo", "owner/second", "owner/repo"],
+                            "examples": [
+                                {"evidence_stable_id": "ev_repo"},
+                                {"evidence_id": "ev_second"},
+                                {"evidence_stable_id": "ev_repo"},
+                            ],
+                        }
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn(
+            "  - Repository count consistency\uff1arepository 2 / route 2 / matches route True",
+            lines,
+        )
+        self.assertIn("  - Paths / high / avg\uff1a0 / 0 / unknown", lines)
+        self.assertIn(
+            "  - Evidence/example count consistency\uff1aexample 3 / route 3 / matches route True; evidence 2 / route 2 / matches route True",
+            lines,
+        )
+        self.assertFalse(any("{'bad': 'repo'}" in line for line in lines))
+        self.assertFalse(any("['example']" in line for line in lines))
+        self.assertFalse(any("{'bad': 'evidence'}" in line for line in lines))
+        self.assertFalse(any("['path']" in line for line in lines))
+        self.assertFalse(any("{'bad': 'high'}" in line for line in lines))
+        self.assertFalse(any("['avg']" in line for line in lines))
+
     def test_preset_export_markdown_uses_export_summary_count_fallbacks_when_counts_missing(self):
         payload = preset_exports_payload({})
         payload["exports"] = [
