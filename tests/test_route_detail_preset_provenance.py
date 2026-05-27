@@ -1191,6 +1191,42 @@ class RouteDetailPresetProvenanceRoundtripTest(unittest.TestCase):
             lines,
         )
 
+    def test_preset_export_markdown_filters_malformed_route_evidence_ids(self):
+        payload = preset_exports_payload({})
+        payload["exports"] = [
+            {
+                "preset": preset("batch_repo"),
+                "route_detail": {
+                    "routes": [
+                        {
+                            "route_id": "validation::tests",
+                            "unique_evidence_count": 2,
+                            "examples": [
+                                {"evidence_stable_id": "ev_repo"},
+                                {"evidence_stable_id": {"bad": "stable"}, "evidence_id": ["bad_id"]},
+                                {"evidence_stable_id": "", "evidence_id": "ev_second"},
+                                {"evidence_id": {"bad": "id"}},
+                                ["not an example"],
+                            ],
+                        }
+                    ],
+                },
+            }
+        ]
+        markdown = radar.render_archive_route_detail_preset_exports(payload)
+        lines = markdown.splitlines()
+
+        self.assertIn("  - Evidence stable IDs\uff1aev_repo, ev_second", lines)
+        self.assertIn(
+            "  - Evidence/example count consistency\uff1aexample 5 / route 5 / matches route True; evidence 2 / route 2 / matches route True",
+            lines,
+        )
+        self.assertIn("- Repository / unique evidence\uff1a0 / 2", lines)
+        self.assertFalse(any("{'bad': 'stable'}" in line for line in lines))
+        self.assertFalse(any("['bad_id']" in line for line in lines))
+        self.assertFalse(any("{'bad': 'id'}" in line for line in lines))
+        self.assertFalse(any("not an example" in line for line in lines))
+
     def test_preset_export_markdown_renders_malformed_route_identity_as_fallbacks(self):
         payload = preset_exports_payload({})
         payload["exports"] = [

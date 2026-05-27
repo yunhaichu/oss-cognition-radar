@@ -10132,6 +10132,18 @@ def bool_value_text(value) -> str:
     return str(value) if isinstance(value, bool) else "unknown"
 
 
+def evidence_ref_text(example: dict) -> str:
+    if not isinstance(example, dict):
+        return ""
+    stable_id = example.get("evidence_stable_id")
+    evidence_id = example.get("evidence_id")
+    if isinstance(stable_id, str) and stable_id:
+        return stable_id
+    if isinstance(evidence_id, str) and evidence_id:
+        return evidence_id
+    return ""
+
+
 def confidence_signal_breakdown_text(confidence: dict | None, group_limit: int = 5, signal_limit: int = 3) -> str:
     if not confidence:
         return "无"
@@ -10404,7 +10416,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
                 if isinstance(repo, str) and repo:
                     export_repository_names.add(repo)
             for example in route.get("examples") or []:
-                evidence_ref = example.get("evidence_stable_id") or example.get("evidence_id")
+                evidence_ref = evidence_ref_text(example)
                 if evidence_ref:
                     export_evidence_refs.add(evidence_ref)
     derived_repository_count = len(export_repository_names)
@@ -10542,7 +10554,7 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
                 if isinstance(repo, str) and repo:
                     export_repository_names.add(repo)
             for example in route.get("examples") or []:
-                evidence_ref = example.get("evidence_stable_id") or example.get("evidence_id")
+                evidence_ref = evidence_ref_text(example)
                 if evidence_ref:
                     export_evidence_refs.add(evidence_ref)
         derived_repository_count = len(export_repository_names)
@@ -10589,9 +10601,9 @@ def render_archive_route_detail_preset_exports(payload: dict) -> str:
                 repo for repo in raw_route_repositories if isinstance(repo, str) and repo
             ]
             evidence_ids = [
-                example.get("evidence_stable_id") or example.get("evidence_id")
+                evidence_ref_text(example)
                 for example in route_examples
-                if example.get("evidence_stable_id") or example.get("evidence_id")
+                if evidence_ref_text(example)
             ]
             route_id_text = string_value_text(route.get("route_id"), fallback="")
             route_design_move_text = string_value_text(route.get("design_move"), fallback="Design move")
